@@ -57,3 +57,41 @@ class EncoderLayer(nn.Modules):
                 the batch size and N is the number of elements
         """
         return self.gelu(self.linear(x))
+
+class Encoder(nn.Modules):
+    def __init__(
+        self,
+        num_layers: int = 3,
+        start_size: int = 512,
+        end_size: int = 3,
+        ):
+        """ A General Encoder Block 
+
+        PARAMS
+        ------
+            num_layers: int
+                Number of EncoderLayers to include within the model
+
+            start_size: int
+                The beginning last dimension size of the input vector 
+                going into the block
+
+            end_size: int
+                The ending last dimension size of the output vector going
+                out of the block
+        """
+        # Save input parameters
+        self.num_layers = num_layers
+        self.start_size = start_size
+        self.end_size = end_size
+
+        # model paramters
+        self.encoder_layers = nn.ModuleList(
+            [
+                EncoderLayer(
+                    input_size = self.start_size,
+                    output_size = self.end_size,
+                )
+            ]
+        )
+
