@@ -20,7 +20,7 @@ import torch.nn as nn
 #                                                Classes
 ##################################################################################################################
 
-class EncoderLayer(nn.Modules):
+class EncoderLayer(nn.Module):
     def __init__(
         self,
         input_size: int = 128,
@@ -61,7 +61,7 @@ class EncoderLayer(nn.Modules):
         """
         return self.gelu(self.linear(self.norm(x)))
 
-class Encoder(nn.Modules):
+class Encoder(nn.Module):
     def __init__(
         self,
         num_layers: int = 3,
@@ -99,7 +99,7 @@ class Encoder(nn.Modules):
         for i in range(1, self.num_layers+1):
             # set the number that will be the next start value and this end
             new_start = current_end
-            current_end = self.start_size//i
+            current_end = self.start_size//(i+1)
             # If this isn't the last layer
             if i != self.num_layers:
                 self.layer_size[i] = (new_start, current_end)
@@ -107,12 +107,13 @@ class Encoder(nn.Modules):
             else: 
                 self.layer_size[i] = (new_start, self.end_size)
 
+        print(self.layer_size)
         # Make list of encoder layers that make up the encoder block
         self.encoder_layers = nn.ModuleList(
             [
                 EncoderLayer(
-                    input_size = self.layer_size[l],
-                    output_size = self.layer_size[l],
+                    input_size = self.layer_size[l][0],
+                    output_size = self.layer_size[l][1],
                 ) for l in range(1,self.num_layers+1)
             ]
         )
@@ -131,7 +132,7 @@ class Encoder(nn.Modules):
         return x
 
 
-class DecoderLayer(nn.Modules):
+class DecoderLayer(nn.Module):
     def __init__(
         self,
         input_size: int = 128,
@@ -156,7 +157,7 @@ class DecoderLayer(nn.Modules):
         self.linear = nn.Linear(self.input_size, self.output_size)
 
         # normalize before input (this could be taken out possibly)
-        self.norm = self.BatchNorm1d(self.input_size)
+        self.norm = nn.BatchNorm1d(self.input_size)
 
         # activation funciton
         self.gelu = nn.GELU()
@@ -172,7 +173,7 @@ class DecoderLayer(nn.Modules):
         """
         return self.gelu(self.linear(self.norm(x)))
 
-class Decoder(nn.Modules):
+class Decoder(nn.Module):
     def __init__(
         self,
         num_layers: int = 3,
@@ -213,18 +214,19 @@ class Decoder(nn.Modules):
             current_end = self.end_size//i
             # If this isn't the last layer
             if i != 1:
-                self.layer_size[i-(self.num_layers-1)] = (new_start, current_end)
+                self.layer_size[i] = (new_start, current_end)
             # Last layer use end_size
             else: 
-                self.layer_size[i-(self.num_layers-1)] = (new_start, self.end_size)
+                self.layer_size[i] = (new_start, self.end_size)
 
+        print("Decoder Layer: ", self.layer_size)
         # Make list of encoder layers that make up the encoder block
         self.decoder_layers = nn.ModuleList(
             [
                 DecoderLayer(
-                    input_size = self.layer_size[l],
-                    output_size = self.layer_size[l],
-                ) for l in range(1,self.num_layers+1)
+                    input_size = self.layer_size[l][0],
+                    output_size = self.layer_size[l][1],
+                ) for l in range(self.num_layers, 0, -1)
             ]
         )
 
@@ -241,7 +243,7 @@ class Decoder(nn.Modules):
             x = layer(x)
         return x
 
-class LatentSpace(nn.Modules):
+class LatentSpace(nn.Module):
     def __init__(
         self,
         latent_space_dim: int = 3,
@@ -274,7 +276,7 @@ class LatentSpace(nn.Modules):
         return self.gelu(self.latent(x))
 
 
-class OutputBlock(nn.Modules):
+class OutputBlock(nn.Module):
     def __init__(
         self,
         protein_len: int,
@@ -334,7 +336,7 @@ class OutputBlock(nn.Modules):
         # restack computed dofs with non_dof_x if necessary
         return torch.vstack((recomputed_dofs, non_dof_x), dim=-1) if non_dof_x != None else recomputed_dofs
 
-class InputDecomposition(nn.Modules):
+class InputDecomposition(nn.Module):
     def __init__(
         self,
         protein_len: int,
@@ -383,7 +385,7 @@ class InputDecomposition(nn.Modules):
 #                                               Architecture
 ##################################################################################################################
 
-class MLPAutoEncoder(nn.Modules):
+class MLPAutoEncoder(nn.Module):
     def __init__(
         self,
         protein_len: int,
@@ -426,6 +428,7 @@ class MLPAutoEncoder(nn.Modules):
             non_dof_info: bool
                 True/False non-DoF information is passed with the input
         """
+        super().__init__()
         # Save inputs
         self.protein_len      = protein_len
         self.output_size      = output_size
