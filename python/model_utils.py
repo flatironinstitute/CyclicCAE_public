@@ -107,7 +107,6 @@ class Encoder(nn.Module):
             else: 
                 self.layer_size[i] = (new_start, self.end_size)
 
-        print(self.layer_size)
         # Make list of encoder layers that make up the encoder block
         self.encoder_layers = nn.ModuleList(
             [
@@ -219,7 +218,6 @@ class Decoder(nn.Module):
             else: 
                 self.layer_size[i] = (new_start, self.end_size)
 
-        print("Decoder Layer: ", self.layer_size)
         # Make list of encoder layers that make up the encoder block
         self.decoder_layers = nn.ModuleList(
             [
@@ -311,7 +309,7 @@ class OutputBlock(nn.Module):
         self.output_linear = nn.Linear(in_size, output_size)
 
         # batch normalization
-        self.norm = nn.BatchNorm1d(in_size)
+        self.norm = nn.BatchNorm1d(self.protein_len*2)
 
     def forward(self, x: torch.Tensor):
         """ Forward for OutputBlock which normalizes and outputs
@@ -334,7 +332,7 @@ class OutputBlock(nn.Module):
         recomputed_dofs = torch.atan2(sincos_norm[:, :self.protein_len], sincos_norm[:, self.protein_len:])
 
         # restack computed dofs with non_dof_x if necessary
-        return torch.vstack((recomputed_dofs, non_dof_x), dim=-1) if non_dof_x != None else recomputed_dofs
+        return torch.cat((recomputed_dofs, non_dof_x), dim=-1) if non_dof_x != None else recomputed_dofs
 
 class InputDecomposition(nn.Module):
     def __init__(
@@ -376,10 +374,10 @@ class InputDecomposition(nn.Module):
         cos_x = torch.cos(torch.deg2rad(x[:, :self.protein_len]))
 
         # stack new decomposed vectors
-        stacked_sincos_x = torch.vstack((sin_x, cos_x), dim=-1)
+        stacked_sincos_x = torch.cat((sin_x, cos_x), dim=-1)
 
         # Now add back in the non dof information if necessary
-        return stacked_sincos_x if non_dof_x == None else torch.vstack((stacked_sincos_x, non_dof_x), dim=-1)
+        return stacked_sincos_x if non_dof_x == None else torch.cat((stacked_sincos_x, non_dof_x), dim=-1)
 
 ##################################################################################################################
 #                                               Architecture
@@ -482,3 +480,22 @@ class MLPAutoEncoder(nn.Module):
         return self.output(x)
 
 
+##################################################################################################################
+#                                               Main
+##################################################################################################################
+if __name__ == "__main__":
+    # Create dummy input values
+    x = torch.randint(-180, 180, size=(1000, 8))
+    l = torch.rand(size=(1000, 120))
+    # concat the pseudo-angles and pseudo-extra info together
+    y = torch.cat((x, l), dim=-1)
+    print("Input Tensor shape: ", y.shape)
+
+    model = MLPAutoEncoder(
+        8, 128, 128, True, 3, 3, 3, True
+    )
+
+    print("*** MODEL RUN***")
+    out = model(y)
+
+    print("Output Tensor Shape:" out.shape)
