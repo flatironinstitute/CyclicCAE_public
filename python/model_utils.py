@@ -234,11 +234,41 @@ class Decoder(nn.Modules):
         return x
 
 class LatentSpace(nn.Modules):
-    def __init__(self,):
+    def __init__(
+        self,
+        latent_space_dim: int = 3,
+        ):
+        """ Modular Latent Space Block
+
+        PARAMS
+        ------
+            latent_space_dim: int
+                What dimension the latent space will be in
+        """
+        # save input variables
+        self.latent_space_dim = latent_space_dim
+
+        # linear function to keep it in the latent space
+        self.latent = nn.Linear(latent_space_dim, latent_space_dim)
+
+        # activation function
+        self.gelu = nn.GELU()
+
+    def forward(self, x: torch.Tensor):
+        """ Forward of Latent Space Block
+
+        PARAMS
+        ------
+            x: torch.Tensor
+                Reduced input vector (B, latent_space_dim)
+        """
+        return self.gelu(self.latent(x))
 
 
 class OutputBlock(nn.Modules):
-    def __init__(self,):
+    def __init__(
+        self,
+        ):
 
 class InputDecomposition(nn.Modules):
     def __init__(
