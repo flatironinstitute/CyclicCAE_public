@@ -268,7 +268,63 @@ class LatentSpace(nn.Modules):
 class OutputBlock(nn.Modules):
     def __init__(
         self,
+        protein_len: int,
+        normalize: bool = True,
+        in_size: int = 128,
+        output_size: int = 512,
         ):
+        """ Output Block with normalization and Conversion to Angle
+
+        PARAMS
+        ------
+            protein_len: int
+                The length of the protein/peptide, so we can know how many
+                nodes to combine.
+
+            normalize: bool
+                Determines if normalization happens or not before combination.
+
+            output_size: int
+                Final output of the model size. Should be the same size as the
+                input.
+        """
+        # store values
+        self.protein_len = protein_len
+        self.normalize = normalize
+
+        # Final linear layer
+        self.output_linear = nn.Linear(in_size, output_size)
+
+        # batch normalization
+        self.norm = nn.BatchNorm1d(in_size)
+
+    def forward(self, x: torch.Tensor):
+        """ Forward for OutputBlock which normalizes and outputs
+
+        PARAMS
+        ------
+            x: torch.Tensor
+                Reconstructed x vector post-decomposition (B, D)
+        """
+        # grab out non-dof if necessary
+        if x.size(1) > self.protein_len*2:
+            non_dof_x = x[:, self.protein_len*2:]
+        else:
+            non_dof_x = None
+
+        # normalize the sin/cos vector output
+        sincos_norm = self.norm(x[:, :self.protein_len*2])
+
+        # perform arctan2 
+        recomputed_dofs = torch.atan2(sincos_norm[:, :self.protein_len], sincos_norm[:, self.protein_len:])
+
+        # restack computed dofs with non_dof_x if necessary
+        return torch.vstack((recomputed_dofs, non_dof_x), dim=-1) if non_dof_x != None else recomputed_dofs
+
+
+        
+
+
 
 class InputDecomposition(nn.Modules):
     def __init__(
@@ -309,9 +365,9 @@ class InputDecomposition(nn.Modules):
         cos_x = torch.cos(torch.deg2rad(x[:, :self.protein_len]))
 
         # stack new decomposed vectors
-        stacked_sincos_x = torch.vstack((sin_x, cos_x))
+        stacked_sincos_x = torch.vstack((sin_x, cos_x), dim=-1)
 
         # Now add back in the non dof information if necessary
-        return stacked_sincos_x if non_dof_x == None else torch.vstack((stacked_sincos_x, non_dof_x))
+        return stacked_sincos_x if non_dof_x == None else torch.vstack((stacked_sincos_x, non_dof_x), dim=-1)
 
 
