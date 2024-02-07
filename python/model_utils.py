@@ -4,9 +4,9 @@
 # @brief: Classes and Functions needed for autoencoder model
 #
 
-########################
-######  Packages  ######
-########################
+##################################################################################################################
+#                                               Packages 
+##################################################################################################################
 
 # base python packages
 import os, sys
@@ -16,9 +16,9 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 
-########################
-######  Classes  #######
-########################
+##################################################################################################################
+#                                                Classes
+##################################################################################################################
 
 class EncoderLayer(nn.Modules):
     def __init__(
@@ -293,6 +293,9 @@ class OutputBlock(nn.Modules):
             normalize: bool
                 Determines if normalization happens or not before combination.
 
+            in_size: int
+                Vector output size from decoder block
+
             output_size: int
                 Final output of the model size. Should be the same size as the
                 input.
@@ -375,5 +378,104 @@ class InputDecomposition(nn.Modules):
 
         # Now add back in the non dof information if necessary
         return stacked_sincos_x if non_dof_x == None else torch.vstack((stacked_sincos_x, non_dof_x), dim=-1)
+
+##################################################################################################################
+#                                               Architecture
+##################################################################################################################
+
+class MLPAutoEncoder(nn.Modules):
+    def __init__(
+        self,
+        protein_len: int,
+        output_size: int,
+        input_size: int,
+        normalize: bool,
+        decoder_layers: int,
+        encoder_layers: int,
+        latent_space_dim: int,
+        non_dof_info: bool = False,
+        ):
+        """MLP Base Auto-Encoder Model (Base Model Architecture)
+
+        PARAMS
+        ------
+            protein_len: int
+                Size of the input protein/peptide. This is a stagnent variable, but we
+                could probably make a vector with this information to get around the
+                single scalar value problem. Essentially an array of peptide/protein
+                sizes.
+
+            output_size: int
+                The size of the final output from the model
+
+            input_size: int
+                The size of the input vector
+
+            normalize: bool
+                Specify normalization of values or not
+
+            decoder_layers: int
+                The number of layers the DecoderBlock contains
+
+            encoder_layers: int
+                The number of layers the EncoderBlock contains
+
+            latent_space_dim: int
+                $R$ space we want our latent representation to be in
+
+            non_dof_info: bool
+                True/False non-DoF information is passed with the input
+        """
+        # Save inputs
+        self.protein_len      = protein_len
+        self.output_size      = output_size
+        self.input_size       = input_size
+        self.normalize        = normalize
+        self.decoder_layers   = decoder_layers
+        self.encoder_layers   = encoder_layers
+        self.latent_space_dim = latent_space_dim
+        self.non_dof_info     = non_dof_info
+
+        # Generate Values
+        if non_dof_info:
+            self.extra_info = input_size - protein_len
+        else:
+            self.extra_info = 0
+
+        # Size after decomposition
+        self.after_decomposition_size = self.protein_len*2 + self.extra_info
+
+        # Init Model Blocks
+        self.input_decomposition = InputDecomposition(protein_len=self.protein_len)
+        self.encoder = Encoder(
+            num_layers = self.encoder_layers,
+            start_size = self.after_decomposition_size,
+            end_size   = self.latent_space_dim,
+        )
+        self.latent = LatentSpace(latent_space_dim=self.latent_space_dim)
+        self.decoder = Decoder(
+            num_layers = self.decoder_layers,
+            start_size = self.latent_space_dim,
+            end_size   = self.after_decomposition_size,
+        )
+        self.output = OutputBlock(
+            protein_len = self.protein_len,
+            normalize   = self.normalize,
+            in_size     = self.after_decomposition_size,
+            output_size = self.input_size,
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Train and Test Forward Method"""
+        # decompose
+        x = self.input_decomposition(x)
+        # encode the information into latent
+        x = self.encoder(x)
+        # pass the latent to itself D -> D
+        x = self.latent(x)
+        # Decode the information back to post-decomposition input size
+        x = self.decoder(x)
+        # Recompute original input information
+        return self.output(x)
 
 
