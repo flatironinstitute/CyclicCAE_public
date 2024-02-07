@@ -44,6 +44,9 @@ class EncoderLayer(nn.Modules):
         # method
         self.linear = nn.Linear(self.input_size, self.output_size)
 
+        # normalize the inputs coming in to the layer (could possibly not be needed)
+        self.norm = nn.BatchNorm1d(self.input_size)
+
         # activation funciton
         self.gelu = nn.GELU()
 
@@ -56,7 +59,7 @@ class EncoderLayer(nn.Modules):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        return self.gelu(self.linear(x))
+        return self.gelu(self.linear(self.norm(x)))
 
 class Encoder(nn.Modules):
     def __init__(
@@ -80,6 +83,7 @@ class Encoder(nn.Modules):
                 The ending last dimension size of the output vector going
                 out of the block
         """
+        super(Encoder, self).__init__()
         # Save input parameters
         self.num_layers = num_layers
         self.start_size = start_size
@@ -143,13 +147,16 @@ class DecoderLayer(nn.Modules):
             output_size: int
                 The size of the vector at the end of this layer
         """
-        super(EncoderLayer, self).__init__()
+        super(DecoderLayer, self).__init__()
         # Save inputs
         self.input_size = input_size
         self.output_size = output_size
 
         # method
         self.linear = nn.Linear(self.input_size, self.output_size)
+
+        # normalize before input (this could be taken out possibly)
+        self.norm = self.BatchNorm1d(self.input_size)
 
         # activation funciton
         self.gelu = nn.GELU()
@@ -163,7 +170,7 @@ class DecoderLayer(nn.Modules):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        return self.gelu(self.linear(x))
+        return self.gelu(self.linear(self.norm(x)))
 
 class Decoder(nn.Modules):
     def __init__(
@@ -187,6 +194,7 @@ class Decoder(nn.Modules):
                 The ending last dimension size of the output vector going
                 out of the block
         """
+        super(Decoder, self).__init__()
         # Save input parameters
         self.num_layers = num_layers
         self.start_size = start_size
@@ -245,6 +253,7 @@ class LatentSpace(nn.Modules):
             latent_space_dim: int
                 What dimension the latent space will be in
         """
+        super(LatentSpace, self).__init__()
         # save input variables
         self.latent_space_dim = latent_space_dim
 
@@ -288,6 +297,7 @@ class OutputBlock(nn.Modules):
                 Final output of the model size. Should be the same size as the
                 input.
         """
+        super(OutputBlock, self).__init__()
         # store values
         self.protein_len = protein_len
         self.normalize = normalize
@@ -321,11 +331,6 @@ class OutputBlock(nn.Modules):
         # restack computed dofs with non_dof_x if necessary
         return torch.vstack((recomputed_dofs, non_dof_x), dim=-1) if non_dof_x != None else recomputed_dofs
 
-
-        
-
-
-
 class InputDecomposition(nn.Modules):
     def __init__(
         self,
@@ -339,6 +344,7 @@ class InputDecomposition(nn.Modules):
                 The length of the protein, so we know where to cutoff the
                 DoF decomposition process.
         """
+        super(InputDecomposition, self).__init__()
         # save passed variables
         self.protein_len = protein_len
 
