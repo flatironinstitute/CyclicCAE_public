@@ -47,7 +47,7 @@ class EncoderLayer(nn.Modules):
         # activation funciton
         self.gelu = nn.GELU()
 
-    def forward(x: torch.Tensor):
+    def forward(self, x: torch.Tensor):
         """ forward pass of Encoderlayer
 
         PARAMS
@@ -113,7 +113,7 @@ class Encoder(nn.Modules):
             ]
         )
 
-    def forward(x: torch.Tensor):
+    def forward(self, x: torch.Tensor):
         """ Forward of Encoder Block
 
         PARAMS
@@ -154,7 +154,7 @@ class DecoderLayer(nn.Modules):
         # activation funciton
         self.gelu = nn.GELU()
 
-    def forward(x: torch.Tensor):
+    def forward(self, x: torch.Tensor):
         """ forward pass of Encoderlayer
 
         PARAMS
@@ -220,7 +220,7 @@ class Decoder(nn.Modules):
             ]
         )
 
-    def forward(x: torch.Tensor):
+    def forward(self, x: torch.Tensor):
         """ Forward of Encoder Block
 
         PARAMS
@@ -232,3 +232,56 @@ class Decoder(nn.Modules):
         for layer in self.decoder_layers:
             x = layer(x)
         return x
+
+class LatentSpace(nn.Modules):
+    def __init__(self,):
+
+
+class OutputBlock(nn.Modules):
+    def __init__(self,):
+
+class InputDecomposition(nn.Modules):
+    def __init__(
+        self,
+        protein_len: int,
+        ):
+        """Decomposes DoF input portion into Sin and Cos
+
+        PARAMS
+        ------
+            protein_len: int
+                The length of the protein, so we know where to cutoff the
+                DoF decomposition process.
+        """
+        # save passed variables
+        self.protein_len = protein_len
+
+    def forward(self, x: torch.Tensor):
+        """ Forward of Input Decompose
+        PARAMS
+        ------
+            x: torch.Tensor
+                Input vector of at least N (residue number of DoFs).
+
+        RETURNS
+        -------
+            torch.Tensor
+                Decomposed Dofs in Sin/Cos and all extra information
+        """
+        # grab out non-dof if necessary
+        if x.size(1) > self.protein_len:
+            non_dof_x = x[:, self.protein_len:]
+        else:
+            non_dof_x = None
+
+        # decompose dofs into both sin and cos
+        sin_x = torch.sin(torch.deg2rad(x[:, :self.protein_len]))
+        cos_x = torch.cos(torch.deg2rad(x[:, :self.protein_len]))
+
+        # stack new decomposed vectors
+        stacked_sincos_x = torch.vstack((sin_x, cos_x))
+
+        # Now add back in the non dof information if necessary
+        return stacked_sincos_x if non_dof_x == None else torch.vstack((stacked_sincos_x, non_dof_x))
+
+
