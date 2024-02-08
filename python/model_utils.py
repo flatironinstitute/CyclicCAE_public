@@ -20,7 +20,7 @@ import torch.nn as nn
 #                                                Classes
 ##################################################################################################################
 
-class EncoderLayer(nn.Module):
+class ConformationalMLPEncoderLayer(nn.Module):
     def __init__(
         self,
         input_size: int = 128,
@@ -36,7 +36,7 @@ class EncoderLayer(nn.Module):
             output_size: int
                 The size of the vector at the end of this layer
         """
-        super(EncoderLayer, self).__init__()
+        super().__init__()
         # Save inputs
         self.input_size = input_size
         self.output_size = output_size
@@ -61,7 +61,7 @@ class EncoderLayer(nn.Module):
         """
         return self.gelu(self.linear(self.norm(x)))
 
-class Encoder(nn.Module):
+class ConformationalMLPEncoderBlock(nn.Module):
     def __init__(
         self,
         num_layers: int = 3,
@@ -83,7 +83,7 @@ class Encoder(nn.Module):
                 The ending last dimension size of the output vector going
                 out of the block
         """
-        super(Encoder, self).__init__()
+        super().__init__()
         # Save input parameters
         self.num_layers = num_layers
         self.start_size = start_size
@@ -110,7 +110,7 @@ class Encoder(nn.Module):
         # Make list of encoder layers that make up the encoder block
         self.encoder_layers = nn.ModuleList(
             [
-                EncoderLayer(
+                ConformationalMLPEncoderLayer(
                     input_size = self.layer_size[l][0],
                     output_size = self.layer_size[l][1],
                 ) for l in range(1,self.num_layers+1)
@@ -131,7 +131,7 @@ class Encoder(nn.Module):
         return x
 
 
-class DecoderLayer(nn.Module):
+class ConformationalMLPDecoderLayer(nn.Module):
     def __init__(
         self,
         input_size: int = 128,
@@ -147,7 +147,7 @@ class DecoderLayer(nn.Module):
             output_size: int
                 The size of the vector at the end of this layer
         """
-        super(DecoderLayer, self).__init__()
+        super().__init__()
         # Save inputs
         self.input_size = input_size
         self.output_size = output_size
@@ -172,7 +172,7 @@ class DecoderLayer(nn.Module):
         """
         return self.gelu(self.linear(self.norm(x)))
 
-class Decoder(nn.Module):
+class ConformationalMLPDecoderBlock(nn.Module):
     def __init__(
         self,
         num_layers: int = 3,
@@ -194,7 +194,7 @@ class Decoder(nn.Module):
                 The ending last dimension size of the output vector going
                 out of the block
         """
-        super(Decoder, self).__init__()
+        super().__init__()
         # Save input parameters
         self.num_layers = num_layers
         self.start_size = start_size
@@ -221,7 +221,7 @@ class Decoder(nn.Module):
         # Make list of encoder layers that make up the encoder block
         self.decoder_layers = nn.ModuleList(
             [
-                DecoderLayer(
+                ConformationalMLPDecoderLayer(
                     input_size = self.layer_size[l][0],
                     output_size = self.layer_size[l][1],
                 ) for l in range(self.num_layers, 0, -1)
@@ -241,7 +241,7 @@ class Decoder(nn.Module):
             x = layer(x)
         return x
 
-class LatentSpace(nn.Module):
+class ConformationalLatentSpace(nn.Module):
     def __init__(
         self,
         latent_space_dim: int = 3,
@@ -253,7 +253,7 @@ class LatentSpace(nn.Module):
             latent_space_dim: int
                 What dimension the latent space will be in
         """
-        super(LatentSpace, self).__init__()
+        super().__init__()
         # save input variables
         self.latent_space_dim = latent_space_dim
 
@@ -274,7 +274,7 @@ class LatentSpace(nn.Module):
         return self.gelu(self.latent(x))
 
 
-class OutputBlock(nn.Module):
+class ConformationalOutputBlock(nn.Module):
     def __init__(
         self,
         protein_len: int,
@@ -300,7 +300,7 @@ class OutputBlock(nn.Module):
                 Final output of the model size. Should be the same size as the
                 input.
         """
-        super(OutputBlock, self).__init__()
+        super().__init__()
         # store values
         self.protein_len = protein_len
         self.normalize = normalize
@@ -334,7 +334,7 @@ class OutputBlock(nn.Module):
         # restack computed dofs with non_dof_x if necessary
         return torch.cat((recomputed_dofs, non_dof_x), dim=-1) if non_dof_x != None else recomputed_dofs
 
-class InputDecomposition(nn.Module):
+class ConformationalInputDecomposition(nn.Module):
     def __init__(
         self,
         protein_len: int,
@@ -347,7 +347,7 @@ class InputDecomposition(nn.Module):
                 The length of the protein, so we know where to cutoff the
                 DoF decomposition process.
         """
-        super(InputDecomposition, self).__init__()
+        super().__init__()
         # save passed variables
         self.protein_len = protein_len
 
@@ -383,7 +383,7 @@ class InputDecomposition(nn.Module):
 #                                               Architecture
 ##################################################################################################################
 
-class MLPAutoEncoder(nn.Module):
+class ConformationalMLPAutoEncoder(nn.Module):
     def __init__(
         self,
         protein_len: int,
@@ -447,19 +447,19 @@ class MLPAutoEncoder(nn.Module):
         self.after_decomposition_size = self.protein_len*2 + self.extra_info
 
         # Init Model Blocks
-        self.input_decomposition = InputDecomposition(protein_len=self.protein_len)
-        self.encoder = Encoder(
+        self.input_decomposition = ConformationalInputDecomposition(protein_len=self.protein_len)
+        self.encoder = ConformationalMLPEncoderBlock(
             num_layers = self.encoder_layers,
             start_size = self.after_decomposition_size,
             end_size   = self.latent_space_dim,
         )
-        self.latent = LatentSpace(latent_space_dim=self.latent_space_dim)
-        self.decoder = Decoder(
+        self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim)
+        self.decoder = ConformationalMLPDecoderBlock(
             num_layers = self.decoder_layers,
             start_size = self.latent_space_dim,
             end_size   = self.after_decomposition_size,
         )
-        self.output = OutputBlock(
+        self.output = ConformationalOutputBlock(
             protein_len = self.protein_len,
             normalize   = self.normalize,
             in_size     = self.after_decomposition_size,
@@ -496,7 +496,7 @@ if __name__ == "__main__":
     dataload = torch.utils.data.DataLoader(y, batch_size=1000)
 
     # init model
-    model = MLPAutoEncoder(
+    model = ConformationalMLPAutoEncoder(
         8, 128, 128, True, 3, 3, 3, True
     )
 
