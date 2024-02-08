@@ -1,0 +1,7 @@
+# extra information
+__pycache__*
+
+# datatype files
+*.csv
+*.tsv
+

@@ -1,0 +1,103 @@
+#!/usr/bin/env python
+#
+# @brief: File for separate housing of train/test functions of the model.
+# @author: Andrew Powers (apowers@flatironinstitute.org) 
+#
+
+##################################################################################################################
+#                                               Packages 
+##################################################################################################################
+
+# base python packages
+from collections import defaultdict
+
+# ml imports
+import torch
+
+##################################################################################################################
+#                                                Functions
+##################################################################################################################
+
+def criterion(y_hat: torch.Tensor, y: torch.Tensor):
+    """L2 Loss function"""
+    return torch.mean(torch.pow(y - y_hat, 2))
+
+def train(
+    model: torch.nn.Module,
+    dataset: torch.utils.data.DataLoader,
+    epochs: int,
+    device: str,
+    optimizer: torch.optim,
+    ):
+    """General Train function for the AutoEncoder Model
+
+    PARAMS
+    ------
+        model: torch.nn.Module
+            An Auto-Encoder based pytorch model
+
+        dataset: torch.utils.data.DataLoader
+            dataset loaded into batches. The dataset
+            has only an X portion, since we are 
+            trying to recreate X
+
+        epochs: int
+            Number of epochs to train for
+            
+        device: str
+            This will be either cpu or cuda
+
+        optimizer: torch.optim
+            Particular optimizer that you want to use
+    RETURNS
+    -------
+        mean_loss: float
+            The mean loss of the total run after some N
+            number of epochs.
+    """
+    # init loss list
+    loss_all = list()
+    # set device and model to train
+    model = model.to(device)
+    model.train()
+
+    # loop through epochs
+    for e in range(epochs):
+
+        # loop through dataset 
+        for data in dataset:
+
+            # send to device
+            x = data.to(device)
+
+            # run model
+            out = model(x)
+
+            # generate loss and append
+            loss = criterion(out, x)
+            loss_all.append(loss.item())
+
+            # optimizer zero out grad
+            optimizer.zero_grad()
+
+            # backprop weights and step
+            loss.backward()
+            optimizer.step()
+
+        # calc mean loss
+        mean_loss = sum(loss_all) / len(loss_all)
+
+        # Print out progress for each epoch
+        print(f"Epoch: {e+1}, Train Loss: {mean_loss}")
+    return mean_loss
+
+
+
+def test(
+    model: torch.nn.Module,
+    dataset: torch.utils.data.DataLoader,
+    ):
+    """General Test function for the AutoEncoder Model
+
+    This is a placeholder for a test function if we need one."""
+    pass
