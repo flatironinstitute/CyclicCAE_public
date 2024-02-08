@@ -484,18 +484,31 @@ class MLPAutoEncoder(nn.Module):
 #                                               Main
 ##################################################################################################################
 if __name__ == "__main__":
+    #### This is for testing the models functionality purposes
+    # Import
+    from model_functions import train
+
     # Create dummy input values
-    x = torch.randint(-180, 180, size=(1000, 8))
-    l = torch.rand(size=(1000, 120))
+    x = torch.randint(-180, 180, size=(10000, 8))
+    l = torch.rand(size=(10000, 120))
     # concat the pseudo-angles and pseudo-extra info together
     y = torch.cat((x, l), dim=-1)
-    print("Input Tensor shape: ", y.shape)
+    dataload = torch.utils.data.DataLoader(y, batch_size=1000)
 
+    # init model
     model = MLPAutoEncoder(
         8, 128, 128, True, 3, 3, 3, True
     )
 
-    print("*** MODEL RUN***")
-    out = model(y)
+    # init general Adam optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    print("Output Tensor Shape:" out.shape)
+    # Run Model
+    print("***MODEL TRAINING IS STARTING***")
+    final_loss = train(
+        model = model,
+        dataset = dataload,
+        epochs = 1000,
+        device = "cpu",
+        optimizer = optimizer,
+    )
