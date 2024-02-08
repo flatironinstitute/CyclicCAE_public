@@ -338,6 +338,11 @@ class ConformationalInputDecomposition(nn.Module):
     def __init__(
         self,
         protein_len: int,
+        torsion_n: int = 0,
+        bond_angle_n: int = 0,
+        bond_length_n: int = 0,
+        main_chain_n: int = 0,
+        side_chain_n: int = 0,
         ):
         """Decomposes DoF input portion into Sin and Cos
 
@@ -346,10 +351,31 @@ class ConformationalInputDecomposition(nn.Module):
             protein_len: int
                 The length of the protein, so we know where to cutoff the
                 DoF decomposition process.
+
+            torsion_n: int
+                Strictly specify the number of torsion angles present within the dataset
+
+            bond_angle_n: int
+                Strictly specify the number of bond angles present within the dataset
+
+            bond_length_n: int
+                Strictly specify the number of bond lengths present within the dataset
+
+            main_chain_n: int
+                Number of main chain atoms for each torsion, bond_angle, and bond_length
+
+            side_chain_n: int
+                Number of side chain atoms for each torsion, bond_angle, and bond_length
         """
         super().__init__()
         # save passed variables
-        self.protein_len = protein_len
+        self.protein_len   = protein_len
+        self.torsion_n     = torsion_n
+        self.bond_angle_n  = bond_angle_n
+        self.bond_length_n = bond_length_n
+        self.main_chain_n  = main_chain_n
+        self.side_chain_n  = side_chain_n
+        
 
     def forward(self, x: torch.Tensor):
         """ Forward of Input Decompose
@@ -378,6 +404,26 @@ class ConformationalInputDecomposition(nn.Module):
 
         # Now add back in the non dof information if necessary
         return stacked_sincos_x if non_dof_x == None else torch.cat((stacked_sincos_x, non_dof_x), dim=-1)
+
+    def decompose_angle_(self, x: torch.Tensor, idx: torch.Tensor = None):
+        """Break the angle up into sin & cos components"""
+        # if idx is provided pull out only angle idx components
+        # Assumption is made that the input is 2d (B, N)
+        if idx != None:
+            # Grab out specific angle information
+            x = x[:, idx]
+
+        # decompose angle into both sin and cos
+        sin_x = torch.sin(torch.deg2rad(x))
+        cos_x = torch.cos(torch.deg2rad(x))
+
+        # stack new decomposed vectors
+        stacked_sincos_x = torch.cat((sin_x, cos_x), dim=-1)
+
+        return stacked_sincos_x
+
+
+
 
 ##################################################################################################################
 #                                               Architecture

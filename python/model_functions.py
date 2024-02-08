@@ -39,10 +39,16 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
         loss: torch.float
             Summed Square Error between RMSD_real and RMSD_latent
     """
+    # extract sizes
+    B, L, _ = rmsd_real.shape
+    
+    # make bool mask
+    mask = torch.eye(L, L, dtype=torch.bool)
+
     # Make sure that i /= j within the tensors. Therefore we can block
     # out the diagonal with zeros on both tensors
-    rmsd_real.fill_diagonal_(0)
-    rmsd_latent.fill_diagonal_(0)
+    rmsd_real.masked_fill_(mask, 0)
+    rmsd_latent.masked_fill_(mask, 0)
 
     # Need to set lambda some how right now I will just randomly fill in with values
     lambda_real = 1.
