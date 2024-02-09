@@ -389,21 +389,81 @@ class ConformationalInputDecomposition(nn.Module):
             torch.Tensor
                 Decomposed Dofs in Sin/Cos and all extra information
         """
-        # grab out non-dof if necessary
-        if x.size(1) > self.protein_len:
-            non_dof_x = x[:, self.protein_len:]
+        # running total for the amount to index down
+        index_in = 0
+        # grab out torsion
+        if self.torsion_n != 0:
+            # check to make sure that main chain or side chain isn't
+            # specified. Currently if main is set then side chain will be set too.
+            if self.main_chain_n == 0:
+                # pul out the specific numbers from the passed params
+                torsion = x[:, self.torsion_n]
+            else:
+                # Calculate the number of torsion angles based upon the addition of the main and side chains
+                torsion_plus_n = self.torsion_n*self.main_chain_n + self.torsion_n*self.side_chain_n 
+                # pull out the torsion angles
+                torsion = x[:, :torsion_plus_n]
         else:
-            non_dof_x = None
+            torsion = 0
 
-        # decompose dofs into both sin and cos
-        sin_x = torch.sin(torch.deg2rad(x[:, :self.protein_len]))
-        cos_x = torch.cos(torch.deg2rad(x[:, :self.protein_len]))
+        # update index_in
+        index_in += torsion.size(-1) if torsion != 0 else torsion
 
-        # stack new decomposed vectors
-        stacked_sincos_x = torch.cat((sin_x, cos_x), dim=-1)
+        # grab out bond_angle
+        if self.bond_angle_n != 0:
+            # check to make sure that main chain or side chain isn't
+            # specified. Currently if main is set then side chain will be set too.
+            if self.main_chain_n == 0:
+                # pull out the specific numbers from the passed params
+                bond_angle = x[:, index_in : index_in + self.bond_angle_n]
+            else:
+                # now calculate the number of bond angles based upon the addition of main and side chains
+                bond_angle_plus_n = self.bond_angle_n*self.main_chain_n + self.bond_angle_n*self.side_chain_n
+                # pull out these angles
+                bond_angle = x[:, index_in : index_in + bond_angle_plus_n]
+        else:
+            bond_angle = 0
 
-        # Now add back in the non dof information if necessary
-        return stacked_sincos_x if non_dof_x == None else torch.cat((stacked_sincos_x, non_dof_x), dim=-1)
+        # update index_in
+        index_in += bond_angle.size(-1) if bond_angle != 0 else bond_angle
+
+        # grab out bond length
+        if self.bond_length_n != 0:
+            if self.main_chain_n == 0:
+                # pull out number of passed params
+                bond_length = x[: index_in : index_in + self.bond_length_n]
+            else:
+                bond_length_plus_n = self.bond_length_n*self.main_chain_n + self.bond_length_n*self.side_chain_n
+                # pull out the bond lengths specifically
+                bond_length = x[: index_in : index_in + bond_length_plus_n]
+        else:
+            bond_length = 0
+
+        # update index_in
+        index_in += bond_length.size(-1) if bond_length != 0 else bond_length
+
+        # now pull out extra information if available
+        if x.size(-1) > index_in:
+            extra_scalar_info = x[:, index_in:]
+        else:
+            extra_scalar_info = 0
+
+        # decompose pulled out angles into both sin and cos
+        if torsion != 0:
+            torsion_decompose = self.decompose_angle_(torsion)
+        if bond_angle != 0:
+            bond_angle_decompose = self.decompose_angle_(bond_angle)
+
+        # Some function that does something to bond_length. Not decided yet
+        # bond_length_blah = self.bond_length_adjust(bond_length)
+
+        # combine all information
+        out = torch.cat((torsion_decompose, bond_angle_decompose), dim=-1)
+        out = torch.cat((out, bond_length), dim=-1)
+        if extra_scalar_info != 0:
+            out = torch.cat((out, extra_scalar_info), dim=-1)
+
+        return out
 
     def decompose_angle_(self, x: torch.Tensor, idx: torch.Tensor = None):
         """Break the angle up into sin & cos components"""
@@ -440,6 +500,12 @@ class ConformationalMLPAutoEncoder(nn.Module):
         encoder_layers: int,
         latent_space_dim: int,
         non_dof_info: bool = False,
+        torsion_n: int = 0,
+        bond_angle_n: int = 0,
+        bond_length_n: int = 0,
+        main_chain_n: int = 0,
+        side_chain_n: int = 0,
+        extra_info_n: int = 0,
         ):
         """MLP Base Auto-Encoder Model (Base Model Architecture)
 
@@ -471,6 +537,25 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
             non_dof_info: bool
                 True/False non-DoF information is passed with the input
+
+            torsion_n: int
+                Strictly specify the number of torsion angles present within the dataset
+
+            bond_angle_n: int
+                Strictly specify the number of bond angles present within the dataset
+
+            bond_length_n: int
+                Strictly specify the number of bond lengths present within the dataset
+
+            main_chain_n: int
+                Number of main chain atoms for each torsion, bond_angle, and bond_length
+
+            side_chain_n: int
+                Number of side chain atoms for each torsion, bond_angle, and bond_length
+
+            extra_info_n: int
+                Number of passed additional information after torsion, bond_angle, and bond
+                length.
         """
         super().__init__()
         # Save inputs
@@ -482,15 +567,30 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.encoder_layers   = encoder_layers
         self.latent_space_dim = latent_space_dim
         self.non_dof_info     = non_dof_info
+        self.torsion_n        = torsion_n
+        self.bond_angle_n     = bond_angle_n
+        self.bond_length_n    = bond_length_n
+        self.main_chain_n     = main_chain_n
+        self.side_chain_n     = side_chain_n
+        self.extra_info_n     = extra_info_n
 
         # Generate Values
-        if non_dof_info:
-            self.extra_info = input_size - protein_len
-        else:
-            self.extra_info = 0
+        # if non_dof_info:
+        #     self.extra_info = input_size - protein_len
+        # else:
+        #     self.extra_info = 0
 
         # Size after decomposition
-        self.after_decomposition_size = self.protein_len*2 + self.extra_info
+        # self.after_decomposition_size = self.protein_len*2 + self.extra_info
+
+        # Calculate the size of the input vector
+        if self.main_chain_n == 0:
+            self.after_decomposition_size = self.torsion_n*2 + self.bond_angle_n*2 + self.bond_length_n*2 + self.extra_info_n
+        else:
+            torsion = (self.torsion_n*self.main_chain_n + self.torsion_n*self.main_chain_n)*2
+            bond_angle = (self.bond_angle_n*self.main_chain_n + self.bond_angle_n*self.main_chain_n)*2
+            bond_length = (self.bond_length_n*self.main_chain_n + self.bond_length_n*self.main_chain_n)*2
+            self.after_decomposition_size = torsion + bond_angle + bond_length
 
         # Init Model Blocks
         self.input_decomposition = ConformationalInputDecomposition(protein_len=self.protein_len)
