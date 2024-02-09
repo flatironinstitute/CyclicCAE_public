@@ -281,6 +281,11 @@ class ConformationalOutputBlock(nn.Module):
         normalize: bool = True,
         in_size: int = 128,
         output_size: int = 512,
+        torsion_n: int = 0,
+        bond_angle_n: int = 0,
+        bond_length_n: int = 0,
+        main_chain_n: int = 0,
+        side_chain_n: int = 0,
         ):
         """ Output Block with normalization and Conversion to Angle
 
@@ -299,17 +304,37 @@ class ConformationalOutputBlock(nn.Module):
             output_size: int
                 Final output of the model size. Should be the same size as the
                 input.
+
+            torsion_n: int
+                Strictly specify the number of torsion angles present within the dataset
+
+            bond_angle_n: int
+                Strictly specify the number of bond angles present within the dataset
+
+            bond_length_n: int
+                Strictly specify the number of bond lengths present within the dataset
+
+            main_chain_n: int
+                Number of main chain atoms for each torsion, bond_angle, and bond_length
+
+            side_chain_n: int
+                Number of side chain atoms for each torsion, bond_angle, and bond_length
         """
         super().__init__()
         # store values
-        self.protein_len = protein_len
-        self.normalize = normalize
+        self.protein_len   = protein_len
+        self.normalize     = normalize
+        self.torsion_n     = torsion_n
+        self.bond_angle_n  = bond_angle_n
+        self.bond_length_n = bond_length_n
+        self.main_chain_n  = main_chain_n
+        self.side_chain_n  = side_chain_n
 
         # Final linear layer
         self.output_linear = nn.Linear(in_size, output_size)
 
-        # batch normalization
-        self.norm = nn.BatchNorm1d(self.protein_len*2)
+        # batch normalization by keeping in (-1, 1) range
+        self.tanh_norm = nn.Hardtanh(min_val=-1.0, max_val=1.0)
 
     def forward(self, x: torch.Tensor):
         """ Forward for OutputBlock which normalizes and outputs
@@ -593,7 +618,14 @@ class ConformationalMLPAutoEncoder(nn.Module):
             self.after_decomposition_size = torsion + bond_angle + bond_length
 
         # Init Model Blocks
-        self.input_decomposition = ConformationalInputDecomposition(protein_len=self.protein_len)
+        self.input_decomposition = ConformationalInputDecomposition(
+            protein_len = self.protein_len,
+            torsion_n = self.torsion_n,
+            bond_angle_n = self.bond_angle_n,
+            bond_length_n = self.bond_length_n,
+            main_chain_n = self.main_chain_n,
+            side_chain_n = self.side_chain_n,
+        )
         self.encoder = ConformationalMLPEncoderBlock(
             num_layers = self.encoder_layers,
             start_size = self.after_decomposition_size,
@@ -610,6 +642,11 @@ class ConformationalMLPAutoEncoder(nn.Module):
             normalize   = self.normalize,
             in_size     = self.after_decomposition_size,
             output_size = self.input_size,
+            torsion_n = self.torsion_n,
+            bond_angle_n = self.bond_angle_n,
+            bond_length_n = self.bond_length_n,
+            main_chain_n = self.main_chain_n,
+            side_chain_n = self.side_chain_n,
         )
 
     def forward(self, x: torch.Tensor):
@@ -632,18 +669,36 @@ class ConformationalMLPAutoEncoder(nn.Module):
 if __name__ == "__main__":
     #### This is for testing the models functionality purposes
     # Import
-    from model_functions import train
+    from model_functions import train as mse_train
 
     # Create dummy input values
-    x = torch.randint(-180, 180, size=(10000, 8))
-    l = torch.rand(size=(10000, 120))
+    torsion = torch.randint(-180, 180, size=(10000, 8))
+    bond_angle = torch.randint(-180, 180, size=(10000, 8))
+    bond_length = torch.rand(size=(10000, 8))
+    l = torch.rand(size=(10000, 104))
     # concat the pseudo-angles and pseudo-extra info together
-    y = torch.cat((x, l), dim=-1)
-    dataload = torch.utils.data.DataLoader(y, batch_size=1000)
+    input_vector = torch.cat((torsion, bond_angle), dim=-1)
+    input_vector = torch.cat((input_vector, bond_length), dim=-1)
+    input_vector = torch.cat((input_vector, l), dim=-1)
+    dataload = torch.utils.data.DataLoader(input_vector, batch_size=1000)
 
     # init model
     model = ConformationalMLPAutoEncoder(
-        8, 128, 128, True, 3, 3, 3, True
+        protein_len = 8,
+        output_size = 128,
+        input_size = 128,
+        normalize = True,
+        decoder_layers = 3,
+        encoder_layers = 3,
+        latent_space_dim = 3,
+        non_dof_info = True,
+        # new stuff
+        torsion_n = 8,
+        bond_angle_n = 8,
+        bond_length_n = 8,
+        main_chain_n = 0,
+        side_chain_n = 0,
+        extra_info_n = 104
     )
 
     # init general Adam optimizer
@@ -651,7 +706,7 @@ if __name__ == "__main__":
 
     # Run Model
     print("***MODEL TRAINING IS STARTING***")
-    final_loss = train(
+    final_loss = mse_train(
         model = model,
         dataset = dataload,
         epochs = 1000,
