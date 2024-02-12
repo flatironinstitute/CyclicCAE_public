@@ -20,7 +20,7 @@ import torch.nn as nn
 #                                                Classes
 ##################################################################################################################
 
-class EncoderLayer(nn.Module):
+class ConformationalMLPEncoderLayer(nn.Module):
     def __init__(
         self,
         input_size: int = 128,
@@ -36,7 +36,7 @@ class EncoderLayer(nn.Module):
             output_size: int
                 The size of the vector at the end of this layer
         """
-        super(EncoderLayer, self).__init__()
+        super().__init__()
         # Save inputs
         self.input_size = input_size
         self.output_size = output_size
@@ -61,7 +61,7 @@ class EncoderLayer(nn.Module):
         """
         return self.gelu(self.linear(self.norm(x)))
 
-class Encoder(nn.Module):
+class ConformationalMLPEncoderBlock(nn.Module):
     def __init__(
         self,
         num_layers: int = 3,
@@ -83,7 +83,7 @@ class Encoder(nn.Module):
                 The ending last dimension size of the output vector going
                 out of the block
         """
-        super(Encoder, self).__init__()
+        super().__init__()
         # Save input parameters
         self.num_layers = num_layers
         self.start_size = start_size
@@ -110,7 +110,7 @@ class Encoder(nn.Module):
         # Make list of encoder layers that make up the encoder block
         self.encoder_layers = nn.ModuleList(
             [
-                EncoderLayer(
+                ConformationalMLPEncoderLayer(
                     input_size = self.layer_size[l][0],
                     output_size = self.layer_size[l][1],
                 ) for l in range(1,self.num_layers+1)
@@ -131,7 +131,7 @@ class Encoder(nn.Module):
         return x
 
 
-class DecoderLayer(nn.Module):
+class ConformationalMLPDecoderLayer(nn.Module):
     def __init__(
         self,
         input_size: int = 128,
@@ -147,7 +147,7 @@ class DecoderLayer(nn.Module):
             output_size: int
                 The size of the vector at the end of this layer
         """
-        super(DecoderLayer, self).__init__()
+        super().__init__()
         # Save inputs
         self.input_size = input_size
         self.output_size = output_size
@@ -172,7 +172,7 @@ class DecoderLayer(nn.Module):
         """
         return self.gelu(self.linear(self.norm(x)))
 
-class Decoder(nn.Module):
+class ConformationalMLPDecoderBlock(nn.Module):
     def __init__(
         self,
         num_layers: int = 3,
@@ -194,7 +194,7 @@ class Decoder(nn.Module):
                 The ending last dimension size of the output vector going
                 out of the block
         """
-        super(Decoder, self).__init__()
+        super().__init__()
         # Save input parameters
         self.num_layers = num_layers
         self.start_size = start_size
@@ -221,7 +221,7 @@ class Decoder(nn.Module):
         # Make list of encoder layers that make up the encoder block
         self.decoder_layers = nn.ModuleList(
             [
-                DecoderLayer(
+                ConformationalMLPDecoderLayer(
                     input_size = self.layer_size[l][0],
                     output_size = self.layer_size[l][1],
                 ) for l in range(self.num_layers, 0, -1)
@@ -241,7 +241,7 @@ class Decoder(nn.Module):
             x = layer(x)
         return x
 
-class LatentSpace(nn.Module):
+class ConformationalLatentSpace(nn.Module):
     def __init__(
         self,
         latent_space_dim: int = 3,
@@ -253,7 +253,7 @@ class LatentSpace(nn.Module):
             latent_space_dim: int
                 What dimension the latent space will be in
         """
-        super(LatentSpace, self).__init__()
+        super().__init__()
         # save input variables
         self.latent_space_dim = latent_space_dim
 
@@ -274,13 +274,19 @@ class LatentSpace(nn.Module):
         return self.gelu(self.latent(x))
 
 
-class OutputBlock(nn.Module):
+class ConformationalOutputBlock(nn.Module):
     def __init__(
         self,
         protein_len: int,
         normalize: bool = True,
         in_size: int = 128,
         output_size: int = 512,
+        torsion_n: int = 0,
+        bond_angle_n: int = 0,
+        bond_length_n: int = 0,
+        main_chain_n: int = 0,
+        side_chain_n: int = 0,
+        extra_info_n: int = 0,
         ):
         """ Output Block with normalization and Conversion to Angle
 
@@ -299,17 +305,41 @@ class OutputBlock(nn.Module):
             output_size: int
                 Final output of the model size. Should be the same size as the
                 input.
+
+            torsion_n: int
+                Strictly specify the number of torsion angles present within the dataset
+
+            bond_angle_n: int
+                Strictly specify the number of bond angles present within the dataset
+
+            bond_length_n: int
+                Strictly specify the number of bond lengths present within the dataset
+
+            main_chain_n: int
+                Number of main chain atoms for each torsion, bond_angle, and bond_length
+
+            side_chain_n: int
+                Number of side chain atoms for each torsion, bond_angle, and bond_length
+
+            extra_info_n: int
+                Number of extra non-default information
         """
-        super(OutputBlock, self).__init__()
+        super().__init__()
         # store values
-        self.protein_len = protein_len
-        self.normalize = normalize
+        self.protein_len   = protein_len
+        self.normalize     = normalize
+        self.torsion_n     = torsion_n
+        self.bond_angle_n  = bond_angle_n
+        self.bond_length_n = bond_length_n
+        self.main_chain_n  = main_chain_n
+        self.side_chain_n  = side_chain_n
+        self.extra_info_n  = extra_info_n
 
         # Final linear layer
         self.output_linear = nn.Linear(in_size, output_size)
 
-        # batch normalization
-        self.norm = nn.BatchNorm1d(self.protein_len*2)
+        # batch normalization by keeping in (-1, 1) range
+        self.tanh_norm = nn.Hardtanh(min_val=-1.0, max_val=1.0)
 
     def forward(self, x: torch.Tensor):
         """ Forward for OutputBlock which normalizes and outputs
@@ -319,25 +349,46 @@ class OutputBlock(nn.Module):
             x: torch.Tensor
                 Reconstructed x vector post-decomposition (B, D)
         """
-        # grab out non-dof if necessary
-        if x.size(1) > self.protein_len*2:
-            non_dof_x = x[:, self.protein_len*2:]
+        # grab appropriate sections if main/side chain included
+        if self.main_chain_n != 0:
+            torsion_num = 2*(self.torsion_n*self.main_chain_n) + 2*(self.torsion_n*self.side_chain_n)
+            bond_angle_num = 2*(self.bond_angle_n*self.main_chain_n) + 2*(self.bond_angle_n*self.side_chain_n)
+            bond_length_num = 2*(self.bond_length_n*self.main_chain_n) + 2*(self.bond_length_n*self.side_chain_n)
+            torsion = x[:, :torsion_num]
+            bond_angle = x[:, torsion_num : torsion_num + bond_angle_num]
+            bond_length = x[:, torsion_num + bond_angle_num : torsion_num + bond_angle_num + bond_length_num]
+            extra = x[:, torsion_num + bond_angle_num + bond_length_num:]
+        # if not included then don't include
         else:
-            non_dof_x = None
+            torsion = x[:, :self.torsion_n*2]
+            bond_angle = x[:, self.torsion_n*2 : self.torsion_n*2 + self.bond_angle_n*2]
+            bond_length = x[:, self.torsion_n*2 + self.bond_angle_n*2 : self.torsion_n*2 + self.bond_angle_n*2 + self.bond_length_n*2]
+            extra = x[:, self.torsion_n*2 + self.bond_angle_n*2 + self.bond_length_n*2:]
 
-        # normalize the sin/cos vector output
-        sincos_norm = self.norm(x[:, :self.protein_len*2])
+        # normalize to keep the values on the unit circle vector output
+        torsion_norm = self.tanh_norm(torsion)
+        bond_angle_norm = self.tanh_norm(bond_angle)
 
         # perform arctan2 
-        recomputed_dofs = torch.atan2(sincos_norm[:, :self.protein_len], sincos_norm[:, self.protein_len:])
+        recomputed_torsion = torch.atan2(torsion_norm[:, ::2], torsion_norm[:, 1::2])
+        recomputed_bond_angle = torch.atan2(bond_angle_norm[:, ::2], bond_angle_norm[:, 1::2])
 
         # restack computed dofs with non_dof_x if necessary
-        return torch.cat((recomputed_dofs, non_dof_x), dim=-1) if non_dof_x != None else recomputed_dofs
+        out = torch.cat((recomputed_torsion, recomputed_bond_angle), dim=-1)
+        out = torch.cat((out, bond_length), dim=-1)
+        out = torch.cat((out, extra), dim=-1)
+        return out
 
-class InputDecomposition(nn.Module):
+class ConformationalInputDecomposition(nn.Module):
     def __init__(
         self,
         protein_len: int,
+        torsion_n: int = 0,
+        bond_angle_n: int = 0,
+        bond_length_n: int = 0,
+        main_chain_n: int = 0,
+        side_chain_n: int = 0,
+        extra_info_n: int = 0,
         ):
         """Decomposes DoF input portion into Sin and Cos
 
@@ -346,10 +397,35 @@ class InputDecomposition(nn.Module):
             protein_len: int
                 The length of the protein, so we know where to cutoff the
                 DoF decomposition process.
+
+            torsion_n: int
+                Strictly specify the number of torsion angles present within the dataset
+
+            bond_angle_n: int
+                Strictly specify the number of bond angles present within the dataset
+
+            bond_length_n: int
+                Strictly specify the number of bond lengths present within the dataset
+
+            main_chain_n: int
+                Number of main chain atoms for each torsion, bond_angle, and bond_length
+
+            side_chain_n: int
+                Number of side chain atoms for each torsion, bond_angle, and bond_length
+
+            extra_info_n: int
+                Number of extra non-default information
         """
-        super(InputDecomposition, self).__init__()
+        super().__init__()
         # save passed variables
-        self.protein_len = protein_len
+        self.protein_len   = protein_len
+        self.torsion_n     = torsion_n
+        self.bond_angle_n  = bond_angle_n
+        self.bond_length_n = bond_length_n
+        self.main_chain_n  = main_chain_n
+        self.side_chain_n  = side_chain_n
+        self.extra_info_n  = extra_info_n
+        
 
     def forward(self, x: torch.Tensor):
         """ Forward of Input Decompose
@@ -363,27 +439,108 @@ class InputDecomposition(nn.Module):
             torch.Tensor
                 Decomposed Dofs in Sin/Cos and all extra information
         """
-        # grab out non-dof if necessary
-        if x.size(1) > self.protein_len:
-            non_dof_x = x[:, self.protein_len:]
+        # running total for the amount to index down
+        index_in = 0
+        # grab out torsion
+        if self.torsion_n != 0:
+            # check to make sure that main chain or side chain isn't
+            # specified. Currently if main is set then side chain will be set too.
+            if self.main_chain_n == 0:
+                # pul out the specific numbers from the passed params
+                torsion = x[:, :self.torsion_n]
+            else:
+                # Calculate the number of torsion angles based upon the addition of the main and side chains
+                torsion_plus_n = self.torsion_n*self.main_chain_n + self.torsion_n*self.side_chain_n 
+                # pull out the torsion angles
+                torsion = x[:, :torsion_plus_n]
         else:
-            non_dof_x = None
+            torsion = 0
 
-        # decompose dofs into both sin and cos
-        sin_x = torch.sin(torch.deg2rad(x[:, :self.protein_len]))
-        cos_x = torch.cos(torch.deg2rad(x[:, :self.protein_len]))
+        # update index_in
+        index_in += torsion.size(-1) if type(torsion) != int else torsion
+
+        # grab out bond_angle
+        if self.bond_angle_n != 0:
+            # check to make sure that main chain or side chain isn't
+            # specified. Currently if main is set then side chain will be set too.
+            if self.main_chain_n == 0:
+                # pull out the specific numbers from the passed params
+                bond_angle = x[:, index_in : index_in + self.bond_angle_n]
+            else:
+                # now calculate the number of bond angles based upon the addition of main and side chains
+                bond_angle_plus_n = self.bond_angle_n*self.main_chain_n + self.bond_angle_n*self.side_chain_n
+                # pull out these angles
+                bond_angle = x[:, index_in : index_in + bond_angle_plus_n]
+        else:
+            bond_angle = 0
+
+        # update index_in
+        index_in += bond_angle.size(-1) if type(bond_angle) != int else bond_angle
+
+        # grab out bond length
+        if self.bond_length_n != 0:
+            if self.main_chain_n == 0:
+                # pull out number of passed params
+                bond_length = x[:, index_in : index_in + self.bond_length_n]
+            else:
+                bond_length_plus_n = self.bond_length_n*self.main_chain_n + self.bond_length_n*self.side_chain_n
+                # pull out the bond lengths specifically
+                bond_length = x[:, index_in : index_in + bond_length_plus_n]
+        else:
+            bond_length = 0
+
+        # update index_in
+        index_in += bond_length.size(-1) if type(bond_length) != int else bond_length
+
+        # now pull out extra information if available
+        if x.size(-1) > index_in:
+            extra_scalar_info = x[:, index_in:]
+            assert extra_scalar_info.size(-1) == self.extra_info_n, "Extra info sizes do not match"
+        else:
+            extra_scalar_info = 0
+
+        # decompose pulled out angles into both sin and cos
+        if type(torsion) != int:
+            torsion_decompose = self.decompose_angle_(torsion)
+        if type(bond_angle) != int:
+            bond_angle_decompose = self.decompose_angle_(bond_angle)
+
+        # Some function that does something to bond_length. Not decided yet
+        # bond_length_blah = self.bond_length_adjust(bond_length)
+
+        # combine all information
+        out = torch.cat((torsion_decompose, bond_angle_decompose), dim=-1)
+        out = torch.cat((out, bond_length), dim=-1)
+        if type(extra_scalar_info) != int:
+            out = torch.cat((out, extra_scalar_info), dim=-1)
+
+        return out
+
+    def decompose_angle_(self, x: torch.Tensor, idx: torch.Tensor = None):
+        """Break the angle up into sin & cos components"""
+        # if idx is provided pull out only angle idx components
+        # Assumption is made that the input is 2d (B, N)
+        if idx != None:
+            # Grab out specific angle information
+            x = x[:, idx]
+
+        # decompose angle into both sin and cos
+        sin_x = torch.sin(torch.deg2rad(x))
+        cos_x = torch.cos(torch.deg2rad(x))
 
         # stack new decomposed vectors
         stacked_sincos_x = torch.cat((sin_x, cos_x), dim=-1)
 
-        # Now add back in the non dof information if necessary
-        return stacked_sincos_x if non_dof_x == None else torch.cat((stacked_sincos_x, non_dof_x), dim=-1)
+        return stacked_sincos_x
+
+
+
 
 ##################################################################################################################
 #                                               Architecture
 ##################################################################################################################
 
-class MLPAutoEncoder(nn.Module):
+class ConformationalMLPAutoEncoder(nn.Module):
     def __init__(
         self,
         protein_len: int,
@@ -394,6 +551,12 @@ class MLPAutoEncoder(nn.Module):
         encoder_layers: int,
         latent_space_dim: int,
         non_dof_info: bool = False,
+        torsion_n: int = 0,
+        bond_angle_n: int = 0,
+        bond_length_n: int = 0,
+        main_chain_n: int = 0,
+        side_chain_n: int = 0,
+        extra_info_n: int = 0,
         ):
         """MLP Base Auto-Encoder Model (Base Model Architecture)
 
@@ -425,6 +588,25 @@ class MLPAutoEncoder(nn.Module):
 
             non_dof_info: bool
                 True/False non-DoF information is passed with the input
+
+            torsion_n: int
+                Strictly specify the number of torsion angles present within the dataset
+
+            bond_angle_n: int
+                Strictly specify the number of bond angles present within the dataset
+
+            bond_length_n: int
+                Strictly specify the number of bond lengths present within the dataset
+
+            main_chain_n: int
+                Number of main chain atoms for each torsion, bond_angle, and bond_length
+
+            side_chain_n: int
+                Number of side chain atoms for each torsion, bond_angle, and bond_length
+
+            extra_info_n: int
+                Number of passed additional information after torsion, bond_angle, and bond
+                length.
         """
         super().__init__()
         # Save inputs
@@ -436,34 +618,65 @@ class MLPAutoEncoder(nn.Module):
         self.encoder_layers   = encoder_layers
         self.latent_space_dim = latent_space_dim
         self.non_dof_info     = non_dof_info
+        self.torsion_n        = torsion_n
+        self.bond_angle_n     = bond_angle_n
+        self.bond_length_n    = bond_length_n
+        self.main_chain_n     = main_chain_n
+        self.side_chain_n     = side_chain_n
+        self.extra_info_n     = extra_info_n
 
         # Generate Values
-        if non_dof_info:
-            self.extra_info = input_size - protein_len
-        else:
-            self.extra_info = 0
+        # if non_dof_info:
+        #     self.extra_info = input_size - protein_len
+        # else:
+        #     self.extra_info = 0
 
         # Size after decomposition
-        self.after_decomposition_size = self.protein_len*2 + self.extra_info
+        # self.after_decomposition_size = self.protein_len*2 + self.extra_info
+
+        # Calculate the size of the input vector
+        if self.main_chain_n == 0:
+            self.after_decomposition_size = self.torsion_n*2 + self.bond_angle_n*2 + self.bond_length_n + self.extra_info_n
+            print("After decomposition size:", self.after_decomposition_size)
+        else:
+            torsion = (self.torsion_n*self.main_chain_n + self.torsion_n*self.main_chain_n)*2
+            bond_angle = (self.bond_angle_n*self.main_chain_n + self.bond_angle_n*self.main_chain_n)*2
+            bond_length = self.bond_length_n*self.main_chain_n + self.bond_length_n*self.main_chain_n
+            self.after_decomposition_size = torsion + bond_angle + bond_length
+            print("After decomposition size:", self.after_decomposition_size)
 
         # Init Model Blocks
-        self.input_decomposition = InputDecomposition(protein_len=self.protein_len)
-        self.encoder = Encoder(
+        self.input_decomposition = ConformationalInputDecomposition(
+            protein_len = self.protein_len,
+            torsion_n = self.torsion_n,
+            bond_angle_n = self.bond_angle_n,
+            bond_length_n = self.bond_length_n,
+            main_chain_n = self.main_chain_n,
+            side_chain_n = self.side_chain_n,
+            extra_info_n = self.extra_info_n,
+        )
+        self.encoder = ConformationalMLPEncoderBlock(
             num_layers = self.encoder_layers,
             start_size = self.after_decomposition_size,
             end_size   = self.latent_space_dim,
         )
-        self.latent = LatentSpace(latent_space_dim=self.latent_space_dim)
-        self.decoder = Decoder(
+        self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim)
+        self.decoder = ConformationalMLPDecoderBlock(
             num_layers = self.decoder_layers,
             start_size = self.latent_space_dim,
             end_size   = self.after_decomposition_size,
         )
-        self.output = OutputBlock(
+        self.output = ConformationalOutputBlock(
             protein_len = self.protein_len,
             normalize   = self.normalize,
             in_size     = self.after_decomposition_size,
             output_size = self.input_size,
+            torsion_n = self.torsion_n,
+            bond_angle_n = self.bond_angle_n,
+            bond_length_n = self.bond_length_n,
+            main_chain_n = self.main_chain_n,
+            side_chain_n = self.side_chain_n,
+            extra_info_n = self.extra_info_n,
         )
 
     def forward(self, x: torch.Tensor):
@@ -486,26 +699,44 @@ class MLPAutoEncoder(nn.Module):
 if __name__ == "__main__":
     #### This is for testing the models functionality purposes
     # Import
-    from model_functions import train
+    from model_functions import train as mse_train
 
     # Create dummy input values
-    x = torch.randint(-180, 180, size=(10000, 8))
-    l = torch.rand(size=(10000, 120))
+    torsion = torch.randint(-180, 180, size=(10000, 8))
+    bond_angle = torch.randint(-180, 180, size=(10000, 8))
+    bond_length = torch.rand(size=(10000, 8))
+    l = torch.rand(size=(10000, 104))
     # concat the pseudo-angles and pseudo-extra info together
-    y = torch.cat((x, l), dim=-1)
-    dataload = torch.utils.data.DataLoader(y, batch_size=1000)
+    input_vector = torch.cat((torsion, bond_angle), dim=-1)
+    input_vector = torch.cat((input_vector, bond_length), dim=-1)
+    input_vector = torch.cat((input_vector, l), dim=-1)
+    dataload = torch.utils.data.DataLoader(input_vector, batch_size=1000)
 
     # init model
-    model = MLPAutoEncoder(
-        8, 128, 128, True, 3, 3, 3, True
+    model = ConformationalMLPAutoEncoder(
+        protein_len = 8,
+        output_size = 128,
+        input_size = 128,
+        normalize = True,
+        decoder_layers = 3,
+        encoder_layers = 3,
+        latent_space_dim = 3,
+        non_dof_info = True,
+        # new stuff
+        torsion_n = 8,
+        bond_angle_n = 8,
+        bond_length_n = 8,
+        main_chain_n = 0,
+        side_chain_n = 0,
+        extra_info_n = 104
     )
 
     # init general Adam optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
 
     # Run Model
     print("***MODEL TRAINING IS STARTING***")
-    final_loss = train(
+    final_loss = mse_train(
         model = model,
         dataset = dataload,
         epochs = 1000,
