@@ -18,9 +18,11 @@ import torch
 #                                                Functions
 ##################################################################################################################
 
-def MSE_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
-    """L2 Loss function"""
-    return torch.mean(torch.pow(y - y_hat, 2))
+def MSE_angle_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
+    """Angle Loss function taken from here:
+    https://discuss.pytorch.org/t/custom-loss-function-for-discontinuous-angle-calculation/58579/13
+    """
+    return torch.mean(1. - torch.cos(y - y_hat))
 
 def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor):
     """Custom (B) loss function to enforce latent space RMSD distances to be comparable 
@@ -117,7 +119,7 @@ def train(
             out = model(x)
 
             # generate loss and append
-            loss = MSE_loss_term(out, x)
+            loss = MSE_angle_loss_term(out, x)
             loss_all.append(loss.item())
 
             # optimizer zero out grad
