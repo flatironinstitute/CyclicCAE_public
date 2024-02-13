@@ -265,13 +265,14 @@ class ConformationalLatentSpace(nn.Module):
 
     def forward(self, x: torch.Tensor):
         """ Forward of Latent Space Block
+        with a Skip Connnection for BackProp
 
         PARAMS
         ------
             x: torch.Tensor
                 Reduced input vector (B, latent_space_dim)
         """
-        return self.gelu(self.latent(x))
+        return self.gelu(self.latent(x)) + x
 
 
 class ConformationalOutputBlock(nn.Module):
@@ -742,4 +743,6 @@ if __name__ == "__main__":
         epochs = 1000,
         device = "cpu",
         optimizer = optimizer,
+        angle_n = 16,
+        linear_n = 128-16,
     )

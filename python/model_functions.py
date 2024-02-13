@@ -18,11 +18,15 @@ import torch
 #                                                Functions
 ##################################################################################################################
 
-def MSE_angle_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
+def angle_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
     """Angle Loss function taken from here:
     https://discuss.pytorch.org/t/custom-loss-function-for-discontinuous-angle-calculation/58579/13
     """
     return torch.mean(1. - torch.cos(y - y_hat))
+
+def linear_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
+    """General L2 Linear Loss"""
+    return torch.mean(torch.pow(y - y_hat, 2))
 
 def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor):
     """Custom (B) loss function to enforce latent space RMSD distances to be comparable 
@@ -67,12 +71,29 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
     loss = torch.sum( torch.pow( real_component - latent_component, 2 ) )
     return loss
 
+def loss_function(
+    y_hat_angle: torch.Tensor,
+    y_angle: torch.Tensor,
+    y_hat_linear: torch.Tensor,
+    y_linear: torch.Tensor,
+    ):
+    """Combination of Loss terms take the mean"""
+    angle_loss = angle_loss_term(y_hat_angle, y_angle)
+    linear_loss = linear_loss_term(y_hat_linear, y_linear)
+    # print(angle_loss)
+    # print(linear_loss)
+    return angle_loss + linear_loss
+
+    
+
 def train(
     model: torch.nn.Module,
     dataset: torch.utils.data.DataLoader,
     epochs: int,
     device: str,
     optimizer: torch.optim,
+    angle_n: int,
+    linear_n: int,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -118,8 +139,15 @@ def train(
             # run model
             out = model(x)
 
+            # args input for loss
+            args = {"y_hat_angle": out[:, :angle_n],
+                    "y_angle": x[:, :angle_n],
+                    "y_hat_linear": out[:, angle_n:],
+                    "y_linear": x[:, angle_n:],
+                    }
+
             # generate loss and append
-            loss = MSE_angle_loss_term(out, x)
+            loss = loss_function(**args)
             loss_all.append(loss.item())
 
             # optimizer zero out grad
