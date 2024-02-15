@@ -88,37 +88,37 @@ class DoFBinaryReader:
 
             while not_end:
 
+                # Consistently read in 8 bytes of data, since everything is float64
                 binary_data = f.read(8)
 
-                # # loop through data
-                # for i, data in enumerate(self.data_format):
-                #
-                #     # binary data extract size
-                #     binary_data = f.read(data[1])
-                #
-                # check if it is empty or not
-                if (not binary_data) or (tensor_sample == self.metadata_info["nstructs"]): #or (tensor_sample == 10000):
+                # check if the read in informatin is empty or not (conditinal end based upon tensor size as well.)
+                if (not binary_data) or (tensor_sample == self.metadata_info["nstructs"]):
+
+                    # print out infromation on what sample number the process is ending on
                     print(f"PROCESSING ENDS ON SAMPLE {tensor_sample+1}!!!!!!")
+
+                    # break the while loop
                     not_end = False
                     break
 
                 # unpack information
-                # self.data_tensor[tensor_sample, i] = struct.unpack(data[0], binary_data)[0]
                 self.data_tensor[tensor_sample, data_idx] = struct.unpack('d', binary_data)[0]
-                # increment
+
+                # increment data value idx
                 data_idx += 1
 
+                # if the correct number of data values to fill the second D dimension is filled then we will call that sample complete
                 if data_idx == self.num_values:
+
                     # Visual Update on binary read in process
                     if tensor_sample % 10000 == 0:
                         print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info["nstructs"]} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
-                    # increment and reset
+
+                    # increment sample idx and reset data idx
                     tensor_sample += 1
                     data_idx = 0
 
-                # # Visual Update on binary read in process
-                # if tensor_sample % 10000 == 0:
-                #     print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info["nstructs"]} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
+            # This is to visualize and make sure that the data is read in completely. More for testing purposes and will be deleted
             print('Ending Portion:', f.read())
 
 
@@ -128,9 +128,16 @@ class DoFBinaryReader:
 
     @property
     def extract_tensor(self):
+        """return and/or save the tensor to disk for future use"""
+        
+        # If the tensor is marked for saving then go through the process of saving
         if self.save_dataset:
+            
+            # Generate the output file name
             out_file_pre = self.binary_file.split("/")[-1].split(".")[0]
             out_file = out_file_pre + "torch_tensor.pt"
+
+            # save to a tensor dict
             torch.save(
                 {
                     "x": self.data_tensor,
