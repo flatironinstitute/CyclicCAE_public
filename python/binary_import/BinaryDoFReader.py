@@ -51,21 +51,23 @@ class DoFBinaryReader:
                           "bond_angle_main_bool", "bond_angle_side_bool", "bond_length_main_bool", 
                           "bond_length_side_bool", "jump_bool", "energy_bool", "torsion_main_n", 
                           "torsion_side_n", "bond_angle_main_n", "bond_angle_side_n", "bond_length_main_n",
-                          "bond_length_side_n", "jump_n", "energy_n", "bytes_to_skip"] 
+                          "bond_length_side_n", "jump_n", "energy_n", "nstructs", "bytes_to_skip"] 
 
         # Format to use for unpacking the binary information
-        self.format = [("Q", 8), ("Q", 8), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8)]
+        self.format = [("Q", 8), ("Q", 8), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8)]
 
         # fill in metadata_info
         print("***EXTRATING HEADER METADATA***")
-        self.skip_chunk = self.read_header
+        self.skip_chunk, self.data_per_sample = self.read_header
 
         # build extract information data format
         self.data_format, self.num_values = self.binary_data_format
 
+        # Bug check
+        assert self.data_per_sample == self.num_values, "The data per sample doesn't match the returned amount"
+
         # create zeros tensor torch 
-        self.sample_n = 49700 # this will need to be changed once the information is provided in the header
-        self.data_tensor = torch.zeros(size=(self.sample_n, self.num_values))
+        self.data_tensor = torch.zeros(size=(self.metadata_info["nstructs"], self.num_values))
 
         # build format given header info for grabbing data
         print("***EXTRACTING BINARY RAW DoF VALUES***")
@@ -76,6 +78,7 @@ class DoFBinaryReader:
 
             # track sample idx
             tensor_sample = 0
+            data_idx = 0
 
             # true for not end
             not_end = True
@@ -85,25 +88,38 @@ class DoFBinaryReader:
 
             while not_end:
 
-                # loop through data
-                for i, data in enumerate(self.data_format):
+                binary_data = f.read(8)
 
-                    # binary data extract size
-                    binary_data = f.read(data[1])
+                # # loop through data
+                # for i, data in enumerate(self.data_format):
+                #
+                #     # binary data extract size
+                #     binary_data = f.read(data[1])
+                #
+                # check if it is empty or not
+                if (not binary_data) or (tensor_sample == self.metadata_info["nstructs"]): #or (tensor_sample == 10000):
+                    print(f"PROCESSING ENDS ON SAMPLE {tensor_sample+1}!!!!!!")
+                    not_end = False
+                    break
 
-                    # check if it is empty or not
-                    if (not binary_data): #or (tensor_sample == 10000):
-                        print(f"PROCESSING ENDS ON SAMPLE {tensor_sample+1}!!!!!!")
-                        not_end = False
-                        break
+                # unpack information
+                # self.data_tensor[tensor_sample, i] = struct.unpack(data[0], binary_data)[0]
+                self.data_tensor[tensor_sample, data_idx] = struct.unpack('d', binary_data)[0]
+                # increment
+                data_idx += 1
 
-                    # unpack information
-                    self.data_tensor[tensor_sample, i] = struct.unpack(data[0], binary_data)[0]
-                tensor_sample += 1
+                if data_idx == self.num_values:
+                    # Visual Update on binary read in process
+                    if tensor_sample % 10000 == 0:
+                        print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info["nstructs"]} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
+                    # increment and reset
+                    tensor_sample += 1
+                    data_idx = 0
 
-                # Visual Update on binary read in process
-                if tensor_sample % 10000 == 0:
-                    print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.sample_n} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
+                # # Visual Update on binary read in process
+                # if tensor_sample % 10000 == 0:
+                #     print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info["nstructs"]} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
+            print('Ending Portion:', f.read())
 
 
     #################################################################################################################
@@ -132,9 +148,15 @@ class DoFBinaryReader:
             total_bytes_to_skip: int
                 The total number of bytes that we can read from the file
                 to skip the header informatino
+
+            avail_vals: int
+                Then number of values that needs to be captured per sample
         """
         # init the byte holding amount
         total_bytes_to_skip = 0
+
+        # init the amount of values in total that should are available
+        avail_vals = 0
 
         # fill in metadata_info
         with open(self.binary_file, 'rb') as bf:
@@ -150,12 +172,14 @@ class DoFBinaryReader:
 
                 # total bytes to skip
                 total_bytes_to_skip += entry[1]
+                if self.param_set[i].endswith("_n"):
+                    avail_vals += self.metadata_info[self.param_set[i]]
 
                 # Also, add the extra information from last info
                 if self.param_set[i] == "bytes_to_skip":
                     total_bytes_to_skip += self.metadata_info[self.param_set[i]]
 
-        return total_bytes_to_skip
+        return total_bytes_to_skip, avail_vals
 
     @property
     def binary_data_format(self):
