@@ -92,10 +92,10 @@ class DoFBinaryReader:
                 binary_data = f.read(8)
 
                 # check if the read in informatin is empty or not (conditinal end based upon tensor size as well.)
-                if (not binary_data) or (tensor_sample == self.metadata_info["nstructs"]):
+                if (not binary_data): #or (tensor_sample == self.metadata_info["nstructs"]):
 
                     # print out infromation on what sample number the process is ending on
-                    print(f"PROCESSING ENDS ON SAMPLE {tensor_sample+1}!!!!!!")
+                    print(f"PROCESSING ENDS ON SAMPLE {tensor_sample}!!!!!! TOTAL TIME: {round(time.time() - dt0, 0)}s")
 
                     # break the while loop
                     not_end = False
