@@ -132,6 +132,9 @@ class DoFBinaryReader:
         
         # If the tensor is marked for saving then go through the process of saving
         if self.save_dataset:
+
+            # extract out params that are useful for the model
+            n_param_dict = {k:v for k,v in self.metadata_info.items() if k.endswith("_n")}
             
             # Generate the output file name
             out_file_pre = self.binary_file.split("/")[-1].split(".")[0]
@@ -141,6 +144,7 @@ class DoFBinaryReader:
             torch.save(
                 {
                     "x": self.data_tensor,
+                    "params": n_param_dict,
                 },
                 out_file,
             )
