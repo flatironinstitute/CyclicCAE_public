@@ -67,7 +67,7 @@ class DoFBinaryReader:
         assert self.data_per_sample == self.num_values, "The data per sample doesn't match the returned amount"
 
         # create zeros tensor torch 
-        self.data_tensor = torch.zeros(size=(self.metadata_info["nstructs"], self.num_values))
+        self.data_tensor = torch.zeros(size=(self.metadata_info["nstructs"], self.num_values), dtype=torch.float32)
 
         # build format given header info for grabbing data
         print("***EXTRACTING BINARY RAW DoF VALUES***")
@@ -91,8 +91,8 @@ class DoFBinaryReader:
                 # Consistently read in 8 bytes of data, since everything is float64
                 binary_data = f.read(8)
 
-                # check if the read in informatin is empty or not (conditinal end based upon tensor size as well.)
-                if (not binary_data): #or (tensor_sample == self.metadata_info["nstructs"]):
+                # check if the read in informatin is empty 
+                if (not binary_data): 
 
                     # print out infromation on what sample number the process is ending on
                     print(f"PROCESSING ENDS ON SAMPLE {tensor_sample}!!!!!! TOTAL TIME: {round(time.time() - dt0, 0)}s")
@@ -119,7 +119,7 @@ class DoFBinaryReader:
                     data_idx = 0
 
             # This is to visualize and make sure that the data is read in completely. More for testing purposes and will be deleted
-            print('Ending Portion:', f.read())
+            # print('Ending Portion:', f.read())
 
 
     #################################################################################################################
