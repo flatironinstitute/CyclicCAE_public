@@ -17,6 +17,7 @@
 import struct
 from collections import defaultdict
 import time
+import re
 
 # import torch
 import torch
@@ -74,7 +75,11 @@ class DoFBinaryReader:
         with open(self.binary_file, 'rb') as f:
             
             # Skip the amount we need to skip
-            f.read(self.skip_chunk)
+            header = f.read(self.skip_chunk)
+
+            # grab out the size of the protein
+            protein_seq = re.search(r"SEQUENCE:.*?([A-Za-z]+)\n", header.decode('latin-1'))
+            self.protein_len = len(protein_seq.group(1))
 
             # track sample idx
             tensor_sample = 0
@@ -135,6 +140,10 @@ class DoFBinaryReader:
 
             # extract out params that are useful for the model
             n_param_dict = {k:v for k,v in self.metadata_info.items() if k.endswith("_n")}
+            n_param_dict["output_size"] = self.num_values
+            n_param_dict["input_size"]  = self.num_values
+            n_param_dict["normalize"]   = True
+            n_param_dict["protein_len"] = self.protein_len
             
             # Generate the output file name
             out_file_pre = self.binary_file.split("/")[-1].split(".")[0]
