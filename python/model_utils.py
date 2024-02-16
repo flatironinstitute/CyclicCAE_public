@@ -11,6 +11,10 @@
 # base python packages
 import os, sys
 from collections import defaultdict
+import pdb
+
+# local import
+from model_functions import sklearn_scale
 
 # ml imports
 import torch
@@ -45,10 +49,14 @@ class ConformationalMLPEncoderLayer(nn.Module):
         self.linear = nn.Linear(self.input_size, self.output_size)
 
         # normalize the inputs coming in to the layer (could possibly not be needed)
-        self.norm = nn.BatchNorm1d(self.input_size)
+        # self.norm = nn.BatchNorm1d(self.input_size)
+
+        # dropout 
+        self.drop = nn.Dropout(0.2)
 
         # activation funciton
-        self.gelu = nn.GELU()
+        # self.gelu = nn.GELU()
+        self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor):
         """ forward pass of Encoderlayer
@@ -59,7 +67,17 @@ class ConformationalMLPEncoderLayer(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        return self.gelu(self.linear(self.norm(x)))
+        # return self.drop(self.gelu(self.linear(self.norm(x))))
+        x = self.linear(x)
+        print('w', self.linear.weight)
+        print('g', self.linear.weight.grad)
+        print('b', self.linear.bias)
+        x = self.relu(x)
+        x = self.drop(x)
+        print(x)
+        if torch.any(x.isnan()): pdb.set_trace()
+        return x
+        # return self.drop(self.gelu(self.linear(x)))
 
 class ConformationalMLPEncoderBlock(nn.Module):
     def __init__(
@@ -128,6 +146,7 @@ class ConformationalMLPEncoderBlock(nn.Module):
         """
         for layer in self.encoder_layers:
             x = layer(x)
+            if torch.any(x.isnan()): pdb.set_trace()
         return x
 
 
@@ -156,7 +175,10 @@ class ConformationalMLPDecoderLayer(nn.Module):
         self.linear = nn.Linear(self.input_size, self.output_size)
 
         # normalize before input (this could be taken out possibly)
-        self.norm = nn.BatchNorm1d(self.input_size)
+        # self.norm = nn.BatchNorm1d(self.input_size)
+
+        #  Dropout layer
+        self.drop = nn.Dropout(0.2)
 
         # activation funciton
         self.gelu = nn.GELU()
@@ -170,7 +192,9 @@ class ConformationalMLPDecoderLayer(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        return self.gelu(self.linear(self.norm(x)))
+        return self.drop(self.gelu(self.linear(x)))
+        # return self.drop(self.gelu(self.linear(self.norm(x))))
+        # return self.gelu(self.linear(self.norm(x)))
 
 class ConformationalMLPDecoderBlock(nn.Module):
     def __init__(
@@ -239,6 +263,7 @@ class ConformationalMLPDecoderBlock(nn.Module):
         """
         for layer in self.decoder_layers:
             x = layer(x)
+            if torch.any(x.isnan()): pdb.set_trace()
         return x
 
 class ConformationalLatentSpace(nn.Module):
@@ -272,7 +297,7 @@ class ConformationalLatentSpace(nn.Module):
             x: torch.Tensor
                 Reduced input vector (B, latent_space_dim)
         """
-        return self.gelu(self.latent(x)) + x
+        return torch.add(self.gelu(self.latent(x)), x)
 
 
 class ConformationalOutputBlock(nn.Module):
@@ -516,6 +541,8 @@ class ConformationalInputDecomposition(nn.Module):
         if self.energy_n != 0:
             out = torch.cat((out, energy), dim=-1)
 
+        print(out.max())
+        print(out.min())
         return out
 
     def decompose_angle_(self, x: torch.Tensor, idx: torch.Tensor = None):
@@ -681,12 +708,16 @@ class ConformationalMLPAutoEncoder(nn.Module):
         """Train and Test Forward Method"""
         # decompose
         x = self.input_decomposition(x)
+        if torch.any(x.isnan()): pdb.set_trace()
         # encode the information into latent
         x = self.encoder(x)
+        if torch.any(x.isnan()): pdb.set_trace()
         # pass the latent to itself D -> D
         x = self.latent(x)
+        if torch.any(x.isnan()): pdb.set_trace()
         # Decode the information back to post-decomposition input size
         x = self.decoder(x)
+        if torch.any(x.isnan()): pdb.set_trace()
         # Recompute original input information
         return self.output(x)
 

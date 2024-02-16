@@ -14,10 +14,66 @@ import os
 
 # ml imports
 import torch
+import torch.nn.init as init
 
 ##################################################################################################################
 #                                                Functions
 ##################################################################################################################
+
+def scale(x: torch.Tensor, params: dict):
+    """Scale all input values"""
+    # starting spot in tensor
+    linear_terms_start = params["torsion_main_n"] + params["torsion_side_n"] + params["bond_angle_main_n"] + params["bond_angle_side_n"]
+
+    # calculate bond length size
+    bond_length_size = params["bond_length_main_n"] + params["bond_length_side_n"]
+
+    # grab out each section
+    # Scale Bond Length
+    print("BOND LENGTH")
+    x[:, linear_terms_start: linear_terms_start + bond_length_size ] = normalize_vals(
+        x[:, linear_terms_start: linear_terms_start + bond_length_size ] 
+    )
+
+    # Scale Jumps if any
+    if params["jump_n"] != 0:
+        jump_end = linear_terms_start + bond_length_size + params["jump_n"]
+        jump_start = linear_terms_start + bond_length_size
+        x[:, jump_start : jump_end ] = normalize_vals(
+            x[:, jump_start : jump_end ]
+        )
+
+    # Scale Energy if any
+    if params["energy_n"] != 0:
+        energy_end = linear_terms_start + bond_length_size + params["jump_n"] + params["energy_n"]
+        energy_start = linear_terms_start + bond_length_size + params["jump_n"]
+        print("ENERGY")
+        x[:, energy_start : energy_end ] = normalize_vals(
+            x[:, energy_start : energy_end ]
+        )
+
+    return x
+
+
+def normalize_vals(x: torch.Tensor, norm_min:float = -1., norm_max:float = 1.):
+    """Set terms between -1 and 1"""
+    min_val = x.min()
+    max_val = x.max()
+    norm_feature = (x - min_val) / (max_val - min_val) * (norm_max - norm_min) + norm_min
+    print(norm_feature)
+    return norm_feature
+    
+
+def sklearn_scale(x: torch.Tensor):
+    """pytorch implementation of sklearn scaler
+
+    Found here: https://discuss.pytorch.org/t/pytorch-tensor-scaling/38576"""
+    m = x.mean(0, keepdim=True)
+    s = x.std(0, unbiased=False, keepdim=True)
+    x -= m
+    x /= s
+    return x
+
 
 def angle_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
     """Angle Loss function taken from here:
@@ -81,8 +137,6 @@ def loss_function(
     """Combination of Loss terms take the mean"""
     angle_loss = angle_loss_term(y_hat_angle, y_angle)
     linear_loss = linear_loss_term(y_hat_linear, y_linear)
-    # print(angle_loss)
-    # print(linear_loss)
     return angle_loss + linear_loss
 
     
@@ -159,11 +213,28 @@ def train(
     model = model.to(device)
     model.train()
 
+    # register the hook
+    # model.encoder.register_forward_hook(print_grad)
+    # model.register_full_backward_hook(print_grad)
+
+    # init model weights
+    # model.apply(xavier_init)
+
     # loop through epochs
     for e in range(epochs):
 
         # loop through dataset 
         for data in dataset:
+
+            print("***********************")
+            print("***********************")
+            print("***********************")
+            print("NEW DATASET")
+            print("***********************")
+            print("***********************")
+            print("***********************")
+            # optimizer zero out grad
+            optimizer.zero_grad()
 
             # send to device
             x = data.to(device)
@@ -182,11 +253,12 @@ def train(
             loss = loss_function(**args)
             loss_all.append(loss.item())
 
-            # optimizer zero out grad
-            optimizer.zero_grad()
+            print("LOSS: ", loss)
+
 
             # backprop weights and step
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
             step_size += 1
@@ -230,6 +302,28 @@ def train(
         print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}")
     return mean_loss
 
+
+##### Model Testing
+
+# checking problems
+def print_weights(module, input, output):
+    for name, param in module.named_parameters():
+        if 'weight' in name:
+            print(f"Weights of {name}: {param.data}")
+        elif 'bias' in name:
+            print(f"Biases of {name}: {param.data}")
+
+# init weight xavier
+def xavier_init(layer):
+    if isinstance(layer, torch.nn.Linear):
+        init.xavier_uniform_(layer.weight)
+        if layer.bias is not None:
+            init.constant_(layer.bias, 0.1)
+
+def print_grad(module, input, output):
+    for name, param in module.named_parameters():
+        if param.grad is not None:
+            print(f"Gradient of {name}: {param.grad}")
 
 
 def test(

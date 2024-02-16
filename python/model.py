@@ -13,6 +13,7 @@ import torch
 
 # train 
 from model_functions import train as mse_train
+from model_functions import scale
 
 # Model 
 from model_utils import ConformationalMLPAutoEncoder
@@ -53,8 +54,11 @@ def main():
     EPOCHS           = args.epochs
     LATENT_SPACE     = args.latent_space
 
+    # scale data
+    X_scaled = scale(X, PARAMS)
+
     # load data into a specific dataloader class
-    dataload = torch.utils.data.DataLoader(X, batch_size=args.batch_size)
+    dataload = torch.utils.data.DataLoader(X_scaled, batch_size=args.batch_size)
 
     model = ConformationalMLPAutoEncoder(
         encoder_layers   = N_ENCODER_LAYERS,
@@ -68,12 +72,12 @@ def main():
     linear_number = PARAMS["input_size"] - angle_number
 
     # init AdamW optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
 
     # init scheduler
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
                                                            T_max = 10000,
-                                                           eta_min = 1e-4,
+                                                           eta_min = 1e-6,
                                                            )
 
     # Model Run specific number classifier for output files
