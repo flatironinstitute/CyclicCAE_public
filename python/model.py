@@ -75,9 +75,11 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
 
     # init scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-                                                           T_max = 10000,
-                                                           eta_min = 1e-6,
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                           patience = 10,
+                                                           factor = 0.8,
+                                                           min_lr = 1e-6,
+                                                           verbose = True,
                                                            )
 
     # Model Run specific number classifier for output files

@@ -12,6 +12,7 @@
 import os, sys
 from collections import defaultdict
 import pdb
+import random
 
 # local import
 from model_functions import sklearn_scale
@@ -55,8 +56,7 @@ class ConformationalMLPEncoderLayer(nn.Module):
         self.drop = nn.Dropout(0.2)
 
         # activation funciton
-        # self.gelu = nn.GELU()
-        self.relu = nn.ReLU()
+        self.gelu = nn.GELU()
 
     def forward(self, x: torch.Tensor):
         """ forward pass of Encoderlayer
@@ -69,13 +69,8 @@ class ConformationalMLPEncoderLayer(nn.Module):
         """
         # return self.drop(self.gelu(self.linear(self.norm(x))))
         x = self.linear(x)
-        print('w', self.linear.weight)
-        print('g', self.linear.weight.grad)
-        print('b', self.linear.bias)
-        x = self.relu(x)
-        x = self.drop(x)
-        print(x)
-        if torch.any(x.isnan()): pdb.set_trace()
+        x = self.gelu(x)
+        # x = self.drop(x)
         return x
         # return self.drop(self.gelu(self.linear(x)))
 
@@ -146,7 +141,6 @@ class ConformationalMLPEncoderBlock(nn.Module):
         """
         for layer in self.encoder_layers:
             x = layer(x)
-            if torch.any(x.isnan()): pdb.set_trace()
         return x
 
 
@@ -192,7 +186,7 @@ class ConformationalMLPDecoderLayer(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        return self.drop(self.gelu(self.linear(x)))
+        return self.gelu(self.linear(x))
         # return self.drop(self.gelu(self.linear(self.norm(x))))
         # return self.gelu(self.linear(self.norm(x)))
 
@@ -263,7 +257,6 @@ class ConformationalMLPDecoderBlock(nn.Module):
         """
         for layer in self.decoder_layers:
             x = layer(x)
-            if torch.any(x.isnan()): pdb.set_trace()
         return x
 
 class ConformationalLatentSpace(nn.Module):
@@ -285,9 +278,6 @@ class ConformationalLatentSpace(nn.Module):
         # linear function to keep it in the latent space
         self.latent = nn.Linear(latent_space_dim, latent_space_dim)
 
-        # activation function
-        self.gelu = nn.GELU()
-
     def forward(self, x: torch.Tensor):
         """ Forward of Latent Space Block
         with a Skip Connnection for BackProp
@@ -297,7 +287,7 @@ class ConformationalLatentSpace(nn.Module):
             x: torch.Tensor
                 Reduced input vector (B, latent_space_dim)
         """
-        return torch.add(self.gelu(self.latent(x)), x)
+        return torch.add(self.latent(x), x)
 
 
 class ConformationalOutputBlock(nn.Module):
@@ -373,10 +363,13 @@ class ConformationalOutputBlock(nn.Module):
         self.energy_n            = energy_n
 
         # Final linear layer
-        self.output_linear = nn.Linear(in_size, output_size)
+        self.output_linear = nn.Linear(output_size, output_size)
 
         # batch normalization by keeping in (-1, 1) range
         self.tanh_norm = nn.Hardtanh(min_val=-1.0, max_val=1.0)
+
+        # activation function
+        self.gelu = nn.GELU()
 
     def forward(self, x: torch.Tensor):
         """ Forward for OutputBlock which normalizes and outputs
@@ -532,7 +525,6 @@ class ConformationalInputDecomposition(nn.Module):
         # update index_in
         index_in += self.energy_n
 
-
         # combine all information
         out = torch.cat((torsion_decompose, bond_angle_decompose), dim=-1)
         out = torch.cat((out, bond_length), dim=-1)
@@ -541,8 +533,6 @@ class ConformationalInputDecomposition(nn.Module):
         if self.energy_n != 0:
             out = torch.cat((out, energy), dim=-1)
 
-        print(out.max())
-        print(out.min())
         return out
 
     def decompose_angle_(self, x: torch.Tensor, idx: torch.Tensor = None):
@@ -561,9 +551,6 @@ class ConformationalInputDecomposition(nn.Module):
         stacked_sincos_x = torch.cat((sin_x, cos_x), dim=-1)
 
         return stacked_sincos_x
-
-
-
 
 ##################################################################################################################
 #                                               Architecture
@@ -761,8 +748,17 @@ if __name__ == "__main__":
         energy_n            =  6,
     )
 
-    # init general Adam optimizer
-    optimizer = torch.optim.SGD(model.parameters(), lr=1e-5)
+    # init AdamW optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-8)
+
+    # init scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+                                                           T_max = 10000,
+                                                           eta_min = 1e-6,
+                                                           )
+
+    # Model Run specific number classifier for output files
+    random_num = random.randint(0, 10000)
 
     # Run Model
     print("***MODEL TRAINING IS STARTING***")
@@ -770,8 +766,13 @@ if __name__ == "__main__":
         model = model,
         dataset = dataload,
         epochs = 1000,
-        device = "cpu",
+        device = "cuda",
         optimizer = optimizer,
+        scheduler = scheduler,
         angle_n = 58*2,
         linear_n = 58+6,
+        file_out_track = None,
+        output_dir = None,
+        weight_save_n = None,
+        file_num = random_num,
     )

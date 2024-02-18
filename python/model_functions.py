@@ -11,6 +11,7 @@
 # base python packages
 from collections import defaultdict
 import os
+import random
 
 # ml imports
 import torch
@@ -218,7 +219,7 @@ def train(
     # model.register_full_backward_hook(print_grad)
 
     # init model weights
-    # model.apply(xavier_init)
+    model.apply(xavier_init)
 
     # loop through epochs
     for e in range(epochs):
@@ -226,13 +227,6 @@ def train(
         # loop through dataset 
         for data in dataset:
 
-            print("***********************")
-            print("***********************")
-            print("***********************")
-            print("NEW DATASET")
-            print("***********************")
-            print("***********************")
-            print("***********************")
             # optimizer zero out grad
             optimizer.zero_grad()
 
@@ -253,50 +247,51 @@ def train(
             loss = loss_function(**args)
             loss_all.append(loss.item())
 
-            print("LOSS: ", loss)
-
-
             # backprop weights and step
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
             step_size += 1
 
         # calc mean loss
         mean_loss = sum(loss_all) / len(loss_all)
+        scheduler.step(mean_loss)
 
-        # Write progress to tracking file
-        with open(file_out_track, 'a') as specific_out:
-            print(f"{e+1},{mean_loss}", file=specific_out)
 
-        # First check if dirs exist if not then create
-        first_layer_dir = os.path.join(output_dir, "model_weights/")
-        if not os.path.exists(first_layer_dir):
-            os.mkdir(first_layer_dir)
+        if output_dir != None:
 
-        # save current epochs weights
-        current_weights = os.path.join(first_layer_dir, f"model_{file_num}_current_weights.pt")
-        torch.save(
-            {
-                "epoch": e+1,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-            },
-            current_weights,
-        )
+            # Write progress to tracking file
+            with open(file_out_track, 'a') as specific_out:
+                print(f"{e+1},{mean_loss}", file=specific_out)
 
-        # Save weights for passed epoch numbers
-        if (e+1) % weight_save_n == 0:
-            specific_weights = os.path.join(first_layer_dir, f"epoch_{e+1}_weights_{file_num}.pt")
+            # First check if dirs exist if not then create
+            first_layer_dir = os.path.join(output_dir, "model_weights/")
+            if not os.path.exists(first_layer_dir):
+                os.mkdir(first_layer_dir)
+
+            # save current epochs weights
+            current_weights = os.path.join(first_layer_dir, f"model_{file_num}_current_weights.pt")
             torch.save(
                 {
                     "epoch": e+1,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                 },
-                specific_weights,
+                current_weights,
             )
+
+            # Save weights for passed epoch numbers
+            if (e+1) % weight_save_n == 0:
+                specific_weights = os.path.join(first_layer_dir, f"epoch_{e+1}_weights_{file_num}.pt")
+                torch.save(
+                    {
+                        "epoch": e+1,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                    },
+                    specific_weights,
+                )
 
         # Print out progress for each epoch
         print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}")
