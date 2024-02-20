@@ -90,10 +90,10 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
     PARAMS
     ------
         rmsd_real: torch.Tensor
-            The RMSDs all vs all from the actual structures
+            The batch susbet RMSDs all vs all from the actual structures
 
         rmsd_latent: torch.Tensor
-            The RMSDs all vs all from the latent space structures
+            The batch subset RMSDs all vs all from the latent space structures
 
     RETURNS
     -------
@@ -131,11 +131,14 @@ def loss_function(
     y_angle: torch.Tensor,
     y_hat_linear: torch.Tensor,
     y_linear: torch.Tensor,
+    rmsd_real: torch.Tensor,
+    rmsd_latent: torch.Tensor,
     ):
     """Combination of Loss terms take the mean"""
     angle_loss = angle_loss_term(y_hat_angle, y_angle)
     linear_loss = linear_loss_term(y_hat_linear, y_linear)
-    return angle_loss + linear_loss
+    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent)
+    return angle_loss + linear_loss + enforce_latent_rmsd
 
     
 
@@ -152,6 +155,7 @@ def train(
     output_dir: str,
     weight_save_n: int,
     file_num: int,
+    real_rmsd_mat: torch.Tensor,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -226,7 +230,7 @@ def train(
     for e in range(epochs):
 
         # loop through dataset 
-        for data in dataset:
+        for data, indices in dataset:
 
             # optimizer zero out grad
             optimizer.zero_grad()
@@ -235,13 +239,15 @@ def train(
             x = data.to(device)
 
             # run model
-            out = model(x)
+            out, latent_rmsd_mat = model(x)
 
             # args input for loss
             args = {"y_hat_angle": out[:, :angle_n],
                     "y_angle": x[:, :angle_n],
                     "y_hat_linear": out[:, angle_n:],
                     "y_linear": x[:, angle_n:],
+                    "rmsd_real": real_rmsd_mat[indices, indices],
+                    "rmsd_latent": latent_rmsd_mat,
                     }
 
             # generate loss and append
@@ -254,7 +260,7 @@ def train(
 
             # optimizer step and scheduler step
             optimizer.step()
-            scheduler.step()
+            # scheduler.step()
 
             # increment step size for tracking
             step_size += 1
@@ -262,8 +268,8 @@ def train(
         # calc mean loss
         mean_loss = sum(loss_all) / len(loss_all)
 
-        # UpdateLR Scheduler step
-        # scheduler.step(mean_loss)
+        # UpdateLR on Plateau Scheduler step
+        scheduler.step(mean_loss)
 
         # check if loss is lower
         if mean_loss < lowest_loss:

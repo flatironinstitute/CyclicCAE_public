@@ -25,6 +25,21 @@ import torch.nn as nn
 #                                                Classes
 ##################################################################################################################
 
+class MyDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset: torch.Tensor):
+        """Custom Class to return indices when accessing items"""
+        self.dataset = dataset
+
+    def __getitem__(self, index):
+        """Extracts sample `index` that is passed"""
+        data = self.dataset
+        return data, index
+
+    def __len__(self):
+        """Returns the length of the dataset object"""
+        return len(self.dataset)
+
+
 class ConformationalMLPEncoderLayer(nn.Module):
     def __init__(
         self,
@@ -526,8 +541,10 @@ class ConformationalInputDecomposition(nn.Module):
         index_in += self.energy_n
 
         # combine all information
+        print(torsion_decompose.shape)
         out = torch.cat((torsion_decompose, bond_angle_decompose), dim=-1)
         out = torch.cat((out, bond_length), dim=-1)
+        print(out.shape)
         if self.jump_n != 0:
             out = torch.cat((out, jump), dim=-1)
         if self.energy_n != 0:
@@ -695,18 +712,50 @@ class ConformationalMLPAutoEncoder(nn.Module):
         """Train and Test Forward Method"""
         # decompose
         x = self.input_decomposition(x)
-        if torch.any(x.isnan()): pdb.set_trace()
         # encode the information into latent
         x = self.encoder(x)
-        if torch.any(x.isnan()): pdb.set_trace()
         # pass the latent to itself D -> D
         x = self.latent(x)
-        if torch.any(x.isnan()): pdb.set_trace()
+        # compute latent rmsd
+        latent_rmsd = compute_rmsd(x)
         # Decode the information back to post-decomposition input size
         x = self.decoder(x)
-        if torch.any(x.isnan()): pdb.set_trace()
         # Recompute original input information
-        return self.output(x)
+        return self.output(x), latent_rmsd
+
+    def compute_rmsd(self, xyz_mat: torch.Tensor):
+        """Compute the latent space RMSD"""
+        # Init the latent space rmsd mat
+        latent_space_rmsd = torch.zeros((xyz_mat.shape[0], xyz_mat.shape[0]), dtype=torch.float32)
+
+        # compute squared norms of vectors
+        norms_squared = torch.sum(torch.pow(xyz_mat, 2), dim=1, keepdim=True)
+
+        # compute dot product
+        dot_product = torch.mm(xyz_mat, xyz_mat.t())
+
+        # squared pairwise distances
+        pairwise_distances_squared = norms_squared - 2 * dot_product + norms_squared.t()
+
+        # Ensure all diag are 0
+        torch.fill_diagonal(pairwise_distances_squared, 0)
+
+        # sqrt values
+        return torch.sqrt(pairwise_distances_squared)
+
+
+    def rmsd(self, x1, every_x):
+        """Compute rmsd"""
+        x1_unsqueeze = x1.unsqueeze(0)
+
+        # compute diff
+        diff = torch.pow((every_x - x1_unsqueeze), 2)
+
+        # sum the differences along the last axis
+        sum_squared_diff = torch.sum(diff, dim=-1)
+
+        # take root square
+        return torch.sqrt(sum_squared_diff)
 
 
 ##################################################################################################################

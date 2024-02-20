@@ -16,7 +16,7 @@ from model_functions import train as mse_train
 from model_functions import scale
 
 # Model 
-from model_utils import ConformationalMLPAutoEncoder
+from model_utils import ConformationalMLPAutoEncoder, MyDataset
 
 
 
@@ -25,8 +25,8 @@ def main():
     """Run training"""
     # Grab passed in values from CLI
     p = argparse.ArgumentParser()
-    p.add_argument("--dataset_tensor", type=str, default="./binary_import/dof_vectorstorch_tensor.pt",
-                   help="Path to .pt dataset file. (defualt: ./binary_import/dof_vectorstorch_tensor.pt)")
+    p.add_argument("--dataset_tensor", type=str, default="./binary_import/dof_vectors2024-02-20torch_tensor.pt",
+                   help="Path to .pt dataset file. (defualt: ./binary_import/dof_vectors2024-02-20torch_tensor.pt)")
     p.add_argument("--epochs", type=int, default=1000, help="Number of epochs to train (default: 1000)")
     p.add_argument("--num_encoder_layers", type=int, default=3,
                    help="Number of encoder layers in the model (default: 3)")
@@ -49,6 +49,7 @@ def main():
     # set global vars
     PARAMS           = dataset["params"]
     X                = dataset["x"]
+    RMSD_REAL        = dataset["rmsd"]
     N_ENCODER_LAYERS = args.num_encoder_layers
     N_DECODER_LAYERS = args.num_decoder_layers
     EPOCHS           = args.epochs
@@ -56,9 +57,13 @@ def main():
 
     # scale data
     X_scaled = scale(X, PARAMS)
+    print(X_scaled.shape)
+
+    # pass to custom dataset class
+    dataset = MyDataset(X_scaled)
 
     # load data into a specific dataloader class
-    dataload = torch.utils.data.DataLoader(X_scaled, batch_size=args.batch_size)
+    dataload = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size)
 
     model = ConformationalMLPAutoEncoder(
         encoder_layers   = N_ENCODER_LAYERS,
@@ -75,11 +80,13 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, weight_decay=0.01, momentum=0.8)
 
     # init scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,
-                                                                     T_0 = 2000,
-                                                                     T_mult = 1,
-                                                                     eta_min = 1e-6,
-                                                                     )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                           patience = 8,
+                                                           mode = "min",
+                                                           factor = 0.8,
+                                                           threshold = 1e-4,
+                                                           min_lr = 1e-6,
+                                                           )
 
 
     # Model Run specific number classifier for output files
@@ -105,6 +112,7 @@ def main():
         output_dir = args.path_to_output_dir,
         weight_save_n = args.output_weights_every_n,
         file_num = random_num,
+        real_rmsd_mat = RMSD_REAL,
     )
 
     # Save to combo file
