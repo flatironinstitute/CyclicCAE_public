@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 ################################################################################
 ##
 ## @file python/binary_import/BinaryDoFReader.py
@@ -18,6 +19,7 @@ import struct
 from collections import defaultdict
 import time
 import re
+import datetime
 
 # import torch
 import torch
@@ -28,7 +30,7 @@ import torch
 ##################################################################################################################
 
 class DoFBinaryReader:
-    def __init__(self, binary_file: str, save_dataset: bool = False):
+    def __init__(self, binary_file: str, rmsd_binary: str, save_dataset: bool = False, rmsd: bool = True):
         """Custom Binary Rosetta Read In Class
 
         PARAMS
@@ -36,13 +38,22 @@ class DoFBinaryReader:
             binary_file: str
                 Path to binary rosetta/C++ out .dat file
 
+            rmsd_binary: str
+                Path to binary rosetta/C++ RMSD calculated .dat file;
+                this needs to be set if `rmsd` is True.
+
             save_dataset: bool
                 Defaults to False, but this is used to specify if you would
                 like to torch.save the dataset.
+
+            rmsd: bool
+                Defaults to True, calculate the RMSD PyTorch Matrix
         """
         # save passed args
         self.binary_file = binary_file
         self.save_dataset = save_dataset
+        self.rmsd_binary = rmsd_binary
+        self.rmsd = rmsd
 
         # Set storing header information
         # defaultdict to hold information
@@ -123,8 +134,12 @@ class DoFBinaryReader:
                     tensor_sample += 1
                     data_idx = 0
 
-            # This is to visualize and make sure that the data is read in completely. More for testing purposes and will be deleted
-            # print('Ending Portion:', f.read())
+
+        # extract rmsd information if able
+        if self.rmsd:
+            self.rmsd_tensor = self.rmsd_calc
+
+            
 
 
     #################################################################################################################
@@ -147,16 +162,27 @@ class DoFBinaryReader:
             
             # Generate the output file name
             out_file_pre = self.binary_file.split("/")[-1].split(".")[0]
-            out_file = out_file_pre + "torch_tensor.pt"
+            out_file = out_file_pre + str(datetime.date.today()) + "torch_tensor.pt"
 
-            # save to a tensor dict
-            torch.save(
-                {
-                    "x": self.data_tensor,
-                    "params": n_param_dict,
-                },
-                out_file,
-            )
+            if self.rmsd:
+                # save to a tensor dict
+                torch.save(
+                    {
+                        "x": self.data_tensor,
+                        "rmsd": self.rmsd_tensor,
+                        "params": n_param_dict,
+                    },
+                    out_file,
+                )
+            else:
+                # save to a tensor dict
+                torch.save(
+                    {
+                        "x": self.data_tensor,
+                        "params": n_param_dict,
+                    },
+                    out_file,
+                )
         return self.data_tensor
 
     @property
@@ -219,6 +245,84 @@ class DoFBinaryReader:
                 num_values += self.metadata_info[param]
         return data_format, num_values
 
+    @property
+    def rmsd_calc(self):
+        """Fill in RMSD Matrix from passed rmsd_binary"""
+        # open file
+        with open(self.rmsd_binary, 'rb') as in_rmsd_file:
+
+            # Grab headers
+            header_major = in_rmsd_file.read(8)
+            header_minor = in_rmsd_file.read(8)
+
+            # read in info
+            major_int = str(struct.unpack("Q", header_major)[0])
+            minor_int = str(struct.unpack("Q", header_minor)[0])
+
+            assert major_int + "." + minor_int == "1.1", "Version Number Doesn't Match!! 1.1 was asked for!"
+
+            # grab row and column numbers
+            row_n_binary = in_rmsd_file.read(8)
+            col_n_binary = in_rmsd_file.read(8)
+
+            # conver to int
+            row_n = struct.unpack("Q", row_n_binary)[0]
+            col_n = struct.unpack("Q", col_n_binary)[0]
+
+            
+            # Set up the rmsd pre matrix
+            rmsd_tensor = torch.zeros((row_n, col_n), dtype=torch.float32)
+
+            # row track & col track
+            row_idx = 0
+            col_idx = 1
+
+            # running_max
+            running_max = col_n
+
+            # set file read
+            file_read = True
+
+            # init time
+            dt0 = time.time()
+
+            # Keep looking
+            while file_read:
+
+                # float32 information binary
+                binary_entry = in_rmsd_file.read(4*(running_max-1))
+
+                # check if the file ended
+                if (not binary_entry):
+                    # break while loop
+                    file_read = False
+
+                # convert to float from binary
+                rmsd_value = torch.tensor(struct.unpack("f"*(running_max-1), binary_entry))
+
+                # now assign to 2 entries
+                rmsd_tensor[row_idx, col_idx:] = rmsd_value
+                rmsd_tensor[col_idx:, row_idx] = rmsd_value
+
+                # col_idx update
+                col_idx += 1
+                row_idx += 1
+                running_max -= 1
+                # if col_idx >= col_n:
+                #
+                #     # Update all tracking matrix info
+                #     row_idx += 1
+                #     col_idx = row_idx + 1
+                #
+                if row_idx % 10000 == 0: 
+                    print(f"Row: {row_idx}, Time: {round(time.time() - dt0,2)}")
+
+        return rmsd_tensor
+
+
+
+
+
 
 
 ##################################################################################################################
@@ -229,9 +333,10 @@ if __name__ == "__main__":
 
     # explicit file
     file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/dof_vectors.dat"
+    rmsd_file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/rmsd_matrix.dat"
 
     # init class
-    dofclass = DoFBinaryReader(file, True)
+    dofclass = DoFBinaryReader(file, rmsd_file, True, True)
 
     # check out tensor
     out = dofclass.extract_tensor
