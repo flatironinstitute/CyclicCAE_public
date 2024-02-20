@@ -31,7 +31,6 @@ def scale(x: torch.Tensor, params: dict):
 
     # grab out each section
     # Scale Bond Length
-    print("BOND LENGTH")
     x[:, linear_terms_start: linear_terms_start + bond_length_size ] = normalize_vals(
         x[:, linear_terms_start: linear_terms_start + bond_length_size ] 
     )
@@ -48,7 +47,6 @@ def scale(x: torch.Tensor, params: dict):
     if params["energy_n"] != 0:
         energy_end = linear_terms_start + bond_length_size + params["jump_n"] + params["energy_n"]
         energy_start = linear_terms_start + bond_length_size + params["jump_n"]
-        print("ENERGY")
         x[:, energy_start : energy_end ] = normalize_vals(
             x[:, energy_start : energy_end ]
         )
@@ -61,7 +59,6 @@ def normalize_vals(x: torch.Tensor, norm_min:float = -1., norm_max:float = 1.):
     min_val = x.min()
     max_val = x.max()
     norm_feature = (x - min_val) / (max_val - min_val) * (norm_max - norm_min) + norm_min
-    print(norm_feature)
     return norm_feature
     
 
@@ -207,6 +204,10 @@ def train(
     # init loss list
     loss_all = list()
 
+    # init lowest loss tracker
+    lowest_loss = 100000
+    epoch_lowest_loss = 0
+
     #init step tracker
     step_size = 0
 
@@ -247,16 +248,27 @@ def train(
             loss = loss_function(**args)
             loss_all.append(loss.item())
 
-            # backprop weights and step
-            loss.backward()
+            # backprop weights and clip
+            loss.backward() 
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            # optimizer step and scheduler step
             optimizer.step()
-            # scheduler.step()
+            scheduler.step()
+
+            # increment step size for tracking
             step_size += 1
 
         # calc mean loss
         mean_loss = sum(loss_all) / len(loss_all)
-        scheduler.step(mean_loss)
+
+        # UpdateLR Scheduler step
+        # scheduler.step(mean_loss)
+
+        # check if loss is lower
+        if mean_loss < lowest_loss:
+            lowest_loss = mean_loss
+            epoch_lowest_loss = e+1
 
 
         if output_dir != None:
@@ -295,7 +307,17 @@ def train(
 
         # Print out progress for each epoch
         print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}")
-    return mean_loss
+    return mean_loss, lowest_loss, epoch_lowest_loss
+
+
+def test(
+    model: torch.nn.Module,
+    dataset: torch.utils.data.DataLoader,
+    ):
+    """General Test function for the AutoEncoder Model
+
+    This is a placeholder for a test function if we need one."""
+    pass
 
 
 ##### Model Testing
@@ -315,17 +337,10 @@ def xavier_init(layer):
         if layer.bias is not None:
             init.constant_(layer.bias, 0.1)
 
+# print out grad infromation
 def print_grad(module, input, output):
     for name, param in module.named_parameters():
         if param.grad is not None:
             print(f"Gradient of {name}: {param.grad}")
 
 
-def test(
-    model: torch.nn.Module,
-    dataset: torch.utils.data.DataLoader,
-    ):
-    """General Test function for the AutoEncoder Model
-
-    This is a placeholder for a test function if we need one."""
-    pass

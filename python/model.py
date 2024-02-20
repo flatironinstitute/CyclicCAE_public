@@ -34,8 +34,8 @@ def main():
                    help="Number of decoder layers in the model (default: 3)")
     p.add_argument("--latent_space", type=int, default=3,
                    help="Latent Space R dimension (default: 3)")
-    p.add_argument("--batch_size", type=int, default=1000,
-                   help="Specify model batch size (default: 1000)")
+    p.add_argument("--batch_size", type=int, default=32,
+                   help="Specify model batch size (default: 32)")
     p.add_argument("--learning_rate", type=float, default=1e-3, help="Specify the LR (default: 1e-3)")
     p.add_argument("--output_weights_every_n", type=int, default=1000,
                    help="Output saved model weights every N number of epochs (default: 1000)")
@@ -72,15 +72,15 @@ def main():
     linear_number = PARAMS["input_size"] - angle_number
 
     # init AdamW optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, weight_decay=0.01, momentum=0.8)
 
     # init scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-                                                           patience = 10,
-                                                           factor = 0.8,
-                                                           min_lr = 1e-6,
-                                                           verbose = True,
-                                                           )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,
+                                                                     T_0 = 2000,
+                                                                     T_mult = 1,
+                                                                     eta_min = 1e-6,
+                                                                     )
+
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
@@ -92,7 +92,7 @@ def main():
 
     # Run Model
     print(f"***MODEL {random_num} TRAIN***")
-    final_loss = mse_train(
+    final_loss, lowest_loss, epoch_lowest_loss = mse_train(
         model = model,
         dataset = dataload,
         epochs = EPOCHS,
@@ -113,12 +113,12 @@ def main():
     # if it exists save to it
     if os.path.exists(md_combo_out_file):
         with open(md_combo_out_file, 'a') as md_out:
-            print(f"|{random_num}|{EPOCHS}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{final_loss}|", file=md_out)
+            print(f"|{random_num}|{EPOCHS}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{lowest_loss}|{epoch_lowest_loss}|{final_loss}|", file=md_out)
     else:
         with open(md_combo_out_file, 'w') as md_out:
-            print(f"|File Number|Epochs|LR|Num Encoding Layers|Num Decoding Layers|Final Loss|", file=md_out)
-            print(f"|---|---|---|---|---|---|", file=md_out)
-            print(f"|{random_num}|{EPOCHS}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{final_loss}|", file=md_out)
+            print(f"|File Number|Epochs|LR|Num Encoding Layers|Num Decoding Layers|Lowest Loss|Epoch Lowest Loss|Final Loss|", file=md_out)
+            print(f"|---|---|---|---|---|---|---|---|", file=md_out)
+            print(f"|{random_num}|{EPOCHS}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{lowest_loss}|{epoch_lowest_loss}|{final_loss}|", file=md_out)
 
     return 0
 
