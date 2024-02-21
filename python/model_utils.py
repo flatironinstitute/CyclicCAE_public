@@ -32,7 +32,7 @@ class MyDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         """Extracts sample `index` that is passed"""
-        data = self.dataset
+        data = self.dataset[index]
         return data, index
 
     def __len__(self):
@@ -67,11 +67,8 @@ class ConformationalMLPEncoderLayer(nn.Module):
         # normalize the inputs coming in to the layer (could possibly not be needed)
         # self.norm = nn.BatchNorm1d(self.input_size)
 
-        # dropout 
-        self.drop = nn.Dropout(0.2)
-
         # activation funciton
-        self.gelu = nn.GELU()
+        self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor):
         """ forward pass of Encoderlayer
@@ -82,12 +79,7 @@ class ConformationalMLPEncoderLayer(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        # return self.drop(self.gelu(self.linear(self.norm(x))))
-        x = self.linear(x)
-        x = self.gelu(x)
-        # x = self.drop(x)
-        return x
-        # return self.drop(self.gelu(self.linear(x)))
+        return self.relu(self.linear(x))
 
 class ConformationalMLPEncoderBlock(nn.Module):
     def __init__(
@@ -541,10 +533,8 @@ class ConformationalInputDecomposition(nn.Module):
         index_in += self.energy_n
 
         # combine all information
-        print(torsion_decompose.shape)
         out = torch.cat((torsion_decompose, bond_angle_decompose), dim=-1)
         out = torch.cat((out, bond_length), dim=-1)
-        print(out.shape)
         if self.jump_n != 0:
             out = torch.cat((out, jump), dim=-1)
         if self.energy_n != 0:
@@ -668,7 +658,6 @@ class ConformationalMLPAutoEncoder(nn.Module):
         bond_length = self.bond_length_main_n + self.bond_length_side_n
         # Combine for infromation (Also, the jump_n might need to be muptlied by 6)
         self.after_decomposition_size = torsion*2 + bond_angle*2 + bond_length + self.jump_n + self.energy_n
-        print("After decomposition size:", self.after_decomposition_size)
 
         # Init Model Blocks
         self.input_decomposition = ConformationalInputDecomposition(
@@ -717,31 +706,42 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # pass the latent to itself D -> D
         x = self.latent(x)
         # compute latent rmsd
-        latent_rmsd = compute_rmsd(x)
+        latent_clone = x.clone().detach()
+        latent_rmsd = self.compute_euclidean_distance(latent_clone)
         # Decode the information back to post-decomposition input size
         x = self.decoder(x)
         # Recompute original input information
         return self.output(x), latent_rmsd
 
-    def compute_rmsd(self, xyz_mat: torch.Tensor):
+    def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
         """Compute the latent space RMSD"""
-        # Init the latent space rmsd mat
-        latent_space_rmsd = torch.zeros((xyz_mat.shape[0], xyz_mat.shape[0]), dtype=torch.float32)
+        # expand dimension for broadcasting
+        points_expanded = xyz_mat.unsqueeze(1)
+
+        # compute pairwise diff
+        differences = points_expanded - xyz_mat
+
+        # squared_distances along last dim
+        squared_distances = torch.sum( torch.pow( differences, 2), dim=-1)
+
+        # distance matrix
+        distance_matrix = torch.sqrt(squared_distances)
 
         # compute squared norms of vectors
-        norms_squared = torch.sum(torch.pow(xyz_mat, 2), dim=1, keepdim=True)
-
-        # compute dot product
-        dot_product = torch.mm(xyz_mat, xyz_mat.t())
-
-        # squared pairwise distances
-        pairwise_distances_squared = norms_squared - 2 * dot_product + norms_squared.t()
-
-        # Ensure all diag are 0
-        torch.fill_diagonal(pairwise_distances_squared, 0)
-
-        # sqrt values
-        return torch.sqrt(pairwise_distances_squared)
+        # norms_squared = torch.sum(torch.pow(xyz_mat, 2), dim=1, keepdim=True)
+        #
+        # # compute dot product
+        # dot_product = torch.mm(xyz_mat, xyz_mat.t())
+        #
+        # # squared pairwise distances
+        # pairwise_distances_squared = norms_squared - 2 * dot_product + norms_squared.t()
+        #
+        # # Ensure all diag are 0
+        # pairwise_distances_squared.fill_diagonal_(0.)
+        #
+        # # sqrt values
+        # sqrt_distances = torch.sqrt(pairwise_distances_squared)
+        return distance_matrix
 
 
     def rmsd(self, x1, every_x):

@@ -83,7 +83,7 @@ def linear_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
     """General L2 Linear Loss"""
     return torch.mean(torch.pow(y - y_hat, 2))
 
-def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor):
+def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor, device: str):
     """Custom (B) loss function to enforce latent space RMSD distances to be comparable 
     with real RMSD distances.
 
@@ -101,10 +101,10 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
             Summed Square Error between RMSD_real and RMSD_latent
     """
     # extract sizes
-    B, L, _ = rmsd_real.shape
+    B, _ = rmsd_latent.shape
     
     # make bool mask
-    mask = torch.eye(L, L, dtype=torch.bool)
+    mask = torch.eye(B, B, dtype=torch.bool).to(device)
 
     # Make sure that i /= j within the tensors. Therefore we can block
     # out the diagonal with zeros on both tensors
@@ -112,18 +112,23 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
     rmsd_latent.masked_fill_(mask, 0)
 
     # Need to set lambda some how right now I will just randomly fill in with values
-    lambda_real = 1.
-    lambda_latent = 0.1
+    lambda_real = 1e-2
+    lambda_latent = 1e-2
 
     # Compute each component of the function sum((real_component - latent_component)**2)
     # Real: e^{-(RMSDreal_{ij} / lambda_real)**2}
-    real_component = torch.exp( -( torch.pow( rmsd_real/lambda_real, 2 ) ) )
+    real_component = torch.exp( -( torch.pow( torch.div( rmsd_real, lambda_real ), 2 ) ) )
 
     # Latent: e^{-(RMSDlatent_{ij,latent} / lambda_latent)**2}
-    latent_component = torch.exp( -( torch.pow( rmsd_latent/lambda_latent, 2 ) ) )
+    latent_component = torch.exp( -( torch.pow( torch.div( rmsd_latent, lambda_latent ), 2 ) ) )
+
+    # fill nans
+    real_component = torch.nan_to_num(real_component, nan=torch.nan_to_num(real_component).max())
+    latent_component = torch.nan_to_num(latent_component, nan=torch.nan_to_num(latent_component).max())
 
     # now sum the information
-    loss = torch.sum( torch.pow( real_component - latent_component, 2 ) )
+    # loss = torch.sum( torch.pow( real_component - latent_component, 2 ) )
+    loss = torch.mean( torch.pow( real_component - latent_component, 2 ) )
     return loss
 
 def loss_function(
@@ -133,12 +138,13 @@ def loss_function(
     y_linear: torch.Tensor,
     rmsd_real: torch.Tensor,
     rmsd_latent: torch.Tensor,
+    device: str,
     ):
     """Combination of Loss terms take the mean"""
     angle_loss = angle_loss_term(y_hat_angle, y_angle)
     linear_loss = linear_loss_term(y_hat_linear, y_linear)
-    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent)
-    return angle_loss + linear_loss + enforce_latent_rmsd
+    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100
+    return angle_loss + linear_loss + enforce_latent_rmsd, angle_loss, linear_loss, enforce_latent_rmsd
 
     
 
@@ -207,6 +213,9 @@ def train(
     """
     # init loss list
     loss_all = list()
+    a_loss = list()
+    l_loss = list()
+    lat_loss = list()
 
     # init lowest loss tracker
     lowest_loss = 100000
@@ -222,6 +231,7 @@ def train(
     # register the hook
     # model.encoder.register_forward_hook(print_grad)
     # model.register_full_backward_hook(print_grad)
+    # torch.autograd.set_detect_anomaly(True)
 
     # init model weights
     model.apply(xavier_init)
@@ -246,13 +256,17 @@ def train(
                     "y_angle": x[:, :angle_n],
                     "y_hat_linear": out[:, angle_n:],
                     "y_linear": x[:, angle_n:],
-                    "rmsd_real": real_rmsd_mat[indices, indices],
+                    "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                     "rmsd_latent": latent_rmsd_mat,
+                    "device": device,
                     }
 
             # generate loss and append
-            loss = loss_function(**args)
+            loss, angle_loss, linear_loss, latent_loss = loss_function(**args)
             loss_all.append(loss.item())
+            a_loss.append(angle_loss.item())
+            l_loss.append(linear_loss.item())
+            lat_loss.append(latent_loss.item())
 
             # backprop weights and clip
             loss.backward() 
@@ -267,6 +281,9 @@ def train(
 
         # calc mean loss
         mean_loss = sum(loss_all) / len(loss_all)
+        a_mean = sum(a_loss) / len(a_loss)
+        l_mean = sum(l_loss) / len(l_loss)
+        lat_mean = sum(lat_loss) / len(lat_loss)
 
         # UpdateLR on Plateau Scheduler step
         scheduler.step(mean_loss)
@@ -281,7 +298,7 @@ def train(
 
             # Write progress to tracking file
             with open(file_out_track, 'a') as specific_out:
-                print(f"{e+1},{mean_loss}", file=specific_out)
+                print(f"{e+1},{mean_loss},{a_mean},{l_mean},{lat_mean}", file=specific_out)
 
             # First check if dirs exist if not then create
             first_layer_dir = os.path.join(output_dir, "model_weights/")
@@ -312,7 +329,7 @@ def train(
                 )
 
         # Print out progress for each epoch
-        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}")
+        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}")
     return mean_loss, lowest_loss, epoch_lowest_loss
 
 

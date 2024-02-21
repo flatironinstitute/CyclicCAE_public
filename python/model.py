@@ -57,7 +57,6 @@ def main():
 
     # scale data
     X_scaled = scale(X, PARAMS)
-    print(X_scaled.shape)
 
     # pass to custom dataset class
     dataset = MyDataset(X_scaled)
@@ -95,7 +94,7 @@ def main():
     # Generate output for run
     file_out_name = os.path.join(args.path_to_output_dir, f"model_run_{random_num}.csv")
     with open(file_out_name, "w") as file_out:
-        print("epoch,loss", file=file_out)
+        print("epoch,loss,angle_loss,linear_loss,latent_rmsd_loss", file=file_out)
 
     # Run Model
     print(f"***MODEL {random_num} TRAIN***")
