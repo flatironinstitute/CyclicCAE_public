@@ -141,8 +141,9 @@ def loss_function(
     device: str,
     ):
     """Combination of Loss terms take the mean"""
-    angle_loss = angle_loss_term(y_hat_angle, y_angle)
-    linear_loss = linear_loss_term(y_hat_linear, y_linear)
+    # angle_loss = angle_loss_term(y_hat_angle, y_angle) * 2
+    angle_loss = linear_loss_term(y_hat_angle, y_angle)
+    linear_loss = linear_loss_term(y_hat_linear, y_linear) * 100
     enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100
     return angle_loss + linear_loss + enforce_latent_rmsd, angle_loss, linear_loss, enforce_latent_rmsd
 
@@ -234,13 +235,13 @@ def train(
     # torch.autograd.set_detect_anomaly(True)
 
     # init model weights
-    model.apply(xavier_init)
+    # model.apply(xavier_init)
 
     # loop through epochs
     for e in range(epochs):
 
         # loop through dataset 
-        for data, indices in dataset:
+        for n, (data, indices) in enumerate(dataset):
 
             # optimizer zero out grad
             optimizer.zero_grad()
@@ -249,13 +250,13 @@ def train(
             x = data.to(device)
 
             # run model
-            out, latent_rmsd_mat = model(x)
+            out, latent_rmsd_mat, decomposed_x = model(x)
 
             # args input for loss
             args = {"y_hat_angle": out[:, :angle_n],
-                    "y_angle": x[:, :angle_n],
+                    "y_angle": decomposed_x[:, :angle_n],
                     "y_hat_linear": out[:, angle_n:],
-                    "y_linear": x[:, angle_n:],
+                    "y_linear": decomposed_x[:, angle_n:],
                     "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                     "rmsd_latent": latent_rmsd_mat,
                     "device": device,
@@ -267,10 +268,11 @@ def train(
             a_loss.append(angle_loss.item())
             l_loss.append(linear_loss.item())
             lat_loss.append(latent_loss.item())
+            # lat_loss.append(0)
 
             # backprop weights and clip
             loss.backward() 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             # optimizer step and scheduler step
             optimizer.step()
@@ -330,6 +332,13 @@ def train(
 
         # Print out progress for each epoch
         print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}")
+        # Visualize Output vs Real values for qualitative check
+        if (e+1) % 50 == 0:
+            print("Out vs Real")
+            print(out[:3, :10])
+            print(out[:3, -1])
+            print(decomposed_x[:3, :10])
+            print(decomposed_x[:3, -1])
     return mean_loss, lowest_loss, epoch_lowest_loss
 
 

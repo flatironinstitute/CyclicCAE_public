@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# @author: Andrew Powers
+# @author: Andrew Powers (apowers@flatironinstitute.org) Guest Researcher
 # @brief: Classes and Functions needed for autoencoder model
 #
 
@@ -64,13 +64,10 @@ class ConformationalMLPEncoderLayer(nn.Module):
         # method
         self.linear = nn.Linear(self.input_size, self.output_size)
 
-        # normalize the inputs coming in to the layer (could possibly not be needed)
-        # self.norm = nn.BatchNorm1d(self.input_size)
-
         # activation funciton
-        self.relu = nn.ReLU()
+        self.leakyrelu = nn.LeakyReLU()
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, final_layer:bool = False):
         """ forward pass of Encoderlayer
 
         PARAMS
@@ -79,7 +76,10 @@ class ConformationalMLPEncoderLayer(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        return self.relu(self.linear(x))
+        if final_layer:
+            return self.linear(x)
+        else:
+            return self.leakyrelu(self.linear(x))
 
 class ConformationalMLPEncoderBlock(nn.Module):
     def __init__(
@@ -146,8 +146,13 @@ class ConformationalMLPEncoderBlock(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        for layer in self.encoder_layers:
-            x = layer(x)
+        for i, layer in enumerate(self.encoder_layers):
+            # If last layer then pass True
+            if i+1 == self.num_layers:
+                x = layer(x, True)
+
+            else:
+                x = layer(x)
         return x
 
 
@@ -175,16 +180,10 @@ class ConformationalMLPDecoderLayer(nn.Module):
         # method
         self.linear = nn.Linear(self.input_size, self.output_size)
 
-        # normalize before input (this could be taken out possibly)
-        # self.norm = nn.BatchNorm1d(self.input_size)
-
-        #  Dropout layer
-        self.drop = nn.Dropout(0.2)
-
         # activation funciton
-        self.gelu = nn.GELU()
+        self.tanh = nn.Tanh()
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, final_layer:bool = False):
         """ forward pass of Encoderlayer
 
         PARAMS
@@ -193,9 +192,10 @@ class ConformationalMLPDecoderLayer(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        return self.gelu(self.linear(x))
-        # return self.drop(self.gelu(self.linear(self.norm(x))))
-        # return self.gelu(self.linear(self.norm(x)))
+        if final_layer:
+            return self.linear(x)
+        else:
+            return self.tanh(self.linear(x))
 
 class ConformationalMLPDecoderBlock(nn.Module):
     def __init__(
@@ -262,8 +262,13 @@ class ConformationalMLPDecoderBlock(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        for layer in self.decoder_layers:
-            x = layer(x)
+        for i, layer in enumerate(self.decoder_layers):
+            # If last layer then pass True
+            if i+1 == self.num_layers:
+                x = layer(x, True)
+
+            else:
+                x = layer(x)
         return x
 
 class ConformationalLatentSpace(nn.Module):
@@ -282,8 +287,10 @@ class ConformationalLatentSpace(nn.Module):
         # save input variables
         self.latent_space_dim = latent_space_dim
 
+        # activation func
+
         # linear function to keep it in the latent space
-        self.latent = nn.Linear(latent_space_dim, latent_space_dim)
+        # self.latent = nn.Linear(latent_space_dim, latent_space_dim)
 
     def forward(self, x: torch.Tensor):
         """ Forward of Latent Space Block
@@ -294,7 +301,8 @@ class ConformationalLatentSpace(nn.Module):
             x: torch.Tensor
                 Reduced input vector (B, latent_space_dim)
         """
-        return torch.add(self.latent(x), x)
+        # return torch.add(self.latent(x), x)
+        return x
 
 
 class ConformationalOutputBlock(nn.Module):
@@ -370,13 +378,21 @@ class ConformationalOutputBlock(nn.Module):
         self.energy_n            = energy_n
 
         # Final linear layer
-        self.output_linear = nn.Linear(output_size, output_size)
+        self.output_linear = nn.Linear(in_size, in_size)
 
         # batch normalization by keeping in (-1, 1) range
         self.tanh_norm = nn.Hardtanh(min_val=-1.0, max_val=1.0)
 
         # activation function
-        self.gelu = nn.GELU()
+        self.tanh = nn.Tanh()
+
+        # lastout
+        self.output_layers = nn.Sequential(
+            nn.Linear(in_size, in_size),
+            nn.LeakyReLU(),
+            nn.Linear(in_size, in_size),
+            nn.LeakyReLU(),
+        )
 
     def forward(self, x: torch.Tensor):
         """ Forward for OutputBlock which normalizes and outputs
@@ -386,6 +402,9 @@ class ConformationalOutputBlock(nn.Module):
             x: torch.Tensor
                 Reconstructed x vector post-decomposition (B, D)
         """
+        # layer output linear layer
+        # x = self.output_linear(x)
+
         # grab appropriate sections if main/side chain included
         torsion_num = 2 * ( self.torsion_main_n + self.torsion_side_n ) 
         bond_angle_num = 2 * ( self.bond_angle_main_n + self.bond_angle_side_n ) 
@@ -398,12 +417,14 @@ class ConformationalOutputBlock(nn.Module):
         extra = x[:, torsion_num + bond_angle_num + bond_length_num:]
 
         # normalize to keep the values on the unit circle vector output
-        torsion_norm = self.tanh_norm(torsion)
-        bond_angle_norm = self.tanh_norm(bond_angle)
+        # torsion_norm = self.tanh_norm(torsion)
+        # bond_angle_norm = self.tanh_norm(bond_angle)
 
         # perform arctan2 
-        recomputed_torsion = torch.atan2(torsion_norm[:, ::2], torsion_norm[:, 1::2])
-        recomputed_bond_angle = torch.atan2(bond_angle_norm[:, ::2], bond_angle_norm[:, 1::2])
+        # recomputed_torsion = torch.rad2deg(torch.atan2(torsion_norm[:, ::2], torsion_norm[:, 1::2]))
+        # recomputed_bond_angle = torch.rad2deg(torch.atan2(bond_angle_norm[:, ::2], bond_angle_norm[:, 1::2]))
+        recomputed_torsion = torch.rad2deg(torch.atan2(torsion[:, ::2], torsion[:, 1::2]))
+        recomputed_bond_angle = torch.rad2deg(torch.atan2(bond_angle[:, ::2], bond_angle[:, 1::2]))
 
         # restack computed dofs with non_dof_x if necessary
         out = torch.cat((recomputed_torsion, recomputed_bond_angle), dim=-1)
@@ -551,13 +572,18 @@ class ConformationalInputDecomposition(nn.Module):
             x = x[:, idx]
 
         # decompose angle into both sin and cos
-        sin_x = torch.sin(torch.deg2rad(x))
-        cos_x = torch.cos(torch.deg2rad(x))
+        sin_x = torch.sin(torch.pi * self.circular_scale(x))
+        cos_x = torch.cos(torch.pi * self.circular_scale(x))
 
         # stack new decomposed vectors
         stacked_sincos_x = torch.cat((sin_x, cos_x), dim=-1)
 
         return stacked_sincos_x
+
+    def circular_scale(self, angle: torch.tensor):
+        """Convert angles to be circular and continuous"""
+        scaled_angle = (angle + 180) / 360 # Map to [0, 1]
+        return scaled_angle * 2 - 1 # Map to [-1, 1]
 
 ##################################################################################################################
 #                                               Architecture
@@ -677,11 +703,14 @@ class ConformationalMLPAutoEncoder(nn.Module):
             end_size   = self.latent_space_dim,
         )
         self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim)
+        # self.latent = ConformationalLatentSpace(latent_space_dim=self.after_decomposition_size) # check bottleneck
+
         self.decoder = ConformationalMLPDecoderBlock(
             num_layers = self.decoder_layers,
             start_size = self.latent_space_dim,
             end_size   = self.after_decomposition_size,
         )
+
         self.output = ConformationalOutputBlock(
             protein_len         = self.protein_len,
             normalize           = self.normalize,
@@ -701,17 +730,24 @@ class ConformationalMLPAutoEncoder(nn.Module):
         """Train and Test Forward Method"""
         # decompose
         x = self.input_decomposition(x)
+
+        # Extract out initial decomposed input for MSE Loss calc
+        initial_input = x.detach().clone()
+
         # encode the information into latent
         x = self.encoder(x)
-        # pass the latent to itself D -> D
+
+        # pass the latent to itself (basically just returns passed in tensor)
         x = self.latent(x)
+
         # compute latent rmsd
-        latent_clone = x.clone().detach()
-        latent_rmsd = self.compute_euclidean_distance(latent_clone)
+        latent_clone = x.detach().clone()
+        latent_euclid_dist = self.compute_euclidean_distance(latent_clone.detach())
+
         # Decode the information back to post-decomposition input size
-        x = self.decoder(x)
-        # Recompute original input information
-        return self.output(x), latent_rmsd
+        # Currently we are not using the OutputBlock
+        # Return decoded x (decomposition size), latent_euclidean_distance, decomposed input
+        return self.decoder(x), latent_euclid_dist, initial_input
 
     def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
         """Compute the latent space RMSD"""
@@ -726,37 +762,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         # distance matrix
         distance_matrix = torch.sqrt(squared_distances)
-
-        # compute squared norms of vectors
-        # norms_squared = torch.sum(torch.pow(xyz_mat, 2), dim=1, keepdim=True)
-        #
-        # # compute dot product
-        # dot_product = torch.mm(xyz_mat, xyz_mat.t())
-        #
-        # # squared pairwise distances
-        # pairwise_distances_squared = norms_squared - 2 * dot_product + norms_squared.t()
-        #
-        # # Ensure all diag are 0
-        # pairwise_distances_squared.fill_diagonal_(0.)
-        #
-        # # sqrt values
-        # sqrt_distances = torch.sqrt(pairwise_distances_squared)
         return distance_matrix
-
-
-    def rmsd(self, x1, every_x):
-        """Compute rmsd"""
-        x1_unsqueeze = x1.unsqueeze(0)
-
-        # compute diff
-        diff = torch.pow((every_x - x1_unsqueeze), 2)
-
-        # sum the differences along the last axis
-        sum_squared_diff = torch.sum(diff, dim=-1)
-
-        # take root square
-        return torch.sqrt(sum_squared_diff)
-
 
 ##################################################################################################################
 #                                               Main

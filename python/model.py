@@ -58,6 +58,7 @@ def main():
     # scale data
     X_scaled = scale(X, PARAMS)
 
+
     # pass to custom dataset class
     dataset = MyDataset(X_scaled)
 
@@ -76,7 +77,7 @@ def main():
     linear_number = PARAMS["input_size"] - angle_number
 
     # init AdamW optimizer
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, weight_decay=0.01, momentum=0.8)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
 
     # init scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
@@ -84,9 +85,8 @@ def main():
                                                            mode = "min",
                                                            factor = 0.8,
                                                            threshold = 1e-4,
-                                                           min_lr = 1e-6,
+                                                           min_lr = 1e-8,
                                                            )
-
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
