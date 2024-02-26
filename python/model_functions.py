@@ -142,7 +142,7 @@ def loss_function(
     ):
     """Combination of Loss terms take the mean"""
     # angle_loss = angle_loss_term(y_hat_angle, y_angle) * 2
-    angle_loss = linear_loss_term(y_hat_angle, y_angle)
+    angle_loss = linear_loss_term(y_hat_angle, y_angle) * 10
     linear_loss = linear_loss_term(y_hat_linear, y_linear) * 100
     enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100
     return angle_loss + linear_loss + enforce_latent_rmsd, angle_loss, linear_loss, enforce_latent_rmsd
