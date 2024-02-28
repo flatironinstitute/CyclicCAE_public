@@ -40,6 +40,7 @@ class GraphLatent:
         self,
         latent: torch.Tensor,
         distances: torch.Tensor,
+        X: torch.Tensor,
         ):
 
         """Heuristically Interrogate the Latent Space (Color RMSD Close and Far distances differently)
@@ -51,10 +52,15 @@ class GraphLatent:
 
             distances: torch.Tensor
                 RMSD distances taken from the real world space
+
+            X: torch.Tensor
+                Full training dataset tensor, we need this for
+                coloring by energy
         """
         # store passed values
         self.latent = latent
         self.distances = distances
+        self.X = X
 
     def plot(self):
         """Plot latent space"""
@@ -63,7 +69,7 @@ class GraphLatent:
         ax = plt.axes(projection='3d')
 
         # plot 3d points
-        ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.latent[:, -1, 2], cmap="viridis", s=3)
+        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1], cmap="viridis", s=3)
 
         # convert distances to True False for coloring
         color_mat = self.distances < 1
@@ -88,6 +94,9 @@ class GraphLatent:
         # legend
         line = Line2D([0], [0], color='blue', alpha=0.5, linewidth=2)
         plt.legend([line], ['RMSD < 1 (Real Space)'])
+
+        # add colorbar
+        plt.colorbar(scatter_plot, label="Viridis")
 
         plt.savefig(f"latentspace_graph_heuristic_{datetime.date.today()}.png")
         plt.show()
@@ -166,11 +175,13 @@ def main():
     # rmsd
     data = torch.load(args.rmsd_dataset)
     rmsd = data["rmsd"]
+    X = data["x"]
 
     # init the graph class
     G = GraphLatent(
         latent=latent,
         distances=rmsd,
+        X=X,
     )
 
     # Plot 
