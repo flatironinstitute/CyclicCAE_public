@@ -112,8 +112,8 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
     rmsd_latent.masked_fill_(mask, 0)
 
     # Need to set lambda some how right now I will just randomly fill in with values
-    lambda_real = 1e-2
-    lambda_latent = 1e-2
+    lambda_real = 2
+    lambda_latent = 2
 
     # Compute each component of the function sum((real_component - latent_component)**2)
     # Real: e^{-(RMSDreal_{ij} / lambda_real)**2}
@@ -123,12 +123,13 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
     latent_component = torch.exp( -( torch.pow( torch.div( rmsd_latent, lambda_latent ), 2 ) ) )
 
     # fill nans
-    real_component = torch.nan_to_num(real_component, nan=torch.nan_to_num(real_component).max())
-    latent_component = torch.nan_to_num(latent_component, nan=torch.nan_to_num(latent_component).max())
+    # real_component = torch.nan_to_num(real_component, nan=torch.nan_to_num(real_component).max())
+    # latent_component = torch.nan_to_num(latent_component, nan=torch.nan_to_num(latent_component).max())
 
     # now sum the information
-    # loss = torch.sum( torch.pow( real_component - latent_component, 2 ) )
-    loss = torch.mean( torch.pow( real_component - latent_component, 2 ) )
+    loss = torch.sum( torch.pow( real_component - latent_component, 2 ) )
+    loss = torch.div(loss, rmsd_latent.size(0)**2)
+    # loss = torch.mean( torch.pow( real_component - latent_component, 2 ) )
     return loss
 
 def loss_function(
@@ -142,10 +143,11 @@ def loss_function(
     ):
     """Combination of Loss terms take the mean"""
     # angle_loss = angle_loss_term(y_hat_angle, y_angle) * 2
-    angle_loss = linear_loss_term(y_hat_angle, y_angle) * 10
-    linear_loss = linear_loss_term(y_hat_linear, y_linear) * 100
-    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100
+    angle_loss = linear_loss_term(y_hat_angle, y_angle)
+    linear_loss = linear_loss_term(y_hat_linear, y_linear) #* 10
+    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 1000
     return angle_loss + linear_loss + enforce_latent_rmsd, angle_loss, linear_loss, enforce_latent_rmsd
+    # return enforce_latent_rmsd, torch.tensor([0]), torch.tensor([0]), enforce_latent_rmsd
 
     
 
@@ -153,6 +155,7 @@ def train(
     model: torch.nn.Module,
     dataset: torch.utils.data.DataLoader,
     epochs: int,
+    begin_epoch: int,
     device: str,
     optimizer: torch.optim,
     scheduler: torch.optim.lr_scheduler,
@@ -163,6 +166,8 @@ def train(
     weight_save_n: int,
     file_num: int,
     real_rmsd_mat: torch.Tensor,
+    latent_plotly: int,
+    sample_n: int,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -178,6 +183,9 @@ def train(
 
         epochs: int
             Number of epochs to train for
+
+        begin_epoch: int
+            Starting Place of training epoch
             
         device: str
             This will be either cpu or cuda
@@ -206,11 +214,29 @@ def train(
         file_num: int
             Random generated number for specification between files
 
+        real_rmsd_mat: torch.Tensor
+            The RMSD between all i,j structures within the real space.
+
+        latent_plotly: int
+            What N epochs to extract latent space coordinates for each sample
+
+        sample_n: int
+            Number of samples within X
+
     RETURNS
     -------
         mean_loss: float
             The mean loss of the total run after some N
             number of epochs.
+
+        lowest_loss: float
+            The lowest loss encountered when training
+
+        epoch_lowest_loss: int
+            The epoch of when the lowest loss occurred
+
+        latent_plotly_tensor: torch.Tensor
+            Extracted latent space tensor for each sample at every N epoch
     """
     # init loss list
     loss_all = list()
@@ -229,16 +255,17 @@ def train(
     model = model.to(device)
     model.train()
 
-    # register the hook
-    # model.encoder.register_forward_hook(print_grad)
-    # model.register_full_backward_hook(print_grad)
-    # torch.autograd.set_detect_anomaly(True)
-
     # init model weights
     # model.apply(xavier_init)
 
+    # latent holding tensor
+    latent_plotly_tensor = torch.zeros((sample_n, (epochs//latent_plotly)+1, 3)) if latent_plotly else torch.zeros((sample_n, 3))
+    extract_latent_epoch = latent_plotly if latent_plotly else epochs
+    plotly_index = 0
+    old_epoch = 0
+
     # loop through epochs
-    for e in range(epochs):
+    for e in range(begin_epoch, epochs+begin_epoch):
 
         # loop through dataset 
         for n, (data, indices) in enumerate(dataset):
@@ -250,8 +277,25 @@ def train(
             x = data.to(device)
 
             # run model
-            out, latent_rmsd_mat, decomposed_x = model(x)
+            out, latent_rmsd_mat, latent_space, decomposed_x = model(x)
 
+            # Extract out the latent tensor if multiple middle dimensions
+            if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
+
+                # Keep track of the epoch and where we are in the middle index
+                if old_epoch != (e+1):
+                    plotly_index += 1
+                    old_epoch = (e+1)
+                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+
+            # pull out initial  0 epoch latent
+            elif (e == 0) and (extract_latent_epoch != epochs):
+                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+
+            # if not passed then only extract the last epochs tensor
+            elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
+                latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
+                
             # args input for loss
             args = {"y_hat_angle": out[:, :angle_n],
                     "y_angle": decomposed_x[:, :angle_n],
@@ -268,7 +312,6 @@ def train(
             a_loss.append(angle_loss.item())
             l_loss.append(linear_loss.item())
             lat_loss.append(latent_loss.item())
-            # lat_loss.append(0)
 
             # backprop weights and clip
             loss.backward() 
@@ -303,7 +346,7 @@ def train(
                 print(f"{e+1},{mean_loss},{a_mean},{l_mean},{lat_mean}", file=specific_out)
 
             # First check if dirs exist if not then create
-            first_layer_dir = os.path.join(output_dir, "model_weights/")
+            first_layer_dir = os.path.join(output_dir, "model_weights/", "data_tensor")
             if not os.path.exists(first_layer_dir):
                 os.mkdir(first_layer_dir)
 
@@ -339,7 +382,7 @@ def train(
             print(out[:3, -1])
             print(decomposed_x[:3, :10])
             print(decomposed_x[:3, -1])
-    return mean_loss, lowest_loss, epoch_lowest_loss
+    return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor
 
 
 def test(

@@ -39,8 +39,13 @@ def main():
     p.add_argument("--learning_rate", type=float, default=1e-3, help="Specify the LR (default: 1e-3)")
     p.add_argument("--output_weights_every_n", type=int, default=1000,
                    help="Output saved model weights every N number of epochs (default: 1000)")
+    p.add_argument("--load_weights", type=str, default=None, 
+                   help="Load in specific weights from known stopping position. (default: None)")
     p.add_argument("--path_to_output_dir", type=str, default="./outputs/",
                    help="Specify model output specific directory (default: ./outputs/)")
+    p.add_argument("--plotly_latent_animate", type=int, default=0,
+                   help="Generate plotly latent 3D matrix. Specify the N epochs to take snapshot \
+                   (default: 0)")
     args = p.parse_args()
 
     # load in dataset
@@ -54,6 +59,11 @@ def main():
     N_DECODER_LAYERS = args.num_decoder_layers
     EPOCHS           = args.epochs
     LATENT_SPACE     = args.latent_space
+    PLOTLY_LATENT    = args.plotly_latent_animate
+    WEIGHTS          = args.load_weights
+    BEGIN_EPOCH      = 0
+
+    assert EPOCHS % PLOTLY_LATENT == 0, "Epochs for Plotly Number does not have remainder 0 for passed EPOCH number"
 
     # scale data
     X_scaled = scale(X, PARAMS)
@@ -63,7 +73,7 @@ def main():
     dataset = MyDataset(X_scaled)
 
     # load data into a specific dataloader class
-    dataload = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size)
+    dataload = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
     model = ConformationalMLPAutoEncoder(
         encoder_layers   = N_ENCODER_LAYERS,
@@ -71,6 +81,15 @@ def main():
         latent_space_dim = LATENT_SPACE,
         **PARAMS,
     )
+
+    # load weights if specified
+    if WEIGHTS != None:
+        # load in weights
+        weights = torch.load(WEIGHTS, map_location="cuda" if torch.cuda.is_available() else "cpu")
+        # set weights
+        model.load_state_dict(weights["model_state_dict"])
+        # set epoch
+        BEGIN_EPOCH = weights["epoch"]
 
     # Specify angle and linear number for L2 loss specifics
     angle_number = PARAMS["torsion_main_n"] + PARAMS["torsion_side_n"] + PARAMS["bond_angle_main_n"] + PARAMS["bond_angle_side_n"]
@@ -98,10 +117,11 @@ def main():
 
     # Run Model
     print(f"***MODEL {random_num} TRAIN***")
-    final_loss, lowest_loss, epoch_lowest_loss = mse_train(
+    final_loss, lowest_loss, epoch_lowest_loss, latent_plotly = mse_train(
         model = model,
         dataset = dataload,
         epochs = EPOCHS,
+        begin_epoch = BEGIN_EPOCH,
         device = "cuda",
         optimizer = optimizer,
         scheduler = scheduler,
@@ -112,7 +132,12 @@ def main():
         weight_save_n = args.output_weights_every_n,
         file_num = random_num,
         real_rmsd_mat = RMSD_REAL,
+        latent_plotly = PLOTLY_LATENT,
+        sample_n = X.size(0),
     )
+
+    # saved extract latent tensor
+    torch.save(latent_plotly, f"model_run_{random_num}_latent_tensor.pt")
 
     # Save to combo file
     md_combo_out_file = os.path.join(args.path_to_output_dir, "results.md")
