@@ -346,7 +346,7 @@ def train(
                 print(f"{e+1},{mean_loss},{a_mean},{l_mean},{lat_mean}", file=specific_out)
 
             # First check if dirs exist if not then create
-            first_layer_dir = os.path.join(output_dir, "model_weights/", "data_tensor")
+            first_layer_dir = os.path.join(output_dir, "model_weights/")
             if not os.path.exists(first_layer_dir):
                 os.mkdir(first_layer_dir)
 

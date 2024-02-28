@@ -65,7 +65,8 @@ class ConformationalMLPEncoderLayer(nn.Module):
         self.linear = nn.Linear(self.input_size, self.output_size)
 
         # activation funciton
-        self.leakyrelu = nn.LeakyReLU()
+        # self.leakyrelu = nn.LeakyReLU()
+        self.tanh = nn.Tanh()
 
     def forward(self, x: torch.Tensor, final_layer:bool = False):
         """ forward pass of Encoderlayer
@@ -79,7 +80,8 @@ class ConformationalMLPEncoderLayer(nn.Module):
         if final_layer:
             return self.linear(x)
         else:
-            return self.leakyrelu(self.linear(x))
+            # return self.leakyrelu(self.linear(x))
+            return self.tanh(self.linear(x))
 
 class ConformationalMLPEncoderBlock(nn.Module):
     def __init__(
@@ -732,7 +734,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         x = self.input_decomposition(x)
 
         # Extract out initial decomposed input for MSE Loss calc
-        initial_input = x.detach().clone()
+        initial_input = x.clone().detach()
 
         # encode the information into latent
         x = self.encoder(x)
@@ -741,28 +743,25 @@ class ConformationalMLPAutoEncoder(nn.Module):
         x = self.latent(x)
 
         # compute latent rmsd
-        latent_clone = x.detach().clone()
-        latent_euclid_dist = self.compute_euclidean_distance(latent_clone.detach())
+        latent_clone = x.clone()
+        latent_euclid_dist = self.compute_euclidean_distance(latent_clone)
 
         # Decode the information back to post-decomposition input size
         # Currently we are not using the OutputBlock
         # Return decoded x (decomposition size), latent_euclidean_distance, decomposed input
-        return self.decoder(x), latent_euclid_dist, initial_input
+        return self.decoder(x), latent_euclid_dist, latent_clone, initial_input
 
     def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
         """Compute the latent space RMSD"""
-        # expand dimension for broadcasting
-        points_expanded = xyz_mat.unsqueeze(1)
-
         # compute pairwise diff
-        differences = points_expanded - xyz_mat
+        differences = xyz_mat.unsqueeze(1) - xyz_mat.unsqueeze(0)
 
         # squared_distances along last dim
-        squared_distances = torch.sum( torch.pow( differences, 2), dim=-1)
+        distances = torch.sum( torch.pow( differences, 2), dim=-1)
 
         # distance matrix
-        distance_matrix = torch.sqrt(squared_distances)
-        return distance_matrix
+        # distance_matrix = torch.sqrt(squared_distances)
+        return distances
 
 ##################################################################################################################
 #                                               Main

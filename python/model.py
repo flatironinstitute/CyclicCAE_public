@@ -103,8 +103,8 @@ def main():
                                                            patience = 8,
                                                            mode = "min",
                                                            factor = 0.8,
-                                                           threshold = 1e-4,
-                                                           min_lr = 1e-8,
+                                                           threshold = 1e-3,
+                                                           min_lr = 1e-10,
                                                            )
 
     # Model Run specific number classifier for output files
@@ -137,7 +137,7 @@ def main():
     )
 
     # saved extract latent tensor
-    torch.save(latent_plotly, f"model_run_{random_num}_latent_tensor.pt")
+    torch.save(latent_plotly, os.path.join("outputs/data_tensor", f"model_run_{random_num}_latent_tensor.pt"))
 
     # Save to combo file
     md_combo_out_file = os.path.join(args.path_to_output_dir, "results.md")
