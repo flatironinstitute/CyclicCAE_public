@@ -21,6 +21,9 @@ from model_functions import sklearn_scale
 import torch
 import torch.nn as nn
 
+
+
+
 ##################################################################################################################
 #                                                Classes
 ##################################################################################################################
@@ -62,7 +65,7 @@ class ConformationalMLPEncoderLayer(nn.Module):
         self.output_size = output_size
 
         # method
-        self.linear = nn.Linear(self.input_size, self.output_size)
+        self.linear = nn.Linear(self.input_size, self.output_size, bias=False)
 
         # activation funciton
         # self.leakyrelu = nn.LeakyReLU()
@@ -180,7 +183,7 @@ class ConformationalMLPDecoderLayer(nn.Module):
         self.output_size = output_size
 
         # method
-        self.linear = nn.Linear(self.input_size, self.output_size)
+        self.linear = nn.Linear(self.input_size, self.output_size, bias=False)
 
         # activation funciton
         self.tanh = nn.Tanh()
@@ -380,7 +383,7 @@ class ConformationalOutputBlock(nn.Module):
         self.energy_n            = energy_n
 
         # Final linear layer
-        self.output_linear = nn.Linear(in_size, in_size)
+        # self.output_linear = nn.Linear(in_size, in_size)
 
         # batch normalization by keeping in (-1, 1) range
         self.tanh_norm = nn.Hardtanh(min_val=-1.0, max_val=1.0)
@@ -390,9 +393,9 @@ class ConformationalOutputBlock(nn.Module):
 
         # lastout
         self.output_layers = nn.Sequential(
-            nn.Linear(in_size, in_size),
+            nn.Linear(in_size, in_size, bias=False),
             nn.LeakyReLU(),
-            nn.Linear(in_size, in_size),
+            nn.Linear(in_size, in_size, bias=False),
             nn.LeakyReLU(),
         )
 
@@ -415,8 +418,15 @@ class ConformationalOutputBlock(nn.Module):
         # Now grab values
         torsion = x[:, :torsion_num]
         bond_angle = x[:, torsion_num : torsion_num + bond_angle_num]
+
         bond_length = x[:, torsion_num + bond_angle_num : torsion_num + bond_angle_num + bond_length_num]
         extra = x[:, torsion_num + bond_angle_num + bond_length_num:]
+
+        #linear term combine
+        linear_combo = torch.cat((bond_length, extra), dim=-1)
+
+        # compute large values
+        linear_out = self.output_layers(linear_combo)
 
         # normalize to keep the values on the unit circle vector output
         # torsion_norm = self.tanh_norm(torsion)
@@ -425,14 +435,16 @@ class ConformationalOutputBlock(nn.Module):
         # perform arctan2 
         # recomputed_torsion = torch.rad2deg(torch.atan2(torsion_norm[:, ::2], torsion_norm[:, 1::2]))
         # recomputed_bond_angle = torch.rad2deg(torch.atan2(bond_angle_norm[:, ::2], bond_angle_norm[:, 1::2]))
-        recomputed_torsion = torch.rad2deg(torch.atan2(torsion[:, ::2], torsion[:, 1::2]))
-        recomputed_bond_angle = torch.rad2deg(torch.atan2(bond_angle[:, ::2], bond_angle[:, 1::2]))
+        # recomputed_torsion = torch.rad2deg(torch.atan2(torsion[:, ::2], torsion[:, 1::2]))
+        # recomputed_bond_angle = torch.rad2deg(torch.atan2(bond_angle[:, ::2], bond_angle[:, 1::2]))
 
         # restack computed dofs with non_dof_x if necessary
-        out = torch.cat((recomputed_torsion, recomputed_bond_angle), dim=-1)
-        out = torch.cat((out, bond_length), dim=-1)
-        out = torch.cat((out, extra), dim=-1)
-        return out
+        # out = torch.cat((recomputed_torsion, recomputed_bond_angle), dim=-1)
+        out = torch.cat((torsion, bond_angle), dim=-1)
+        out = torch.cat((out, linear_out), dim=-1)
+        # out = torch.cat((out, bond_length), dim=-1)
+        # out = torch.cat((out, extra), dim=-1)
+        return out #, torch.cat((recomputed_torsion, recomputed_bond_angle), dim=-1)
 
 class ConformationalInputDecomposition(nn.Module):
     def __init__(
@@ -587,6 +599,7 @@ class ConformationalInputDecomposition(nn.Module):
         scaled_angle = (angle + 180) / 360 # Map to [0, 1]
         return scaled_angle * 2 - 1 # Map to [-1, 1]
 
+
 ##################################################################################################################
 #                                               Architecture
 ##################################################################################################################
@@ -681,11 +694,13 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.energy_n            = energy_n
 
         # combine terms
-        torsion = self.torsion_main_n + self.torsion_side_n
-        bond_angle = self.bond_angle_main_n + self.bond_angle_side_n
-        bond_length = self.bond_length_main_n + self.bond_length_side_n
+        self.torsion = self.torsion_main_n + self.torsion_side_n
+        self.bond_angle = self.bond_angle_main_n + self.bond_angle_side_n
+        self.bond_length = self.bond_length_main_n + self.bond_length_side_n
+
         # Combine for infromation (Also, the jump_n might need to be muptlied by 6)
-        self.after_decomposition_size = torsion*2 + bond_angle*2 + bond_length + self.jump_n + self.energy_n
+        self.after_decomposition_size = self.torsion*2 + self.bond_angle*2 + self.bond_length + self.jump_n + self.energy_n
+        self.linear_out_size = self.after_decomposition_size - (self.torsion*2 + self.bond_angle*2)
 
         # Init Model Blocks
         self.input_decomposition = ConformationalInputDecomposition(
@@ -716,7 +731,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.output = ConformationalOutputBlock(
             protein_len         = self.protein_len,
             normalize           = self.normalize,
-            in_size             = self.after_decomposition_size,
+            in_size             = self.linear_out_size,
             output_size         = self.input_size,
             torsion_main_n      = self.torsion_main_n,
             torsion_side_n      = self.torsion_side_n,
@@ -749,7 +764,8 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # Decode the information back to post-decomposition input size
         # Currently we are not using the OutputBlock
         # Return decoded x (decomposition size), latent_euclidean_distance, decomposed input
-        return self.decoder(x), latent_euclid_dist, latent_clone, initial_input
+        out = self.output(self.decoder(x))
+        return out, latent_euclid_dist, latent_clone, initial_input
 
     def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
         """Compute the latent space RMSD"""

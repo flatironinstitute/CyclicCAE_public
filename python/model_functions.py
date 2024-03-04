@@ -23,6 +23,9 @@ import torch.nn.init as init
 
 def scale(x: torch.Tensor, params: dict):
     """Scale all input values"""
+    # clone
+    out = x.clone()
+
     # starting spot in tensor
     linear_terms_start = params["torsion_main_n"] + params["torsion_side_n"] + params["bond_angle_main_n"] + params["bond_angle_side_n"]
 
@@ -31,27 +34,27 @@ def scale(x: torch.Tensor, params: dict):
 
     # grab out each section
     # Scale Bond Length
-    x[:, linear_terms_start: linear_terms_start + bond_length_size ] = normalize_vals(
-        x[:, linear_terms_start: linear_terms_start + bond_length_size ] 
+    out[:, linear_terms_start: linear_terms_start + bond_length_size ] = normalize_vals(
+        out[:, linear_terms_start: linear_terms_start + bond_length_size ] 
     )
 
     # Scale Jumps if any
     if params["jump_n"] != 0:
         jump_end = linear_terms_start + bond_length_size + params["jump_n"]
         jump_start = linear_terms_start + bond_length_size
-        x[:, jump_start : jump_end ] = normalize_vals(
-            x[:, jump_start : jump_end ]
+        out[:, jump_start : jump_end ] = normalize_vals(
+            out[:, jump_start : jump_end ]
         )
 
     # Scale Energy if any
     if params["energy_n"] != 0:
         energy_end = linear_terms_start + bond_length_size + params["jump_n"] + params["energy_n"]
         energy_start = linear_terms_start + bond_length_size + params["jump_n"]
-        x[:, energy_start : energy_end ] = normalize_vals(
-            x[:, energy_start : energy_end ]
+        out[:, energy_start : energy_end ] = normalize_vals(
+            out[:, energy_start : energy_end ]
         )
 
-    return x
+    return out
 
 
 def normalize_vals(x: torch.Tensor, norm_min:float = -1., norm_max:float = 1.):
@@ -79,9 +82,19 @@ def angle_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
     """
     return torch.mean(1. - torch.cos(y - y_hat))
 
-def linear_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
+def linear_loss_term(y_hat: torch.Tensor, y: torch.Tensor, scale:int = 1):
     """General L2 Linear Loss"""
-    return torch.mean(torch.pow(y - y_hat, 2))
+    return torch.mean(torch.pow((y - y_hat)*scale, 2))
+
+def angle_sin2_cos2_enforce(x: torch.Tensor):
+    """Enforce that the angle decomposition values sum to 1"""
+    # gen values
+    sin2 = torch.pow(x[:, ::2], 2)
+    cos2 = torch.pow(x[:, 1::2], 2)
+    # compute sum
+    theta = sin2 + cos2
+    theta = theta.view(-1)
+    return torch.mean( torch.pow( theta - 1., 2) )
 
 def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor, device: str):
     """Custom (B) loss function to enforce latent space RMSD distances to be comparable 
@@ -132,21 +145,89 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
     # loss = torch.mean( torch.pow( real_component - latent_component, 2 ) )
     return loss
 
+def lambda_weight_decay(epoch: int, start_weight: int, end_weight: int, start_decay_weight: int, end_decay_weight: int):
+    if epoch < start_decay_weight:
+        return end_weight, start_weight
+    else:
+        # decay rate
+        decay_rate = (start_weight - end_weight) / (end_decay_weight - start_decay_weight)
+        # apply 
+        lambda_latent = max(1000 - decay_rate * (epoch - start_decay_weight), end_weight)
+        lambda_rec = min(1000 - lambda_latent, 100)
+    return lambda_rec, lambda_latent
+
+def loss_terms_reg(term1: torch.float32, term2: torch.float32, threshold:int=10):
+    """Compute terms to keep terms on the same scale for equivalent backprop
+
+    PARAMS
+    ------
+        term1: torch.float32
+            reconstruction loss term
+
+        term2: torch.float32
+            Latent space enforcing term
+
+        threshold: int
+            The magnitude that we do not want to go over
+    """
+    # get ratio of terms
+    ratio = max(term1, term2) / min(term1, term2)
+
+    # if less than threshold return 1 since nothign needs to be changed
+    if ratio < threshold:
+        return 1, 1
+    
+    # if one is less than other that needs reweighting
+    if term1 < term2:
+        return ratio, 1
+    else:
+        return 1, ratio
+
 def loss_function(
     y_hat_angle: torch.Tensor,
     y_angle: torch.Tensor,
-    y_hat_linear: torch.Tensor,
-    y_linear: torch.Tensor,
+    # decomposed_angle: torch.Tensor,
+    bond_lengths_hat: torch.Tensor,
+    bond_lengths: torch.Tensor,
+    energy_hat: torch.Tensor,
+    energy: torch.Tensor,
+    # y_hat_linear: torch.Tensor,
+    # y_linear: torch.Tensor,
     rmsd_real: torch.Tensor,
     rmsd_latent: torch.Tensor,
     device: str,
+    epoch: int,
     ):
     """Combination of Loss terms take the mean"""
-    # angle_loss = angle_loss_term(y_hat_angle, y_angle) * 2
-    angle_loss = linear_loss_term(y_hat_angle, y_angle)
-    linear_loss = linear_loss_term(y_hat_linear, y_linear) #* 10
-    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 1000
-    return angle_loss + linear_loss + enforce_latent_rmsd, angle_loss, linear_loss, enforce_latent_rmsd
+     #lambda_weight_decay(epoch, 1000, 1, 200, 300)
+
+    # Compute individual angle loss terms
+    torsion_loss = linear_loss_term(y_hat_angle[:, :y_hat_angle.size(0)//2], y_angle[:, :y_hat_angle.size(0)//2], scale=1)
+    bond_angle_loss = linear_loss_term(y_hat_angle[:, y_hat_angle.size(0)//2:], y_angle[:, y_hat_angle.size(0)//2:], scale=1) 
+    constrain_loss = angle_sin2_cos2_enforce(y_hat_angle)
+    # constrain_loss = linear_loss_term(enforce_theta, ones.to(device))
+
+    # Compute individual linear loss terms
+    bond_length_loss = linear_loss_term(bond_lengths_hat, bond_lengths)
+    energy_loss = linear_loss_term(energy_hat, energy)
+
+    # extra latent space loss term
+    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device)
+
+    # linear loss
+    linear_loss = bond_length_loss + energy_loss
+
+    # angle loss
+    angle_loss = torsion_loss + bond_angle_loss + constrain_loss
+
+    # Combine Loss Terms for reconstruction
+    reconstruction_loss = angle_loss + linear_loss
+
+    # compute lambda weighting terms
+    # lambda_rec, lambda_latent = loss_terms_reg(reconstruction_loss, enforce_latent_rmsd)
+    lambda_rec, lambda_latent = 1, 1
+
+    return reconstruction_loss*lambda_rec + enforce_latent_rmsd*lambda_latent, angle_loss, linear_loss, enforce_latent_rmsd, constrain_loss
     # return enforce_latent_rmsd, torch.tensor([0]), torch.tensor([0]), enforce_latent_rmsd
 
     
@@ -168,6 +249,7 @@ def train(
     real_rmsd_mat: torch.Tensor,
     latent_plotly: int,
     sample_n: int,
+    real_X: torch.Tensor,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -243,6 +325,7 @@ def train(
     a_loss = list()
     l_loss = list()
     lat_loss = list()
+    constrain_list = list()
 
     # init lowest loss tracker
     lowest_loss = 100000
@@ -254,6 +337,7 @@ def train(
     # set device and model to train
     model = model.to(device)
     model.train()
+
 
     # init model weights
     # model.apply(xavier_init)
@@ -277,6 +361,7 @@ def train(
             x = data.to(device)
 
             # run model
+            # out, angles_decomposed, latent_rmsd_mat, latent_space, decomposed_x = model(x)
             out, latent_rmsd_mat, latent_space, decomposed_x = model(x)
 
             # Extract out the latent tensor if multiple middle dimensions
@@ -295,23 +380,39 @@ def train(
             # if not passed then only extract the last epochs tensor
             elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
                 latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
+
+            # Create output tensor to check
+            y_linear = real_X[indices, angle_n:].to(device)
+            # y_angle = real_X[indices, :angle_n].to(device)
+
+            # linear terms
+            bond_lengths = y_linear[:, :-1]
+            energy = y_linear[:, -1]
                 
             # args input for loss
-            args = {"y_hat_angle": out[:, :angle_n],
-                    "y_angle": decomposed_x[:, :angle_n],
-                    "y_hat_linear": out[:, angle_n:],
-                    "y_linear": decomposed_x[:, angle_n:],
+            args = {"y_hat_angle": out[:, :angle_n*2],
+            # args = {"y_hat_angle": out[:, :angle_n], # non_decomposed
+                    # "y_angle": y_angle,
+                    "y_angle": decomposed_x[:, :angle_n*2],
+                    # "decomposed_angle": angles_decomposed,
+                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-1)],
+                    # "bond_lengths_hat": out[:, angle_n: angle_n + (linear_n-1)], # non_decomposed
+                    "bond_lengths": bond_lengths, 
+                    "energy_hat": out[:, -1],
+                    "energy": energy,
                     "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                     "rmsd_latent": latent_rmsd_mat,
                     "device": device,
+                    "epoch": e+1,
                     }
 
             # generate loss and append
-            loss, angle_loss, linear_loss, latent_loss = loss_function(**args)
+            loss, angle_loss, linear_loss, latent_loss, constrain_loss = loss_function(**args)
             loss_all.append(loss.item())
             a_loss.append(angle_loss.item())
             l_loss.append(linear_loss.item())
             lat_loss.append(latent_loss.item())
+            constrain_list.append(constrain_loss.item())
 
             # backprop weights and clip
             loss.backward() 
@@ -329,9 +430,11 @@ def train(
         a_mean = sum(a_loss) / len(a_loss)
         l_mean = sum(l_loss) / len(l_loss)
         lat_mean = sum(lat_loss) / len(lat_loss)
+        cons_mean = sum(constrain_list) / len(constrain_list)
 
         # UpdateLR on Plateau Scheduler step
-        scheduler.step(mean_loss)
+        # scheduler.step(mean_loss)
+        scheduler.step()
 
         # check if loss is lower
         if mean_loss < lowest_loss:
@@ -374,14 +477,15 @@ def train(
                 )
 
         # Print out progress for each epoch
-        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}")
+        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Constrain Sin/Cos Loss: {cons_mean}")
         # Visualize Output vs Real values for qualitative check
-        if (e+1) % 50 == 0:
+        if (e+1) % 1000 == 0:
             print("Out vs Real")
             print(out[:3, :10])
             print(out[:3, -1])
             print(decomposed_x[:3, :10])
-            print(decomposed_x[:3, -1])
+            print(y_linear[:3, -1])
+            print("Y real max", y_linear[:, -1].max())
     return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor
 
 

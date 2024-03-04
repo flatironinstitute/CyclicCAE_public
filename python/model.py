@@ -68,7 +68,6 @@ def main():
     # scale data
     X_scaled = scale(X, PARAMS)
 
-
     # pass to custom dataset class
     dataset = MyDataset(X_scaled)
 
@@ -99,13 +98,21 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
 
     # init scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-                                                           patience = 8,
-                                                           mode = "min",
-                                                           factor = 0.8,
-                                                           threshold = 1e-3,
-                                                           min_lr = 1e-10,
-                                                           )
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+    #                                                        patience = 8,
+    #                                                        mode = "min",
+    #                                                        factor = 0.8,
+    #                                                        threshold = 1e-3,
+    #                                                        min_lr = 1e-10,
+    #                                                        )
+    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
+                                                  base_lr=1e-8,
+                                                  max_lr=args.learning_rate,
+                                                  step_size_up = 100,
+                                                  mode="exp_range",
+                                                  scale_mode="iterations",
+                                                  cycle_momentum=False,
+                                                  )
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
@@ -134,6 +141,7 @@ def main():
         real_rmsd_mat = RMSD_REAL,
         latent_plotly = PLOTLY_LATENT,
         sample_n = X.size(0),
+        real_X = X,
     )
 
     # saved extract latent tensor
