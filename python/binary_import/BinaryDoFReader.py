@@ -20,6 +20,7 @@ from collections import defaultdict
 import time
 import re
 import datetime
+import argparse
 
 # import torch
 import torch
@@ -330,13 +331,17 @@ class DoFBinaryReader:
 ##################################################################################################################
 if __name__ == "__main__":
     # If main then test out class
+    p = argparse.ArgumentParser(description="Binary to Pyotrch")
+    p.add_argument("--binary-dof", type=str, help="Define DoF .dat file to convert", required=True)
+    p.add_argument("--binary-rmsd", type=str, help="Define RMSD .dat file to convert", required=True)
+    args = p.parse_args()
 
     # explicit file
-    file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/dof_vectors.dat"
-    rmsd_file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/rmsd_matrix.dat"
+    # file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/dof_vectors.dat"
+    # rmsd_file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/rmsd_matrix.dat"
 
     # init class
-    dofclass = DoFBinaryReader(file, rmsd_file, True, True)
+    dofclass = DoFBinaryReader(args.binary_dof, args.binary_rmsd, True, True)
 
     # check out tensor
     out = dofclass.extract_tensor

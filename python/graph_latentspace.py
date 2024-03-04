@@ -41,6 +41,7 @@ class GraphLatent:
         latent: torch.Tensor,
         distances: torch.Tensor,
         X: torch.Tensor,
+        rmsd_cutoff: float,
         ):
 
         """Heuristically Interrogate the Latent Space (Color RMSD Close and Far distances differently)
@@ -56,11 +57,15 @@ class GraphLatent:
             X: torch.Tensor
                 Full training dataset tensor, we need this for
                 coloring by energy
+
+            rmsd_cutoff: float
+                Cutoff value for graphing lines.
         """
         # store passed values
         self.latent = latent
         self.distances = distances
         self.X = X
+        self.rmsd_cutoff = rmsd_cutoff
 
     def plot(self):
         """Plot latent space"""
@@ -69,10 +74,10 @@ class GraphLatent:
         ax = plt.axes(projection='3d')
 
         # plot 3d points
-        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1], cmap="viridis", s=3)
+        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1], cmap="viridis", s=10)
 
         # convert distances to True False for coloring
-        color_mat = self.distances < 1
+        color_mat = self.distances < self.rmsd_cutoff
 
         # pick random indices
         indices = np.random.choice(np.arange(0, self.latent.size(0)), size=1, replace=False)
@@ -80,7 +85,7 @@ class GraphLatent:
         # new loop through pairs and generate colored lines
         # for i in range(10):
         for j in range(self.latent.size(0)):
-            if (indices[0] != j) and (self.distances[indices[0], j] < 1):
+            if (indices[0] != j) and (self.distances[indices[0], j] < self.rmsd_cutoff):
                 ax.plot(
                     [self.latent[indices[0], -1, 0], self.latent[j, -1, 0]],
                     [self.latent[indices[0], -1, 1], self.latent[j, -1, 1]],
@@ -93,7 +98,7 @@ class GraphLatent:
         
         # legend
         line = Line2D([0], [0], color='blue', alpha=0.5, linewidth=2)
-        plt.legend([line], ['RMSD < 1 (Real Space)'])
+        plt.legend([line], [f'RMSD < {self.rmsd_cutoff} (Real Space)'])
 
         # add colorbar
         plt.colorbar(scatter_plot, label="Viridis")
@@ -167,6 +172,8 @@ def main():
     p.add_argument("--rmsd_dataset", type=str, default="./binary_import/dof_vectors2024-02-20torch_tensor.pt",
                    help="RMSD Dataset (Default: ./binary_import/dof_vectors2024-02-20torch_tensor.pt)")
     p.add_argument("--animate", action="store_true", help="Create animated Epoch Image of Latent Space")
+    p.add_argument("--rmsd-cutoff", default=1.0, type=float, help="Cutoff point to graph lines drawn on \
+    a random sample for the graph (default: 1.0)")
     args = p.parse_args()
 
     # load in latent space
@@ -182,6 +189,7 @@ def main():
         latent=latent,
         distances=rmsd,
         X=X,
+        rmsd_cutoff=args.rmsd_cutoff,
     )
 
     # Plot 
