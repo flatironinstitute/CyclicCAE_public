@@ -29,6 +29,10 @@ import seaborn as sns
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
+from scipy.interpolate import griddata
+from matplotlib.colors import Normalize
+from matplotlib.cm import viridis
+from plotly.subplots import make_subplots
 
 
 ###############################################################################################
@@ -42,6 +46,7 @@ class GraphLatent:
         distances: torch.Tensor,
         X: torch.Tensor,
         rmsd_cutoff: float,
+        marker_size: int,
         ):
 
         """Heuristically Interrogate the Latent Space (Color RMSD Close and Far distances differently)
@@ -60,21 +65,44 @@ class GraphLatent:
 
             rmsd_cutoff: float
                 Cutoff value for graphing lines.
+
+            marker_size: int
+                Size of the points in the plot
         """
         # store passed values
         self.latent = latent
         self.distances = distances
         self.X = X
         self.rmsd_cutoff = rmsd_cutoff
+        self.marker_size = marker_size
 
     def plot(self):
         """Plot latent space"""
+        # norm original scores
+        # norm = Normalize(vmin=self.X[:, -1].min(), vmax=self.X[:, -1].max())
+        # colors = viridis(norm(self.X[:, -1]))
+        #
+        # # spline infromation
+        # xi, yi = np.linspace(self.latent[:, -1, 0].min(),self.latent[:, -1, 0].max(), self.latent.size(0)), np.linspace(self.latent[:, -1, 1].min(),self.latent[:, -1, 1].max(), self.latent.size(0))
+        # xi, yi = np.meshgrid(xi, yi)
+        #
+        # # griddata for interpolation
+        # zi = griddata((self.latent[:, -1, 0], self.latent[:, -1, 1]), self.latent[:, -1, 2], (xi, yi), method='cubic')
+        # score_values = griddata((self.latent[:, -1, 0], self.latent[:, -1, 1]), self.X[:, -1], (xi, yi), method='cubic')
+        #
+        # normalize_score_values = norm(score_values)
+
         # generate space
         fig = plt.figure()
-        ax = plt.axes(projection='3d')
+        # ax = plt.axes(projection='3d')
+        ax = fig.add_subplot(111, projection='3d')
 
         # plot 3d points
-        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1], cmap="viridis", s=10)
+        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1], cmap="viridis", marker="o", s=self.marker_size)
+        # scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c="red", marker="x", s=self.marker_size)
+
+        # plot interpolated surface
+        # surf = ax.plot_surface(xi, yi, zi, facecolors=viridis(normalize_score_values), edgecolor="none", alpha=0.7)
 
         # convert distances to True False for coloring
         color_mat = self.distances < self.rmsd_cutoff
@@ -100,8 +128,8 @@ class GraphLatent:
         line = Line2D([0], [0], color='blue', alpha=0.5, linewidth=2)
         plt.legend([line], [f'RMSD < {self.rmsd_cutoff} (Real Space)'])
 
-        # add colorbar
-        plt.colorbar(scatter_plot, label="Viridis")
+        plt.colorbar(scatter_plot, label="Scatter REU")
+        # plt.colorbar(surf, label="REU")
 
         plt.savefig(f"latentspace_graph_heuristic_{datetime.date.today()}.png")
         plt.show()
@@ -117,7 +145,7 @@ class GraphLatent:
             y=self.latent[:, 0, 1],
             z=self.latent[:, 0, 2],
             mode='markers',
-            marker=dict(size=1,
+            marker=dict(size=self.marker_size//4,
                         color=self.X[:, -1],
                         colorscale='Viridis',
                         colorbar=dict(title='Z axis'),
@@ -136,7 +164,7 @@ class GraphLatent:
                     y=self.latent[:, i, 1],
                     z=self.latent[:, i, 2],
                     mode='markers',
-                    marker=dict(size=1,
+                    marker=dict(size=self.marker_size//4,
                                 color=self.X[:, -1],
                                 colorscale='Viridis',
                                 colorbar=dict(title='Z axis'),
@@ -174,6 +202,7 @@ def main():
     p.add_argument("--animate", action="store_true", help="Create animated Epoch Image of Latent Space")
     p.add_argument("--rmsd-cutoff", default=1.0, type=float, help="Cutoff point to graph lines drawn on \
     a random sample for the graph (default: 1.0)")
+    p.add_argument("--marker-size", default=10, type=int, help="Maker Size in Plots (default: 10)")
     args = p.parse_args()
 
     # load in latent space
@@ -190,6 +219,7 @@ def main():
         distances=rmsd,
         X=X,
         rmsd_cutoff=args.rmsd_cutoff,
+        marker_size=args.marker_size,
     )
 
     # Plot 

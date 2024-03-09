@@ -46,6 +46,10 @@ def main():
     p.add_argument("--plotly_latent_animate", type=int, default=0,
                    help="Generate plotly latent 3D matrix. Specify the N epochs to take snapshot \
                    (default: 0)")
+    p.add_argument("--angle-decomposition", type=int, default=1, help="Decompose the angle into \
+                    sin/cos N times (default: 1)")
+    p.add_argument("--override-lr", store_action="True", help="Pass flag if you don't want to load \
+                    weights LR in.")
     args = p.parse_args()
 
     # load in dataset
@@ -62,6 +66,8 @@ def main():
     PLOTLY_LATENT    = args.plotly_latent_animate
     WEIGHTS          = args.load_weights
     BEGIN_EPOCH      = 0
+    DECOMPOSE_ANGLE  = args.angle_decomposition
+    LR               = args.learning_rate
 
     assert EPOCHS % PLOTLY_LATENT == 0, "Epochs for Plotly Number does not have remainder 0 for passed EPOCH number"
 
@@ -78,6 +84,7 @@ def main():
         encoder_layers   = N_ENCODER_LAYERS,
         decoder_layers   = N_DECODER_LAYERS,
         latent_space_dim = LATENT_SPACE,
+        decomposition_n      = DECOMPOSE_ANGLE,
         **PARAMS,
     )
 
@@ -89,30 +96,33 @@ def main():
         model.load_state_dict(weights["model_state_dict"])
         # set epoch
         BEGIN_EPOCH = weights["epoch"]
+        if not args.override_lr:
+            # grab LR
+            LR = weights["optimizer_state_dict"]["param_groups"][0]["lr"]
 
     # Specify angle and linear number for L2 loss specifics
     angle_number = PARAMS["torsion_main_n"] + PARAMS["torsion_side_n"] + PARAMS["bond_angle_main_n"] + PARAMS["bond_angle_side_n"]
     linear_number = PARAMS["input_size"] - angle_number
 
     # init AdamW optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
 
     # init scheduler
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-    #                                                        patience = 8,
-    #                                                        mode = "min",
-    #                                                        factor = 0.8,
-    #                                                        threshold = 1e-3,
-    #                                                        min_lr = 1e-10,
-    #                                                        )
-    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
-                                                  base_lr=1e-8,
-                                                  max_lr=args.learning_rate,
-                                                  step_size_up = 100,
-                                                  mode="exp_range",
-                                                  scale_mode="iterations",
-                                                  cycle_momentum=False,
-                                                  )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                           patience = 8,
+                                                           mode = "min",
+                                                           factor = 0.8,
+                                                           threshold = 1e-3,
+                                                           min_lr = 1e-10,
+                                                           )
+    # scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
+    #                                               base_lr=1e-8,
+    #                                               max_lr=1e-3,
+    #                                               step_size_up = 200,
+    #                                               mode="triangular",
+    #                                               scale_mode="iterations",
+    #                                               cycle_momentum=False,
+    #                                               )
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
@@ -120,7 +130,7 @@ def main():
     # Generate output for run
     file_out_name = os.path.join(args.path_to_output_dir, f"model_run_{random_num}.csv")
     with open(file_out_name, "w") as file_out:
-        print("epoch,loss,angle_loss,linear_loss,latent_rmsd_loss", file=file_out)
+        print("epoch,loss,angle_loss,linear_loss,latent_rmsd_loss,constrain_angle_loss", file=file_out)
 
     # Run Model
     print(f"***MODEL {random_num} TRAIN***")
