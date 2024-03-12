@@ -42,7 +42,115 @@ class MyDataset(torch.utils.data.Dataset):
         """Returns the length of the dataset object"""
         return len(self.dataset)
 
+##### Conv ENCODER
+class EncoderLayer64(nn.Module):
+    def __init__(
+        self,
+        input_size: int = 128,
+        output_size: int = 3,
+        layer_num: int = 0,
+        ):
+        """ A Basic MLP layer for the autoencoder model
 
+        PARAMS
+        ------
+            input_size: int
+                The size of the input vector from the last layer
+
+            output_size: int
+                The size of the vector at the end of this layer
+        """
+        super().__init__()
+        # Save inputs
+        self.input_size = input_size
+        self.output_size = output_size
+
+        self.linear = nn.Linear(input_size, output_size)
+
+        # self.leakyrelu = nn.LeakyReLU()
+        self.relu = nn.ReLU()
+
+        self.batch_norm = nn.BatchNorm1d(output_size)
+
+    def forward(self, x: torch.Tensor, final_layer:bool = False):
+        """ forward pass of Encoderlayer
+
+        PARAMS
+        ------
+            x: torch.Tensor
+                The DoF input vector of size (B, N) where B is
+                the batch size and N is the number of elements
+        """
+        if final_layer:
+            return self.linear(x)
+        else:
+            # return self.leakyrelu(self.linear(x))
+            return self.leakyrelu(self.batch_norm(self.linear(x)))
+            # return self.relu(self.batch_norm(self.linear(x)))
+
+class EncoderBlock64(nn.Module):
+    def __init__(
+        self,
+        num_layers: int = 3,
+        start_size: int = 512,
+        end_size: int = 3,
+        ):
+        """ A General Encoder Block 
+
+        PARAMS
+        ------
+            num_layers: int
+                Number of EncoderLayers to include within the model
+
+            start_size: int
+                The beginning last dimension size of the input vector 
+                going into the block
+
+            end_size: int
+                The ending last dimension size of the output vector going
+                out of the block
+        """
+        super().__init__()
+        # Save input parameters
+        self.num_layers = num_layers
+        self.start_size = start_size
+        self.end_size = end_size
+
+        self.layer_size = [start_size] + [64]*(num_layers-1)
+        self.out_size = [64] * (num_layers-1) + [end_size]
+
+
+        # Make list of encoder layers that make up the encoder block
+        self.encoder_layers = nn.ModuleList(
+            [
+                EncoderLayer64(
+                    input_size = self.layer_size[l],
+                    output_size = self.out_size[l],
+                ) for l in range(0,self.num_layers)
+            ]
+        )
+
+    def forward(self, x: torch.Tensor):
+        """ Forward of Encoder Block
+
+        PARAMS
+        ------
+            x: torch.Tensor
+                The DoF input vector of size (B, N) where B is
+                the batch size and N is the number of elements
+        """
+        for i, layer in enumerate(self.encoder_layers):
+            # If last layer then pass True
+            if i+1 == self.num_layers:
+                x = layer(x, True)
+            elif (i+1 != self.num_layers) or (i+1 != 1):
+                skip_connect = x.clone()
+                x = layer(x, True)
+            else:
+                x = layer(torch.add(x, skip_connect))
+        return x
+
+##### Base ENCODER
 class ConformationalMLPEncoderLayer(nn.Module):
     def __init__(
         self,
@@ -67,9 +175,12 @@ class ConformationalMLPEncoderLayer(nn.Module):
         # method
         self.linear = nn.Linear(self.input_size, self.output_size, bias=False)
 
+        # batch normalize
+        self.batch_norm = nn.BatchNorm1d(self.output_size)
+
         # activation funciton
-        # self.leakyrelu = nn.LeakyReLU()
-        self.tanh = nn.Tanh()
+        self.leakyrelu = nn.LeakyReLU()
+        # self.gelu = nn.GELU()
 
     def forward(self, x: torch.Tensor, final_layer:bool = False):
         """ forward pass of Encoderlayer
@@ -84,7 +195,7 @@ class ConformationalMLPEncoderLayer(nn.Module):
             return self.linear(x)
         else:
             # return self.leakyrelu(self.linear(x))
-            return self.tanh(self.linear(x))
+            return self.leakyrelu(self.batch_norm(self.linear(x)))
 
 class ConformationalMLPEncoderBlock(nn.Module):
     def __init__(
@@ -185,8 +296,12 @@ class ConformationalMLPDecoderLayer(nn.Module):
         # method
         self.linear = nn.Linear(self.input_size, self.output_size, bias=False)
 
+        # batch normalize
+        self.batch_norm = nn.BatchNorm1d(self.output_size)
+
         # activation funciton
-        self.tanh = nn.Tanh()
+        # self.sigmoid = nn.Sigmoid()
+        self.leakyrelu = nn.LeakyReLU()
 
     def forward(self, x: torch.Tensor, final_layer:bool = False):
         """ forward pass of Encoderlayer
@@ -200,7 +315,7 @@ class ConformationalMLPDecoderLayer(nn.Module):
         if final_layer:
             return self.linear(x)
         else:
-            return self.tanh(self.linear(x))
+            return self.leakyrelu(self.batch_norm(self.linear(x)))
 
 class ConformationalMLPDecoderBlock(nn.Module):
     def __init__(
@@ -295,7 +410,7 @@ class ConformationalLatentSpace(nn.Module):
         # activation func
 
         # linear function to keep it in the latent space
-        # self.latent = nn.Linear(latent_space_dim, latent_space_dim)
+        self.latent = nn.Linear(latent_space_dim, latent_space_dim)
 
     def forward(self, x: torch.Tensor):
         """ Forward of Latent Space Block
@@ -306,8 +421,8 @@ class ConformationalLatentSpace(nn.Module):
             x: torch.Tensor
                 Reduced input vector (B, latent_space_dim)
         """
-        # return torch.add(self.latent(x), x)
-        return x
+        return torch.add(self.latent(x), x)
+        # return x
 
 
 class ConformationalOutputBlock(nn.Module):
@@ -315,7 +430,8 @@ class ConformationalOutputBlock(nn.Module):
         self,
         protein_len: int,
         normalize: bool = True,
-        in_size: int = 128,
+        in_size_linear: int = 128,
+        in_size_angle: int = 128,
         output_size: int = 512,
         torsion_main_n: int = 0,
         torsion_side_n: int = 0,
@@ -382,21 +498,24 @@ class ConformationalOutputBlock(nn.Module):
         self.jump_n              = jump_n
         self.energy_n            = energy_n
 
-        # Final linear layer
-        # self.output_linear = nn.Linear(in_size, in_size)
-
         # batch normalization by keeping in (-1, 1) range
         self.tanh_norm = nn.Hardtanh(min_val=-1.0, max_val=1.0)
 
-        # activation function
-        self.tanh = nn.Tanh()
+        # last angle
+        self.out_angle = nn.Sequential(
+            nn.Linear(in_size_angle, in_size_angle, bias=False),
+            nn.Tanh(),
+            nn.Linear(in_size_angle, in_size_angle, bias=False),
+            nn.Tanh(),
+        )
 
         # lastout
         self.output_layers = nn.Sequential(
-            nn.Linear(in_size, in_size, bias=False),
+            nn.Linear(in_size_linear, in_size_linear, bias=False),
+            nn.BatchNorm1d(in_size_linear),
             nn.LeakyReLU(),
-            nn.Linear(in_size, in_size, bias=False),
-            nn.LeakyReLU(),
+            nn.Linear(in_size_linear, in_size_linear, bias=False),
+            # nn.LeakyReLU(),
         )
 
     def forward(self, x: torch.Tensor):
@@ -418,6 +537,10 @@ class ConformationalOutputBlock(nn.Module):
         # Now grab values
         torsion = x[:, :torsion_num]
         bond_angle = x[:, torsion_num : torsion_num + bond_angle_num]
+        angle_combo = torch.cat((torsion, bond_angle), dim=-1)
+
+        # compute angles
+        angle_out = self.out_angle(angle_combo)
 
         bond_length = x[:, torsion_num + bond_angle_num : torsion_num + bond_angle_num + bond_length_num]
         extra = x[:, torsion_num + bond_angle_num + bond_length_num:]
@@ -440,11 +563,11 @@ class ConformationalOutputBlock(nn.Module):
 
         # restack computed dofs with non_dof_x if necessary
         # out = torch.cat((recomputed_torsion, recomputed_bond_angle), dim=-1)
-        out = torch.cat((torsion, bond_angle), dim=-1)
-        out = torch.cat((out, linear_out), dim=-1)
-        # out = torch.cat((out, bond_length), dim=-1)
-        # out = torch.cat((out, extra), dim=-1)
-        return out #, torch.cat((recomputed_torsion, recomputed_bond_angle), dim=-1)
+        # out = torch.cat((torsion, bond_angle), dim=-1)
+        # out = torch.cat((torsion_norm, bond_angle_norm), dim=-1)
+        # out = torch.cat((out, linear_out), dim=-1)
+        out = torch.cat((angle_out, linear_out), dim=-1)
+        return out 
 
 class ConformationalInputDecomposition(nn.Module):
     def __init__(
@@ -458,6 +581,7 @@ class ConformationalInputDecomposition(nn.Module):
         bond_length_side_n: int = 0,
         jump_n: int = 0,
         energy_n: int = 0,
+        decomposition_n: int = 1,
         ):
         """Decomposes DoF input portion into Sin and Cos
 
@@ -490,6 +614,9 @@ class ConformationalInputDecomposition(nn.Module):
 
             energy_n: int
                 Strictly specify the number of energy terms for the protein/peptide
+
+            decomposition_n: int
+                Number of times to decompose x
         """
         super().__init__()
         # save passed variables
@@ -502,6 +629,7 @@ class ConformationalInputDecomposition(nn.Module):
         self.bond_length_side_n  = bond_length_side_n
         self.jump_n              = jump_n
         self.energy_n            = energy_n
+        self.decomposition_n     = decomposition_n
         
 
     def forward(self, x: torch.Tensor):
@@ -526,7 +654,8 @@ class ConformationalInputDecomposition(nn.Module):
             # pul out the specific numbers from the passed params
             torsion = x[:, :torsion_size]
             # decompose pulled out angles into both sin and cos
-            torsion_decompose = self.decompose_angle_(torsion)
+            torsion_decompose = self.decompose_angle_(torsion, self.decomposition_n)
+            # torsion_decompose = torsion * torch.pi / 180
 
         # update index_in
         index_in += torsion_size
@@ -538,7 +667,8 @@ class ConformationalInputDecomposition(nn.Module):
             # pull out the specific numbers from the passed params
             bond_angle = x[:, index_in : index_in + bond_angle_size]
             # decompose pulled out angles into both sin and cos
-            bond_angle_decompose = self.decompose_angle_(bond_angle)
+            bond_angle_decompose = self.decompose_angle_(bond_angle, self.decomposition_n)
+            # bond_angle_decompose = bond_angle * torch.pi / 180
 
         # update index_in
         index_in += bond_angle_size
@@ -577,7 +707,7 @@ class ConformationalInputDecomposition(nn.Module):
 
         return out
 
-    def decompose_angle_(self, x: torch.Tensor, idx: torch.Tensor = None):
+    def decompose_angle_(self, x: torch.Tensor, decomposition_n: int, idx: torch.Tensor = None):
         """Break the angle up into sin & cos components"""
         # if idx is provided pull out only angle idx components
         # Assumption is made that the input is 2d (B, N)
@@ -586,8 +716,18 @@ class ConformationalInputDecomposition(nn.Module):
             x = x[:, idx]
 
         # decompose angle into both sin and cos
-        sin_x = torch.sin(torch.pi * self.circular_scale(x))
-        cos_x = torch.cos(torch.pi * self.circular_scale(x))
+        # sin_x = torch.sin(torch.pi * self.circular_scale(x))
+        # cos_x = torch.cos(torch.pi * self.circular_scale(x))
+        if decomposition_n == 1:
+            sin_x = torch.sin(torch.deg2rad(x))
+            cos_x = torch.cos(torch.deg2rad(x))
+        else:
+            sin_x, cos_x = torch.zeros(x.size(0), decomposition_n, x.size(-1), device="cuda"), torch.zeros(x.size(0), decomposition_n, x.size(-1), device="cuda")
+            for n in range(1, decomposition_n+1):
+                sin_x[:, n-1, :] = torch.sin(n*torch.deg2rad(x))
+                cos_x[:, n-1, :] = torch.cos(n*torch.deg2rad(x))
+            sin_x = sin_x.reshape(x.size(0), -1)
+            cos_x = cos_x.reshape(x.size(0), -1)
 
         # stack new decomposed vectors
         stacked_sincos_x = torch.cat((sin_x, cos_x), dim=-1)
@@ -614,6 +754,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         decoder_layers: int,
         encoder_layers: int,
         latent_space_dim: int,
+        decomposition_n: int = 1,
         torsion_main_n: int = 0,
         torsion_side_n: int = 0,
         bond_angle_main_n: int = 0,
@@ -674,6 +815,10 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
             energy_n: int
                 Strictly specify the number of energy terms for the protein/peptide
+
+            decomposition_n: int
+                Series of decomposing x into n number of sin/cos values
+                sin(x), sin(n_1*x), ..., sin(n*x)
         """
         super().__init__()
         # Save inputs
@@ -692,6 +837,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.bond_length_side_n  = bond_length_side_n
         self.jump_n              = jump_n
         self.energy_n            = energy_n
+        self.decomposition_n     = decomposition_n
 
         # combine terms
         self.torsion = self.torsion_main_n + self.torsion_side_n
@@ -699,8 +845,13 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.bond_length = self.bond_length_main_n + self.bond_length_side_n
 
         # Combine for infromation (Also, the jump_n might need to be muptlied by 6)
-        self.after_decomposition_size = self.torsion*2 + self.bond_angle*2 + self.bond_length + self.jump_n + self.energy_n
+        # Actual decomposition
+        # self.after_decomposition_size = self.torsion*2 + self.bond_angle*2 + self.bond_length + self.jump_n + self.energy_n
+        # self.linear_out_size = self.after_decomposition_size - (self.torsion*2 + self.bond_angle*2)
+        self.after_decomposition_size = self.torsion*self.decomposition_n*2 + self.bond_angle*self.decomposition_n*2 + self.bond_length + self.jump_n + self.energy_n
         self.linear_out_size = self.after_decomposition_size - (self.torsion*2 + self.bond_angle*2)
+        self.angle_out_size = self.torsion*2 + self.bond_angle*2
+        # self.linear_out_size = self.after_decomposition_size - (self.torsion*self.decomposition_n*2 + self.bond_angle*self.decomposition_n*2)
 
         # Init Model Blocks
         self.input_decomposition = ConformationalInputDecomposition(
@@ -713,25 +864,62 @@ class ConformationalMLPAutoEncoder(nn.Module):
             bond_length_side_n  = self.bond_length_side_n,
             jump_n              = self.jump_n,
             energy_n            = self.energy_n,
-        )
-        self.encoder = ConformationalMLPEncoderBlock(
+            decomposition_n     = self.decomposition_n,
+        ).double()
+        self.input_single_decomp = ConformationalInputDecomposition(
+            protein_len         = self.protein_len,
+            torsion_main_n      = self.torsion_main_n,
+            torsion_side_n      = self.torsion_side_n,
+            bond_angle_main_n   = self.bond_angle_main_n,
+            bond_angle_side_n   = self.bond_angle_side_n,
+            bond_length_main_n  = self.bond_length_main_n,
+            bond_length_side_n  = self.bond_length_side_n,
+            jump_n              = self.jump_n,
+            energy_n            = self.energy_n,
+            decomposition_n     = 1,
+        ).double()
+        # self.encoder = ConformationalMLPEncoderBlock(
+        #     num_layers = self.encoder_layers,
+        #     start_size = self.after_decomposition_size,
+        #     end_size   = self.latent_space_dim,
+        # ).double()
+        self.encoder = EncoderBlock64(
             num_layers = self.encoder_layers,
             start_size = self.after_decomposition_size,
             end_size   = self.latent_space_dim,
-        )
-        self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim)
+        ).double()
+
+        self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim).double()
         # self.latent = ConformationalLatentSpace(latent_space_dim=self.after_decomposition_size) # check bottleneck
 
-        self.decoder = ConformationalMLPDecoderBlock(
+        # self.decoder = ConformationalMLPDecoderBlock(
+        #     num_layers = self.decoder_layers,
+        #     start_size = self.latent_space_dim,
+        #     end_size   = self.after_decomposition_size,
+        # ).double()
+
+        self.decoder = EncoderBlock64(
             num_layers = self.decoder_layers,
-            start_size = self.latent_space_dim,
-            end_size   = self.after_decomposition_size,
-        )
+            end_size = self.after_decomposition_size,
+            start_size   = self.latent_space_dim,
+        ).double()
+
+        # For Identity Function
+        # self.decoder = nn.Sequential(
+        #         nn.Linear(self.after_decomposition_size, self.after_decomposition_size, bias=True),
+        #         # nn.LeakyReLU(),
+        #         # nn.Linear(self.after_decomposition_size, self.after_decomposition_size, bias=True),
+        #         # nn.LeakyReLU(),
+        #         # nn.Linear(self.after_decomposition_size, self.after_decomposition_size, bias=True),
+        #         # nn.LeakyReLU(),
+        #         # nn.Linear(self.after_decomposition_size, self.after_decomposition_size, bias=True),
+        # )
 
         self.output = ConformationalOutputBlock(
             protein_len         = self.protein_len,
             normalize           = self.normalize,
-            in_size             = self.linear_out_size,
+            in_size_linear      = self.linear_out_size,
+            in_size_angle       = self.angle_out_size,
             output_size         = self.input_size,
             torsion_main_n      = self.torsion_main_n,
             torsion_side_n      = self.torsion_side_n,
@@ -741,17 +929,18 @@ class ConformationalMLPAutoEncoder(nn.Module):
             bond_length_side_n  = self.bond_length_side_n,
             jump_n              = self.jump_n,
             energy_n            = self.energy_n,
-        )
+        ).double()
 
     def forward(self, x: torch.Tensor):
         """Train and Test Forward Method"""
+        # Extract out initial decomposed input for MSE Loss calc
+        initial_input = self.input_single_decomp(x.clone().detach())
+
         # decompose
         x = self.input_decomposition(x)
 
-        # Extract out initial decomposed input for MSE Loss calc
-        initial_input = x.clone().detach()
-
         # encode the information into latent
+        # x = x.unsqueeze(1)
         x = self.encoder(x)
 
         # pass the latent to itself (basically just returns passed in tensor)
@@ -766,6 +955,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # Return decoded x (decomposition size), latent_euclidean_distance, decomposed input
         out = self.output(self.decoder(x))
         return out, latent_euclid_dist, latent_clone, initial_input
+        # return out, torch.tensor(0), latent_clone, initial_input
 
     def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
         """Compute the latent space RMSD"""
@@ -778,6 +968,30 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # distance matrix
         # distance_matrix = torch.sqrt(squared_distances)
         return distances
+
+
+
+#### MODEL SPECIFIC STOP CLASS
+
+class EarlyStopper:
+    def __init__(self, patience=1, min_delta=0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.min_validation_loss = float('inf')
+
+    def early_stop(self, validation_loss):
+        if validation_loss < self.min_validation_loss:
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (self.min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                return True
+        return False
+
+
+
 
 ##################################################################################################################
 #                                               Main
