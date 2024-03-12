@@ -99,6 +99,7 @@ class GraphLatent:
 
         # plot 3d points
         scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1], cmap="viridis", marker="o", s=self.marker_size)
+        # scatter_plot = ax.scatter(self.latent[:, 1, 0], self.latent[:, 1, 1], self.latent[:, 1, 2], c=self.X[:, -1], cmap="viridis", marker="o", s=self.marker_size)
         # scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c="red", marker="x", s=self.marker_size)
 
         # plot interpolated surface
@@ -109,6 +110,7 @@ class GraphLatent:
 
         # pick random indices
         indices = np.random.choice(np.arange(0, self.latent.size(0)), size=1, replace=False)
+        ax.scatter(self.latent[indices[0], -1, 0], self.latent[indices[0], -1, 1], self.latent[indices[0], -1, 2], marker="o", c="red", s=self.marker_size*2)
 
         # new loop through pairs and generate colored lines
         # for i in range(10):
