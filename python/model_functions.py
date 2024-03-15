@@ -16,6 +16,37 @@ import random
 # ml imports
 import torch
 import torch.nn.init as init
+import torch.nn as nn
+
+##################################################################################################################
+#                                               Classes
+##################################################################################################################
+
+class CustomSinCosLoss(nn.Module):
+    def __init__(self, sin_weight=1.0, cos_weight=1.0):
+        super().__init__()
+        self.sin_weight = sin_weight
+        self.cos_weight = cos_weight
+
+    def forward(self, preds, targets):
+        """Custom MSE Loss for sin/cos"""
+        # Grab sin and cos values
+        sin_preds, sin_targets = preds[:, :preds.size(-1)//2], targets[:, :targets.size(-1)//2]
+        cos_preds, cos_targets = preds[:, preds.size(-1)//2:], targets[:, targets.size(-1)//2:]
+
+        # THIS IS CHANGED FOR THE UNIT CIRCLE NORM TRY
+        # sin_targets = targets[:, :targets.size(-1)//2]
+        # cos_targets = targets[:, targets.size(-1)//2:]
+        # sin_preds, cos_preds = preds[:, ::2], preds[:, 1::2]
+
+        # calculate the MSE loss
+        diff_sin = torch.pow( sin_targets - sin_preds, 2)
+        diff_cos = torch.pow( cos_targets - cos_preds, 2)
+
+        # Reweight based on importance
+        loss = torch.mean( diff_sin*self.sin_weight + diff_cos*self.cos_weight )
+
+        return loss
 
 ##################################################################################################################
 #                                                Functions
@@ -80,7 +111,16 @@ def angle_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
     """Angle Loss function taken from here:
     https://discuss.pytorch.org/t/custom-loss-function-for-discontinuous-angle-calculation/58579/13
     """
-    return torch.mean(1. - torch.cos(y - y_hat))
+    sin_hat, sin_y = y_hat[:, :y_hat.size(-1)//2], y[:, :y.size(-1)//2]
+    cos_hat, cos_y = y_hat[:, y_hat.size(-1)//2:], y[:, y.size(-1)//2:]
+    # calc angles
+    angle_hat = torch.rad2deg(torch.atan2(sin_hat, cos_hat))
+    angle_y = torch.rad2deg(torch.atan2(sin_y, cos_y))
+    # clamp with where
+    angle_y = torch.where(angle_y.abs()<0.9, torch.tensor(0.0), angle_y)
+    angle_hat = torch.where(angle_hat.abs()<0.9, torch.tensor(0.0), angle_hat)
+    # return torch.mean(torch.sqrt(1. - torch.cos(y - y_hat)))
+    return torch.mean(torch.pow(angle_y - angle_hat, 2))
 
 def linear_loss_term(y_hat: torch.Tensor, y: torch.Tensor, scale:int = 1):
     """General L2 Linear Loss"""
@@ -88,9 +128,12 @@ def linear_loss_term(y_hat: torch.Tensor, y: torch.Tensor, scale:int = 1):
 
 def angle_sin2_cos2_enforce(x: torch.Tensor):
     """Enforce that the angle decomposition values sum to 1"""
-    # gen values
-    sin2 = torch.pow(x[:, ::2], 2)
-    cos2 = torch.pow(x[:, 1::2], 2)
+    # grab values
+    sinx = x[:, :x.size(-1)//2]
+    cosx = x[:, x.size(-1)//2:]
+    # Extract Values
+    sin2 = torch.pow(sinx, 2)
+    cos2 = torch.pow(cosx, 2)
     # compute sum
     theta = sin2 + cos2
     theta = theta.view(-1)
@@ -197,34 +240,58 @@ def loss_function(
     rmsd_latent: torch.Tensor,
     device: str,
     epoch: int,
+    angle_size: int,
     ):
     """Combination of Loss terms take the mean"""
-     #lambda_weight_decay(epoch, 1000, 1, 200, 300)
+    # Set up loss function
+    sin_cos_linear_loss = CustomSinCosLoss(
+        sin_weight=1.0,
+        cos_weight=1.0,
+    )
 
     # Compute individual angle loss terms
-    torsion_loss = linear_loss_term(y_hat_angle[:, :y_hat_angle.size(0)//2], y_angle[:, :y_hat_angle.size(0)//2], scale=1)
-    bond_angle_loss = linear_loss_term(y_hat_angle[:, y_hat_angle.size(0)//2:], y_angle[:, y_hat_angle.size(0)//2:], scale=1) 
-    constrain_loss = angle_sin2_cos2_enforce(y_hat_angle)
+    # torsion_loss = angle_loss_term(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
+    # bond_angle_loss = angle_loss_term(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:])
+    # torsion_loss = linear_loss_term(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
+    # bond_angle_loss = linear_loss_term(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:])
+    # torsion_loss = sin_cos_linear_loss(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
+    torsion_loss = sin_cos_linear_loss(y_hat_angle, y_angle) * 100000
+
+    # Uncomment This
+    bond_angle_loss = torch.tensor(0.0) #sin_cos_linear_loss(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:])
+
+    # This is constrain loss for sin/cos pairs
+    # constrain_loss_torsion = angle_sin2_cos2_enforce(y_hat_angle[:, :y_hat_angle.size(-1)//2])
+    # constrain_loss_bond_angle = angle_sin2_cos2_enforce(y_hat_angle[:, y_hat_angle.size(-1)//2:])
+    # constrain_loss = constrain_loss_torsion + constrain_loss_bond_angle
+    constrain_loss = torch.tensor(0.0)
     # constrain_loss = linear_loss_term(enforce_theta, ones.to(device))
 
+    # Uncomment This
     # Compute individual linear loss terms
-    bond_length_loss = linear_loss_term(bond_lengths_hat, bond_lengths)
-    energy_loss = linear_loss_term(energy_hat, energy)
+    bond_length_loss = torch.tensor(0.0) # linear_loss_term(bond_lengths_hat, bond_lengths)
+    energy_loss = torch.tensor(0.0)# linear_loss_term(energy_hat, energy)
 
     # extra latent space loss term
-    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device)
+    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) #* 1000
+    # enforce_latent_rmsd = torch.tensor(0.0)
+
+    # reconstruction individual weights
+    lambda_lin, lambda_ang = 1, 1
 
     # linear loss
-    linear_loss = bond_length_loss + energy_loss
+    linear_loss = (bond_length_loss + energy_loss) * lambda_lin
+
+    # torsion & bond angle weights
+    lambda_tor, lambda_bond = 1, 1
 
     # angle loss
-    angle_loss = torsion_loss + bond_angle_loss + constrain_loss
+    angle_loss = (torsion_loss*lambda_tor + bond_angle_loss*lambda_bond + constrain_loss) * lambda_ang
 
     # Combine Loss Terms for reconstruction
     reconstruction_loss = angle_loss + linear_loss
 
-    # compute lambda weighting terms
-    # lambda_rec, lambda_latent = loss_terms_reg(reconstruction_loss, enforce_latent_rmsd)
+    # compute lambda weighting terms for full loss
     lambda_rec, lambda_latent = 1, 1
 
     return reconstruction_loss*lambda_rec + enforce_latent_rmsd*lambda_latent, angle_loss, linear_loss, enforce_latent_rmsd, constrain_loss
@@ -250,6 +317,8 @@ def train(
     latent_plotly: int,
     sample_n: int,
     real_X: torch.Tensor,
+    early_stop: object,
+    latent_dim: int,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -320,15 +389,11 @@ def train(
         latent_plotly_tensor: torch.Tensor
             Extracted latent space tensor for each sample at every N epoch
     """
-    # init loss list
-    loss_all = list()
-    a_loss = list()
-    l_loss = list()
-    lat_loss = list()
-    constrain_list = list()
+    # init total loss track
+    loss_all_track = list()
 
     # init lowest loss tracker
-    lowest_loss = 100000
+    lowest_loss = float('inf')
     epoch_lowest_loss = 0
 
     #init step tracker
@@ -336,17 +401,23 @@ def train(
 
     # set device and model to train
     model = model.to(device)
-    model.train()
-
+    model.train(True)
 
     # init model weights
     # model.apply(xavier_init)
 
     # latent holding tensor
-    latent_plotly_tensor = torch.zeros((sample_n, (epochs//latent_plotly)+1, 3)) if latent_plotly else torch.zeros((sample_n, 3))
+    latent_plotly_tensor = torch.zeros((sample_n, (epochs//latent_plotly)+1, latent_dim), dtype=torch.double) if latent_plotly else torch.zeros((sample_n, latent_dim), dtype=torch.double)
     extract_latent_epoch = latent_plotly if latent_plotly else epochs
     plotly_index = 0
     old_epoch = 0
+
+    # init mean loss
+    loss_all = list()
+    a_loss = list()
+    l_loss = list()
+    lat_loss = list()
+    constrain_list = list()
 
     # loop through epochs
     for e in range(begin_epoch, epochs+begin_epoch):
@@ -375,15 +446,17 @@ def train(
 
             # pull out initial  0 epoch latent
             elif (e == 0) and (extract_latent_epoch != epochs):
+                # pass
                 latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
 
             # if not passed then only extract the last epochs tensor
             elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
+                # pass
                 latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
 
             # Create output tensor to check
             y_linear = real_X[indices, angle_n:].to(device)
-            # y_angle = real_X[indices, :angle_n].to(device)
+            y_angle = real_X[indices, :angle_n].to(device)
 
             # linear terms
             bond_lengths = y_linear[:, :-1]
@@ -404,11 +477,16 @@ def train(
                     "rmsd_latent": latent_rmsd_mat,
                     "device": device,
                     "epoch": e+1,
+                    "angle_size": angle_n,
                     }
 
             # generate loss and append
             loss, angle_loss, linear_loss, latent_loss, constrain_loss = loss_function(**args)
+
+            # Complete loss
             loss_all.append(loss.item())
+
+            # Extra loss terms
             a_loss.append(angle_loss.item())
             l_loss.append(linear_loss.item())
             lat_loss.append(latent_loss.item())
@@ -416,10 +494,11 @@ def train(
 
             # backprop weights and clip
             loss.backward() 
-            # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             # optimizer step and scheduler step
             optimizer.step()
+            # scheduler.step(e+n / len(dataset))
             # scheduler.step()
 
             # increment step size for tracking
@@ -433,8 +512,8 @@ def train(
         cons_mean = sum(constrain_list) / len(constrain_list)
 
         # UpdateLR on Plateau Scheduler step
-        # scheduler.step(mean_loss)
-        scheduler.step()
+        scheduler.step(mean_loss)
+        # scheduler.step()
 
         # check if loss is lower
         if mean_loss < lowest_loss:
@@ -446,7 +525,7 @@ def train(
 
             # Write progress to tracking file
             with open(file_out_track, 'a') as specific_out:
-                print(f"{e+1},{mean_loss},{a_mean},{l_mean},{lat_mean}", file=specific_out)
+                print(f"{e+1},{mean_loss},{a_mean},{l_mean},{lat_mean},{cons_mean}", file=specific_out)
 
             # First check if dirs exist if not then create
             first_layer_dir = os.path.join(output_dir, "model_weights/")
@@ -460,6 +539,8 @@ def train(
                     "epoch": e+1,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "loss": loss,
                 },
                 current_weights,
             )
@@ -472,6 +553,8 @@ def train(
                         "epoch": e+1,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "loss": loss,
                     },
                     specific_weights,
                 )
@@ -479,14 +562,43 @@ def train(
         # Print out progress for each epoch
         print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Constrain Sin/Cos Loss: {cons_mean}")
         # Visualize Output vs Real values for qualitative check
-        if (e+1) % 1000 == 0:
-            print("Out vs Real")
-            print(out[:3, :10])
+        if (e+1) % 50 == 0:
+            angles = out[:, :angle_n*2]
+            torsion = angles[:, :angle_n]
+            sin_torsion = torsion[:, :angle_n//2]
+            cos_torsion = torsion[:, angle_n//2:]
+            computed_angle = torch.rad2deg(torch.atan2(sin_torsion, cos_torsion))
+            print("Out vs Real Angles")
+            # Angles
+            print(computed_angle[:3, :10])
+            print(y_angle[:3, :10])
+            print("Pred Sin/Cos")
+            # predicted sin /cos
+            print(sin_torsion[:3, :5])
+            print(cos_torsion[:3, :5])
+            print("Real Sin/Cos")
+            # sin /cos real
+            print(decomposed_x[:3, :5])
+            print(decomposed_x[:3, angle_n//2:(angle_n//2)+5])
+            print("Linear Terms")
+            # Linear Terms
             print(out[:3, -1])
-            print(decomposed_x[:3, :10])
             print(y_linear[:3, -1])
-            print("Y real max", y_linear[:, -1].max())
-    return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor
+
+        # clear loss lists
+        loss_all.clear()
+        a_loss.clear()
+        l_loss.clear()
+        lat_loss.clear()
+        constrain_list.clear()
+
+        # # add loss_all_track
+        # loss_all_track.append(mean_loss)
+
+        # Early Stopping
+        # if early_stop.early_stop(mean_loss):
+        #     return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor, e+1
+    return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor, e+1
 
 
 def test(
