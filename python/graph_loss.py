@@ -28,16 +28,23 @@ def plot_loss(data: pd.DataFrame, columns: list, title: str):
     ax.set_ylabel("Loss")
     ax.set_title("MSE Loss Run {}".format(title))
     plt.legend()
+    plt.savefig("loss_run_{}.png".format(title))
     plt.show() 
     
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--loss-csv", type=str, help="CSV Loss file to graph")
+    p.add_argument("--include-linear-loss", action="store_true", help="Graph Linear Term Loss")
     args = p.parse_args()
 
     data = pd.read_csv(args.loss_csv)
 
     title = args.loss_csv.split("_")[-1].split('.')[0]
 
-    plot_loss(data, ['loss','angle_loss','linear_loss'], title)
+    if args.include_linear_loss:
+        cols = ['loss','angle_loss','linear_loss']
+    else:
+        cols = ['loss','angle_loss']
+
+    plot_loss(data, cols, title)

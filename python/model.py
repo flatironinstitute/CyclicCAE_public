@@ -7,18 +7,26 @@ from collections import defaultdict
 import time
 import argparse
 import random
+import math
 
 # torch
 import torch
 
 # train 
 from model_functions import train as mse_train
-from model_functions import scale
+from model_functions import scale, xavier_init
 
 # Model 
-from model_utils import ConformationalMLPAutoEncoder, MyDataset
+from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper
 
-
+def compare_model_state_dicts(state_dict1, state_dict2):
+    for key in state_dict1:
+        if key in state_dict2:
+            if not torch.equal(state_dict1[key], state_dict2[key]):
+                return False
+        else:
+            return False
+    return True
 
 #### Train
 def main():
@@ -48,7 +56,7 @@ def main():
                    (default: 0)")
     p.add_argument("--angle-decomposition", type=int, default=1, help="Decompose the angle into \
                     sin/cos N times (default: 1)")
-    p.add_argument("--override-lr", store_action="True", help="Pass flag if you don't want to load \
+    p.add_argument("--override-lr", action="store_true", help="Pass flag if you don't want to load \
                     weights LR in.")
     args = p.parse_args()
 
@@ -57,8 +65,8 @@ def main():
 
     # set global vars
     PARAMS           = dataset["params"]
-    X                = dataset["x"]
-    RMSD_REAL        = dataset["rmsd"]
+    X                = dataset["x"].double()
+    RMSD_REAL        = dataset["rmsd"].double()
     N_ENCODER_LAYERS = args.num_encoder_layers
     N_DECODER_LAYERS = args.num_decoder_layers
     EPOCHS           = args.epochs
@@ -76,53 +84,134 @@ def main():
 
     # pass to custom dataset class
     dataset = MyDataset(X_scaled)
+    # dataset = MyDataset(X_scaled[:100])
 
     # load data into a specific dataloader class
     dataload = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    # dataload = torch.utils.data.DataLoader(dataset, batch_size=X_scaled.size(0), shuffle=True)
+    # dataload = torch.utils.data.DataLoader(dataset, batch_size=100)
 
     model = ConformationalMLPAutoEncoder(
         encoder_layers   = N_ENCODER_LAYERS,
         decoder_layers   = N_DECODER_LAYERS,
         latent_space_dim = LATENT_SPACE,
-        decomposition_n      = DECOMPOSE_ANGLE,
+        decomposition_n  = DECOMPOSE_ANGLE,
         **PARAMS,
-    )
+    ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
+    # init AdamW optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.1)
+
+    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
+                                                  base_lr=1e-8,
+                                                  max_lr=LR,
+                                                  step_size_up = 2000,
+                                                  mode="triangular",
+                                                  cycle_momentum=False,
+                                                  )
     # load weights if specified
     if WEIGHTS != None:
+        # grab specific state before loading
+        orig_state_dict = model.state_dict()
+
         # load in weights
-        weights = torch.load(WEIGHTS, map_location="cuda" if torch.cuda.is_available() else "cpu")
+        weights = torch.load(WEIGHTS, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         # set weights
         model.load_state_dict(weights["model_state_dict"])
+        scheduler.load_state_dict(weights["scheduler_state_dict"])
+        # optimizer.load_state_dict(weights["optimizer_state_dict"])
+
+        # Check model has been updated
+        loaded_state_dict = model.state_dict()
+
+        if compare_model_state_dicts(orig_state_dict, loaded_state_dict):
+            print("Model State Has NOT CHANGED")
+        else:
+            print("Model State Has Updated")
         # set epoch
         BEGIN_EPOCH = weights["epoch"]
         if not args.override_lr:
             # grab LR
             LR = weights["optimizer_state_dict"]["param_groups"][0]["lr"]
+    else:
+        model.apply(xavier_init)
 
     # Specify angle and linear number for L2 loss specifics
     angle_number = PARAMS["torsion_main_n"] + PARAMS["torsion_side_n"] + PARAMS["bond_angle_main_n"] + PARAMS["bond_angle_side_n"]
     linear_number = PARAMS["input_size"] - angle_number
 
-    # init AdamW optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
+
+    # early stopping class
+    early_stopping = EarlyStopper(patience=50, min_delta=0.1)
+
+    warmup_steps = 1000
+    base_lr = 1e-8
+    initial_lr = LR
+
+    def warmup(current_step: int):
+        if current_step < 1000:  # current_step / warmup_steps * base_lr
+            return float((current_step+1) / 1000)
+        else:                                 # (num_training_steps - current_step) / (num_training_steps - warmup_steps) * base_lr
+            return max(0.0, float(len(dataset)*EPOCHS - current_step) / float(max(1, len(dataset)*EPOCHS - 1000)))
+
+
+    # Create the scheduler
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup)
 
     # init scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-                                                           patience = 8,
-                                                           mode = "min",
-                                                           factor = 0.8,
-                                                           threshold = 1e-3,
-                                                           min_lr = 1e-10,
-                                                           )
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+    #                                                        patience = 10,
+    #                                                        mode = "min",
+    #                                                        factor = 0.8,
+    #                                                        threshold = 1e-3,
+    #                                                        min_lr = 1e-20,
+    #                                                        )
+
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     optimizer,
+    #     T_max = EPOCHS,
+    #     eta_min = 3.5e-6,
+    # )
+
+    # set variables for lambda lr
+    # warmup_epochs = 20
+    # final_lr = 3.5e-6
+    #
+    # def lambda_epoch(epoch):
+    #     if epoch < warmup_epochs:
+    #         return epoch / warmup_epochs
+    #     else:
+    #         return final_lr + (1/2)*(LR - final_lr)*(1. + torch.cos(torch.tensor((epoch*torch.pi/EPOCHS)))) #(1 - (epoch - warmup_epochs) / (EPOCHS - warmup_epochs)) * (LR / final_lr - 1) + 1
+    # 
+    #
+    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda_epoch)
+
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    #     optimizer,
+    #     T_0 = 300,
+    #     T_mult = 1,
+    #     eta_min = 1e-8,
+    # )
+
     # scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
     #                                               base_lr=1e-8,
-    #                                               max_lr=1e-3,
-    #                                               step_size_up = 200,
+    #                                               max_lr=LR,
+    #                                               step_size_up = 2000,
     #                                               mode="triangular",
-    #                                               scale_mode="iterations",
     #                                               cycle_momentum=False,
     #                                               )
+
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    #     optimizer,
+    #     max_lr = 1e-2,
+    #     steps_per_epoch = len(dataload),
+    #     epochs = EPOCHS-100,
+    #     div_factor = 1e6,
+    #     final_div_factor = 1e6,
+    #     cycle_momentum = False,
+    # )
+    
+    # scheduler = None
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
@@ -134,12 +223,12 @@ def main():
 
     # Run Model
     print(f"***MODEL {random_num} TRAIN***")
-    final_loss, lowest_loss, epoch_lowest_loss, latent_plotly = mse_train(
+    final_loss, lowest_loss, epoch_lowest_loss, latent_plotly, epoch_final = mse_train(
         model = model,
         dataset = dataload,
         epochs = EPOCHS,
         begin_epoch = BEGIN_EPOCH,
-        device = "cuda",
+        device = torch.device("cuda"),
         optimizer = optimizer,
         scheduler = scheduler,
         angle_n = angle_number,
@@ -152,6 +241,8 @@ def main():
         latent_plotly = PLOTLY_LATENT,
         sample_n = X.size(0),
         real_X = X,
+        early_stop = early_stopping,
+        latent_dim = LATENT_SPACE,
     )
 
     # saved extract latent tensor
@@ -163,12 +254,12 @@ def main():
     # if it exists save to it
     if os.path.exists(md_combo_out_file):
         with open(md_combo_out_file, 'a') as md_out:
-            print(f"|{random_num}|{EPOCHS}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{lowest_loss}|{epoch_lowest_loss}|{final_loss}|", file=md_out)
+            print(f"|{random_num}|{EPOCHS}|{epoch_final}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{lowest_loss}|{epoch_lowest_loss}|{final_loss}|", file=md_out)
     else:
         with open(md_combo_out_file, 'w') as md_out:
-            print(f"|File Number|Epochs|LR|Num Encoding Layers|Num Decoding Layers|Lowest Loss|Epoch Lowest Loss|Final Loss|", file=md_out)
-            print(f"|---|---|---|---|---|---|---|---|", file=md_out)
-            print(f"|{random_num}|{EPOCHS}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{lowest_loss}|{epoch_lowest_loss}|{final_loss}|", file=md_out)
+            print(f"|File Number|Epochs|Final Epoch|LR|Num Encoding Layers|Num Decoding Layers|Lowest Loss|Epoch Lowest Loss|Final Loss|", file=md_out)
+            print(f"|---|---|---|---|---|---|---|---|---|", file=md_out)
+            print(f"|{random_num}|{EPOCHS}|{epoch_final}|{args.learning_rate}|{N_ENCODER_LAYERS}|{N_DECODER_LAYERS}|{lowest_loss}|{epoch_lowest_loss}|{final_loss}|", file=md_out)
 
     return 0
 
