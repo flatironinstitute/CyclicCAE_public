@@ -23,7 +23,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+##################################################################################################################
+#                                               Functions 
+##################################################################################################################
 
+def subset_dataset(dataset, indices):
+    """Create a subset of the dataset while preserving the original indices."""
+    # This function returns a Subset of the original dataset but keeps track of the indices.
+    return torch.utils.data.Subset(dataset, indices)
 
 ##################################################################################################################
 #                                                Classes
@@ -43,28 +50,105 @@ class MyDataset(torch.utils.data.Dataset):
         """Returns the length of the dataset object"""
         return len(self.dataset)
 
-class DecoderLayerUnitCircle(nn.Module):
+class CustomScheduler:
+    def __init__(
+        self,
+        warmup_steps: int,
+        base_lr: float,
+        max_lr: float,
+        patience: int,
+        cooldown: int,
+        optimizer: torch.optim,
+        threshold: float = 1e-3,
+        factor: float = 0.5,
+        ):
+        """Custom Warmup with ReduceLROnPlateau scheduler"""
+        # Assign params
+        self.warmup_steps = warmup_steps
+        self.continue_warmup = 0
+        self.base_lr = base_lr
+        self.optimizer = optimizer
+        self.max_lr = max_lr
+
+        # set schedulers
+        # self.cycleLR = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = max_lr, total_steps = warmup_steps*2)
+        self.reduceLR = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            min_lr = base_lr,
+            patience = patience,
+            mode = "min",
+            factor = factor,
+            threshold = threshold,
+            cooldown = cooldown,
+        )
+
+    def increase_lr(self, step, warmup_steps):
+        """Increase the lr back to max_lr slowly"""
+        # Extract current lr
+        if step < 1:
+            current_lr = 1e-9
+        else:
+            current_lr = self.optimizer.param_groups[0]['lr']
+        
+
+        # Calculate new lr
+        update_lr = current_lr + (self.max_lr - current_lr) * (step / warmup_steps)
+
+        # print("UPDATE LR", update_lr)
+
+        # set lr
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = update_lr
+
+    def step_cycleLR(self, step):
+        """Step cycleLR"""
+        current_lr = self.optimizer.param_groups[0]['lr']
+
+        if (step < self.warmup_steps):
+            self.increase_lr(step, self.warmup_steps)
+
+        elif (current_lr < 1e-6) and (step > self.warmup_steps):
+            # update step to check now.
+            self.warmup_steps = step + self.warmup_steps
+            self.increase_lr(step, self.warmup_steps)
+
+
+
+    def step_reduceLR(self, val_loss):
+        """Step ReduceLR"""
+        return self.reduceLR.step(val_loss)
+
+class EncoderLayerUnitCircle(nn.Module):
     def __init__(
         self,
         input_size: int = 128,
         output_size: int = 3,
+        dropout: float = 0.2,
         ):
         super().__init__()
         """Enforce Output to UnitCircle and add to information"""
 
+        # Expand the inputs 
         self.linear_expand = nn.Linear(input_size, 128)
 
+        # Shrink from last layer
         self.linear_intermediate = nn.Linear(128, 64)
 
+        # Generate sin/cos values
         self.angle_information = nn.Linear(64, 2)
 
+        # Add the angle computed from the forced unit circle above
         self.angle_aware_layer = nn.Linear(64+1, 32)
 
+        # output last layer
         self.final_layer = nn.Linear(32, output_size)
 
+        # dropout
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x: torch.Tensor):
-        x = F.tanh(self.linear_expand(x))
-        x = F.tanh(self.linear_intermediate(x))
+        x = self.dropout(F.tanh(self.linear_expand(x)))
+        x = self.dropout(F.tanh(self.linear_intermediate(x)))
 
         sin_cos = self.angle_information(x)
         unit_circle = F.normalize(sin_cos, p=2, dim=-1)
@@ -75,6 +159,135 @@ class DecoderLayerUnitCircle(nn.Module):
         ))
 
         return self.final_layer(x)
+
+class EncoderBlock(nn.Module):
+    def __init__(
+        self,
+        num_layers: int = 0,
+        input_size: int = 3,
+        middle_size: int = 64,
+        output_size: int = 128,
+        dropout: int = 0.1,
+        ):
+        super().__init__()
+        """Specify Number of DecoderLayerUnitCircle"""
+        # layer input size and out
+        self.num_layers = num_layers
+        insize = [input_size] + [middle_size]*(num_layers-1)
+        outsize = [middle_size]*(num_layers-1) + [output_size]
+
+
+        self.decoder_layers = nn.ModuleList(
+            [
+                EncoderLayerUnitCircle(insize[i], outsize[i], dropout) for i in range(num_layers)
+            ]
+        )
+
+    def forward(self, x:torch.Tensor):
+        # iter through layres
+        for n, layer in enumerate(self.decoder_layers):
+
+            # if first layer we need to compute skip connection
+            if n == 0:
+
+                # Compute first layer
+                x = layer(x)
+                # compute skip connection
+                skip = x.clone()
+
+            elif n+1 == self.num_layers:
+                x = layer(x+skip)
+
+            else:
+                x = layer(x)
+
+        return x
+
+class DecoderLayerUnitCircle(nn.Module):
+    def __init__(
+        self,
+        input_size: int = 128,
+        output_size: int = 3,
+        dropout: float = 0.2,
+        ):
+        super().__init__()
+        """Enforce Output to UnitCircle and add to information"""
+
+        # Expand the inputs 
+        self.linear_expand = nn.Linear(input_size, 128)
+
+        # Shrink from last layer
+        self.linear_intermediate = nn.Linear(128, 64)
+
+        # Generate sin/cos values
+        self.angle_information = nn.Linear(64, 2)
+
+        # Add the angle computed from the forced unit circle above
+        self.angle_aware_layer = nn.Linear(64+1, 32)
+
+        # output last layer
+        self.final_layer = nn.Linear(32, output_size)
+
+        # dropout
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor):
+        x = self.dropout(F.tanh(self.linear_expand(x)))
+        x = self.dropout(F.tanh(self.linear_intermediate(x)))
+
+        sin_cos = self.angle_information(x)
+        unit_circle = F.normalize(sin_cos, p=2, dim=-1)
+        computed_angles = torch.atan2(unit_circle[:, 0], unit_circle[:, 1]).unsqueeze(-1)
+
+        x = F.tanh(self.angle_aware_layer(
+            torch.cat((x, computed_angles), dim=-1)
+        ))
+
+        return self.final_layer(x)
+
+class DecoderBlock(nn.Module):
+    def __init__(
+        self,
+        num_layers: int = 0,
+        input_size: int = 3,
+        output_size: int = 128,
+        dropout: float = 0.1,
+        ):
+        super().__init__()
+        """Specify Number of DecoderLayerUnitCircle"""
+        # layer input size and out
+        self.num_layers = num_layers
+        insize = [3] + [output_size]*(num_layers-1)
+        outsize = [output_size]*num_layers
+
+
+        self.decoder_layers = nn.ModuleList(
+            [
+                DecoderLayerUnitCircle(insize[i], outsize[i], dropout) for i in range(num_layers)
+            ]
+        )
+
+    def forward(self, x:torch.Tensor):
+        # iter through layres
+        for n, layer in enumerate(self.decoder_layers):
+
+            # if first layer we need to compute skip connection
+            if n == 0:
+
+                # Compute first layer
+                x = layer(x)
+                # compute skip connection
+                skip = x.clone()
+
+            elif n+1 == self.num_layers:
+                x = layer(x+skip)
+
+            else:
+                x = layer(x)
+
+        return x
+
+
 
 
 class EncoderLayer64(nn.Module):
@@ -998,6 +1211,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         bond_length_side_n: int = 0,
         jump_n: int = 0,
         energy_n: int = 0,
+        dropout: float = 0.1,
         ):
         """MLP Base Auto-Encoder Model (Base Model Architecture)
 
@@ -1073,6 +1287,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.jump_n              = jump_n
         self.energy_n            = energy_n
         self.decomposition_n     = decomposition_n
+        self.dropout             = dropout
 
         # combine terms
         self.torsion = self.torsion_main_n + self.torsion_side_n
@@ -1183,24 +1398,39 @@ class ConformationalMLPAutoEncoder(nn.Module):
         #         # nn.Linear(self.after_decomposition_size, self.after_decomposition_size, bias=True),
         # )
 
-        self.encoder = EncoderBlock64(
-            num_layers = self.encoder_layers-1,
-            start_size = 64, #self.after_decomposition_size,
-            end_size   = self.latent_space_dim,
-        ).double()
+        #### FOR ENCODER BLOCK 64 WITH SKIP CONNECTION THESE TWO ARE IMPORTANT
+        # self.encoder = EncoderBlock64(
+        #     num_layers = self.encoder_layers-1,
+        #     start_size = 64, #self.after_decomposition_size,
+        #     end_size   = self.latent_space_dim,
+        # ).double()
+        #
+        # self.encoder_1 = EncoderBlock64(
+        #     num_layers = 1,
+        #     start_size = self.after_decomposition_size,
+        #     end_size   = 64,
+        # ).double()
 
-        self.encoder_1 = EncoderBlock64(
-            num_layers = 1,
-            start_size = self.after_decomposition_size,
-            end_size   = 64,
+        self.encoder = EncoderBlock(
+            num_layers = self.encoder_layers,
+            input_size = self.after_decomposition_size,
+            middle_size = 32,
+            output_size = self.latent_space_dim,
+            dropout = self.dropout,
         ).double()
 
         self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim).double()
 
-        self.decoder = DecoderLayerUnitCircle(
+        self.decoder = DecoderBlock(
+            num_layers = self.decoder_layers,
             input_size = self.latent_space_dim,
             output_size = self.angle_out_size,
+            dropout = self.dropout,
         ).double()
+        # self.decoder = DecoderLayerUnitCircle(
+        #     input_size = self.latent_space_dim,
+        #     output_size = self.angle_out_size,
+        # ).double()
 
         # self.decoder = EncoderBlock64(
         #     num_layers = self.decoder_layers,
@@ -1246,11 +1476,12 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # decompose for non conv
         x = self.input_decomposition(x)
 
-        # create_skip connection
-        skip = self.encoder_1(x)
-
-        # encode the information into latent
-        x = self.encoder(skip)
+        # # create_skip connection
+        # skip = self.encoder_1(x)
+        #
+        # # encode the information into latent
+        # x = self.encoder(skip)
+        x = self.encoder(x)
 
         # pass the latent to itself (basically just returns passed in tensor)
         x = self.latent(x)

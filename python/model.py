@@ -12,12 +12,15 @@ import math
 # torch
 import torch
 
+#numpy
+import numpy as np
+
 # train 
 from model_functions import train as mse_train
 from model_functions import scale, xavier_init
 
 # Model 
-from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper
+from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper, CustomScheduler, subset_dataset
 
 def compare_model_state_dicts(state_dict1, state_dict2):
     for key in state_dict1:
@@ -84,12 +87,14 @@ def main():
 
     # pass to custom dataset class
     dataset = MyDataset(X_scaled)
-    # dataset = MyDataset(X_scaled[:100])
+
+    # Generate train/val split
+    train_idx = np.random.choice(X_scaled.size(0), size=int(X_scaled.size(0)*.8), replace=False)
+    val_idx = list( set(range(X_scaled.size(0))) - set(train_idx))
 
     # load data into a specific dataloader class
-    dataload = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
-    # dataload = torch.utils.data.DataLoader(dataset, batch_size=X_scaled.size(0), shuffle=True)
-    # dataload = torch.utils.data.DataLoader(dataset, batch_size=100)
+    train_loader = torch.utils.data.DataLoader(subset_dataset(dataset, train_idx), batch_size=args.batch_size, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(subset_dataset(dataset, val_idx), batch_size=args.batch_size, shuffle=True)
 
     model = ConformationalMLPAutoEncoder(
         encoder_layers   = N_ENCODER_LAYERS,
@@ -102,13 +107,6 @@ def main():
     # init AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.1)
 
-    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
-                                                  base_lr=1e-8,
-                                                  max_lr=LR,
-                                                  step_size_up = 2000,
-                                                  mode="triangular",
-                                                  cycle_momentum=False,
-                                                  )
     # load weights if specified
     if WEIGHTS != None:
         # grab specific state before loading
@@ -118,7 +116,7 @@ def main():
         weights = torch.load(WEIGHTS, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         # set weights
         model.load_state_dict(weights["model_state_dict"])
-        scheduler.load_state_dict(weights["scheduler_state_dict"])
+        # scheduler.load_state_dict(weights["scheduler_state_dict"])
         # optimizer.load_state_dict(weights["optimizer_state_dict"])
 
         # Check model has been updated
@@ -156,7 +154,14 @@ def main():
 
 
     # Create the scheduler
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup)
+    scheduler = CustomScheduler(
+        warmup_steps = 5e7,
+        base_lr = 1e-7,
+        max_lr = LR,
+        patience = 10,
+        cooldown = 5,
+        optimizer = optimizer,
+    )
 
     # init scheduler
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
@@ -167,50 +172,6 @@ def main():
     #                                                        min_lr = 1e-20,
     #                                                        )
 
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    #     optimizer,
-    #     T_max = EPOCHS,
-    #     eta_min = 3.5e-6,
-    # )
-
-    # set variables for lambda lr
-    # warmup_epochs = 20
-    # final_lr = 3.5e-6
-    #
-    # def lambda_epoch(epoch):
-    #     if epoch < warmup_epochs:
-    #         return epoch / warmup_epochs
-    #     else:
-    #         return final_lr + (1/2)*(LR - final_lr)*(1. + torch.cos(torch.tensor((epoch*torch.pi/EPOCHS)))) #(1 - (epoch - warmup_epochs) / (EPOCHS - warmup_epochs)) * (LR / final_lr - 1) + 1
-    # 
-    #
-    # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda_epoch)
-
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-    #     optimizer,
-    #     T_0 = 300,
-    #     T_mult = 1,
-    #     eta_min = 1e-8,
-    # )
-
-    # scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
-    #                                               base_lr=1e-8,
-    #                                               max_lr=LR,
-    #                                               step_size_up = 2000,
-    #                                               mode="triangular",
-    #                                               cycle_momentum=False,
-    #                                               )
-
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
-    #     optimizer,
-    #     max_lr = 1e-2,
-    #     steps_per_epoch = len(dataload),
-    #     epochs = EPOCHS-100,
-    #     div_factor = 1e6,
-    #     final_div_factor = 1e6,
-    #     cycle_momentum = False,
-    # )
-    
     # scheduler = None
 
     # Model Run specific number classifier for output files
@@ -219,13 +180,14 @@ def main():
     # Generate output for run
     file_out_name = os.path.join(args.path_to_output_dir, f"model_run_{random_num}.csv")
     with open(file_out_name, "w") as file_out:
-        print("epoch,loss,angle_loss,linear_loss,latent_rmsd_loss,constrain_angle_loss", file=file_out)
+        print("epoch,loss,val_loss,angle_loss,linear_loss,latent_rmsd_loss,constrain_angle_loss", file=file_out)
 
     # Run Model
     print(f"***MODEL {random_num} TRAIN***")
     final_loss, lowest_loss, epoch_lowest_loss, latent_plotly, epoch_final = mse_train(
         model = model,
-        dataset = dataload,
+        train_dataset = train_loader,
+        val_dataset = val_loader,
         epochs = EPOCHS,
         begin_epoch = BEGIN_EPOCH,
         device = torch.device("cuda"),

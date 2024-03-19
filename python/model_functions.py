@@ -258,7 +258,8 @@ def loss_function(
     torsion_loss = sin_cos_linear_loss(y_hat_angle, y_angle) * 100000
 
     # Uncomment This
-    bond_angle_loss = torch.tensor(0.0) #sin_cos_linear_loss(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:])
+    bond_angle_loss = torch.tensor(0.0) 
+    # bond_angle_loss = sin_cos_linear_loss(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:]) * 25000
 
     # This is constrain loss for sin/cos pairs
     # constrain_loss_torsion = angle_sin2_cos2_enforce(y_hat_angle[:, :y_hat_angle.size(-1)//2])
@@ -269,12 +270,14 @@ def loss_function(
 
     # Uncomment This
     # Compute individual linear loss terms
-    bond_length_loss = torch.tensor(0.0) # linear_loss_term(bond_lengths_hat, bond_lengths)
-    energy_loss = torch.tensor(0.0)# linear_loss_term(energy_hat, energy)
+    bond_length_loss = torch.tensor(0.0)
+    # bond_length_loss = linear_loss_term(bond_lengths_hat, bond_lengths) * 1000
+    energy_loss = torch.tensor(0.0)
+    # energy_loss = linear_loss_term(energy_hat, energy) * 1000
 
     # extra latent space loss term
-    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) #* 1000
-    # enforce_latent_rmsd = torch.tensor(0.0)
+    # enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) #* 1000
+    enforce_latent_rmsd = torch.tensor(0.0)
 
     # reconstruction individual weights
     lambda_lin, lambda_ang = 1, 1
@@ -301,7 +304,8 @@ def loss_function(
 
 def train(
     model: torch.nn.Module,
-    dataset: torch.utils.data.DataLoader,
+    train_dataset: torch.utils.data.DataLoader,
+    val_dataset: torch.utils.data.DataLoader,
     epochs: int,
     begin_epoch: int,
     device: str,
@@ -414,6 +418,7 @@ def train(
 
     # init mean loss
     loss_all = list()
+    val_loss_all = list()
     a_loss = list()
     l_loss = list()
     lat_loss = list()
@@ -423,7 +428,7 @@ def train(
     for e in range(begin_epoch, epochs+begin_epoch):
 
         # loop through dataset 
-        for n, (data, indices) in enumerate(dataset):
+        for n, (data, indices) in enumerate(train_dataset):
 
             # optimizer zero out grad
             optimizer.zero_grad()
@@ -498,7 +503,9 @@ def train(
 
             # optimizer step and scheduler step
             optimizer.step()
+
             # scheduler.step(e+n / len(dataset))
+            scheduler.step_cycleLR(step_size)
             # scheduler.step()
 
             # increment step size for tracking
@@ -511,9 +518,79 @@ def train(
         lat_mean = sum(lat_loss) / len(lat_loss)
         cons_mean = sum(constrain_list) / len(constrain_list)
 
+        ##########
+        # VALIDATION
+        ##########
+
+        model.eval()
+
+        # loop through dataset 
+        for n, (data, indices) in enumerate(val_dataset):
+
+            # send to device
+            x = data.to(device)
+
+            # run model
+            # out, angles_decomposed, latent_rmsd_mat, latent_space, decomposed_x = model(x)
+            out, latent_rmsd_mat, latent_space, decomposed_x = model(x)
+
+            # Extract out the latent tensor if multiple middle dimensions
+            if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
+
+                # Keep track of the epoch and where we are in the middle index
+                if old_epoch != (e+1):
+                    plotly_index += 1
+                    old_epoch = (e+1)
+                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+
+            # pull out initial  0 epoch latent
+            elif (e == 0) and (extract_latent_epoch != epochs):
+                # pass
+                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+
+            # if not passed then only extract the last epochs tensor
+            elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
+                # pass
+                latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
+
+            # Create output tensor to check
+            y_linear = real_X[indices, angle_n:].to(device)
+            y_angle = real_X[indices, :angle_n].to(device)
+
+            # linear terms
+            bond_lengths = y_linear[:, :-1]
+            energy = y_linear[:, -1]
+                
+            # args input for loss
+            args = {"y_hat_angle": out[:, :angle_n*2],
+                    "y_angle": decomposed_x[:, :angle_n*2],
+                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-1)],
+                    "bond_lengths": bond_lengths, 
+                    "energy_hat": out[:, -1],
+                    "energy": energy,
+                    "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
+                    "rmsd_latent": latent_rmsd_mat,
+                    "device": device,
+                    "epoch": e+1,
+                    "angle_size": angle_n,
+                    }
+
+            # generate loss and append
+            val_loss, _, _, _, _ = loss_function(**args)
+
+            # Complete loss
+            val_loss_all.append(val_loss.item())
+
+        # calculate val loss
+        mean_val_loss = sum(val_loss_all) / len(val_loss_all)
+
+        # clear val loss list
+        val_loss_all.clear()
+
+        model.train(True)
+
         # UpdateLR on Plateau Scheduler step
-        scheduler.step(mean_loss)
-        # scheduler.step()
+        scheduler.step_reduceLR(mean_val_loss)
 
         # check if loss is lower
         if mean_loss < lowest_loss:
@@ -525,7 +602,7 @@ def train(
 
             # Write progress to tracking file
             with open(file_out_track, 'a') as specific_out:
-                print(f"{e+1},{mean_loss},{a_mean},{l_mean},{lat_mean},{cons_mean}", file=specific_out)
+                print(f"{e+1},{mean_loss},{mean_val_loss},{a_mean},{l_mean},{lat_mean},{cons_mean}", file=specific_out)
 
             # First check if dirs exist if not then create
             first_layer_dir = os.path.join(output_dir, "model_weights/")
@@ -539,7 +616,7 @@ def train(
                     "epoch": e+1,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
+                    # "scheduler_state_dict": scheduler.state_dict(),
                     "loss": loss,
                 },
                 current_weights,
@@ -553,14 +630,14 @@ def train(
                         "epoch": e+1,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
-                        "scheduler_state_dict": scheduler.state_dict(),
+                        # "scheduler_state_dict": scheduler.state_dict(),
                         "loss": loss,
                     },
                     specific_weights,
                 )
 
         # Print out progress for each epoch
-        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Constrain Sin/Cos Loss: {cons_mean}")
+        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Val Loss: {mean_val_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Constrain Sin/Cos Loss: {cons_mean}")
         # Visualize Output vs Real values for qualitative check
         if (e+1) % 50 == 0:
             angles = out[:, :angle_n*2]
