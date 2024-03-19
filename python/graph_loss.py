@@ -66,8 +66,8 @@ if __name__ == "__main__":
     title = args.loss_csv.split("_")[-1].split('.')[0]
 
     if args.include_linear_loss:
-        cols = ['loss','angle_loss','linear_loss']
+        cols = ['loss', 'val_loss', 'angle_loss','linear_loss']
     else:
-        cols = ['loss','angle_loss']
+        cols = ['loss','val_loss']
 
     plot_loss(data, cols, title, args.zoom_graph, args.zoom_lower_x, args.zoom_upper_x)

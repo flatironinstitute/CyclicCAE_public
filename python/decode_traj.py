@@ -39,9 +39,9 @@ class DecodeTrajectories:
         ):
         # Assign params
         if len(trajectories.shape) == 3:
-            self.trajectories = trajectories[:, -1, :]
+            self.trajectories = trajectories[:, -1, :].double()
         else:
-            self.trajectories = trajectories
+            self.trajectories = trajectories.double()
         self.y_indicies = y_indicies
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -55,9 +55,9 @@ class DecodeTrajectories:
             torsion_main = params["torsion_main_n"]
 
             # Assign y test case and trajectories
-            self.y = x[y_indicies, :torsion_main]
+            self.y = x[y_indicies, :torsion_main].double()
             if not encode_decode:
-                self.trajectories = trajectories[y_indicies, -1, :]
+                self.trajectories = trajectories[y_indicies, -1, :].double()
 
 
         # Load in model weigths
@@ -202,7 +202,8 @@ if __name__ == "__main__":
         random_tensor = None
 
     # Explicit model params, but will change the trajectories tensor to include it in the future
-    model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
+    # model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
+    model_params = {"decoder_layers": 8, "encoder_layers": 8, "latent_space_dim": 3, "decomposition_n": 4}
     model_params.update(real_data["params"])
 
     decode_class = DecodeTrajectories(
@@ -216,6 +217,11 @@ if __name__ == "__main__":
     )
 
     predictions = decode_class.decode
+
+    torch.save(
+        display_angles(predictions),
+        "prediction_traj_{}.pt".format(args.random_indicies_num)
+    )
 
     if args.calculate_accuracy:
         print() # add spacing for easier reading
