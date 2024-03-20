@@ -203,7 +203,7 @@ if __name__ == "__main__":
 
     # Explicit model params, but will change the trajectories tensor to include it in the future
     # model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
-    model_params = {"decoder_layers": 8, "encoder_layers": 8, "latent_space_dim": 3, "decomposition_n": 4}
+    model_params = {"decoder_layers": 32, "encoder_layers": 32, "latent_space_dim": 3, "decomposition_n": 4}
     model_params.update(real_data["params"])
 
     decode_class = DecodeTrajectories(

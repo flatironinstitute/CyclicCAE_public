@@ -47,6 +47,7 @@ class GraphLatent:
         X: torch.Tensor,
         rmsd_cutoff: float,
         marker_size: int,
+        file: str,
         ):
 
         """Heuristically Interrogate the Latent Space (Color RMSD Close and Far distances differently)
@@ -75,6 +76,7 @@ class GraphLatent:
         self.X = X
         self.rmsd_cutoff = rmsd_cutoff
         self.marker_size = marker_size
+        self.file = file
 
     def plot(self):
         """Plot latent space"""
@@ -93,7 +95,7 @@ class GraphLatent:
         # normalize_score_values = norm(score_values)
 
         # generate space
-        fig = plt.figure()
+        fig = plt.figure(figsize=(12,8))
         # ax = plt.axes(projection='3d')
         ax = fig.add_subplot(111, projection='3d')
 
@@ -133,7 +135,7 @@ class GraphLatent:
         plt.colorbar(scatter_plot, label="Scatter REU")
         # plt.colorbar(surf, label="REU")
 
-        plt.savefig(f"latentspace_graph_heuristic_{datetime.date.today()}.png")
+        plt.savefig(f"latentspace_graph_heuristic_{self.file}.png")
         plt.show()
 
     def animate(self):
@@ -187,7 +189,7 @@ class GraphLatent:
                                                                           args=[None, dict(frame=dict(duration=500, redraw=True), fromcurrent=True)])])])
 
         # Save the animation to an HTML file
-        pio.write_html(fig, 'animated_3d_plot.html', auto_open=True)
+        pio.write_html(fig, f'animated_3d_plot_model_{self.file}.html', auto_open=True)
 
 
 ###############################################################################################
@@ -209,6 +211,7 @@ def main():
 
     # load in latent space
     latent = torch.load(args.latent_dataset)
+    specific_file = args.latent_dataset.split("_")[3]
 
     # rmsd
     data = torch.load(args.rmsd_dataset)
@@ -222,6 +225,7 @@ def main():
         X=X,
         rmsd_cutoff=args.rmsd_cutoff,
         marker_size=args.marker_size,
+        file = specific_file,
     )
 
     # Plot 
