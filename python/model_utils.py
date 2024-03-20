@@ -22,6 +22,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# numpy
+import numpy as np
+
 
 ##################################################################################################################
 #                                               Functions 
@@ -84,17 +87,8 @@ class CustomScheduler:
 
     def increase_lr(self, step, warmup_steps):
         """Increase the lr back to max_lr slowly"""
-        # Extract current lr
-        if step < 1:
-            current_lr = 1e-9
-        else:
-            current_lr = self.optimizer.param_groups[0]['lr']
-        
-
         # Calculate new lr
-        update_lr = current_lr + (self.max_lr - current_lr) * (step / warmup_steps)
-
-        # print("UPDATE LR", update_lr)
+        update_lr = self.base_lr + (self.max_lr - self.base_lr) * (step / warmup_steps)
 
         # set lr
         for param_group in self.optimizer.param_groups:
@@ -111,8 +105,6 @@ class CustomScheduler:
             # update step to check now.
             self.warmup_steps = step + self.warmup_steps
             self.increase_lr(step, self.warmup_steps)
-
-
 
     def step_reduceLR(self, val_loss):
         """Step ReduceLR"""
@@ -287,7 +279,20 @@ class DecoderBlock(nn.Module):
 
         return x
 
+class PositionalEncoding(nn.Module):
+    def __init__(
+        self,
+        device: str,
+        seq_len: int = 58,
+        d_model: int = 1,
+        ):
+        super().__init__()
+        """Add in positional encodings for atom positions"""
+        self.embed_dim = nn.Embedding(seq_len, d_model, device=device)
 
+    def forward(self, x_pos: torch.Tensor):
+        """Compute PE"""
+        return self.embed_dim(x_pos)
 
 
 class EncoderLayer64(nn.Module):
@@ -343,6 +348,7 @@ class EncoderBlock64(nn.Module):
         self,
         num_layers: int = 3,
         start_size: int = 512,
+        d_model: int = 64,
         end_size: int = 3,
         ):
         """ A General Encoder Block 
@@ -366,8 +372,8 @@ class EncoderBlock64(nn.Module):
         self.start_size = start_size
         self.end_size = end_size
 
-        self.layer_size = [start_size] + [64]*(num_layers-1)
-        self.out_size = [64] * (num_layers-1) + [end_size]
+        self.layer_size = [start_size] + [d_model]*(num_layers-1)
+        self.out_size = [d_model] * (num_layers-1) + [end_size]
 
 
         # Make list of encoder layers that make up the encoder block
@@ -1212,6 +1218,11 @@ class ConformationalMLPAutoEncoder(nn.Module):
         jump_n: int = 0,
         energy_n: int = 0,
         dropout: float = 0.1,
+        device = "cuda" if torch.cuda.is_available() else "cpu",
+        filetype_major = 0,
+        filetype_minor = 1,
+        reference_pose = None,
+        ref_pose_len = 128,
         ):
         """MLP Base Auto-Encoder Model (Base Model Architecture)
 
@@ -1288,6 +1299,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.energy_n            = energy_n
         self.decomposition_n     = decomposition_n
         self.dropout             = dropout
+        self.device              = device
 
         # combine terms
         self.torsion = self.torsion_main_n + self.torsion_side_n
@@ -1411,6 +1423,13 @@ class ConformationalMLPAutoEncoder(nn.Module):
         #     end_size   = 64,
         # ).double()
 
+        # self.encoder_angle = EncoderBlock64(
+        #     num_layers = 2,
+        #     start_size = self.energy_n,
+        #     end_size = 1,
+        # )
+
+
         self.encoder = EncoderBlock(
             num_layers = self.encoder_layers,
             input_size = self.after_decomposition_size,
@@ -1454,8 +1473,17 @@ class ConformationalMLPAutoEncoder(nn.Module):
             energy_n            = self.energy_n,
         ).double()
 
-    def forward(self, x: torch.Tensor):
+        self.embedding_dim = PositionalEncoding(
+            device = self.device,
+            seq_len = self.torsion+1,
+            d_model = 1,
+        ).double()
+
+    def forward(self, x: torch.Tensor, ):
         """Train and Test Forward Method"""
+        # Grab dimensions
+        B, D = x.shape
+
         # Extract out initial decomposed input for MSE Loss calc
         initial_input = self.input_single_decomp(x.clone().detach())
 
@@ -1476,12 +1504,18 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # decompose for non conv
         x = self.input_decomposition(x)
 
+        # positional encodings
+        positions = torch.arange(1,self.torsion+1, device=self.device)
+        embeddings = self.embedding_dim(positions).repeat_interleave(self.decomposition_n)
+        embeddings = torch.cat((embeddings, embeddings), dim=-1)
+
         # # create_skip connection
         # skip = self.encoder_1(x)
         #
         # # encode the information into latent
         # x = self.encoder(skip)
-        x = self.encoder(x)
+        x = self.encoder(torch.add(x, embeddings))
+        # x = self.encoder(x)
 
         # pass the latent to itself (basically just returns passed in tensor)
         x = self.latent(x)

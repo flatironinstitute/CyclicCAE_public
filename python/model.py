@@ -61,6 +61,7 @@ def main():
                     sin/cos N times (default: 1)")
     p.add_argument("--override-lr", action="store_true", help="Pass flag if you don't want to load \
                     weights LR in.")
+    p.add_argument("--dropout", type=float, default=0.0, help="Apply Dropout (default: 0.0)")
     args = p.parse_args()
 
     # load in dataset
@@ -79,6 +80,7 @@ def main():
     BEGIN_EPOCH      = 0
     DECOMPOSE_ANGLE  = args.angle_decomposition
     LR               = args.learning_rate
+    DROPOUT          = args.dropout
 
     assert EPOCHS % PLOTLY_LATENT == 0, "Epochs for Plotly Number does not have remainder 0 for passed EPOCH number"
 
@@ -89,7 +91,7 @@ def main():
     dataset = MyDataset(X_scaled)
 
     # Generate train/val split
-    train_idx = np.random.choice(X_scaled.size(0), size=int(X_scaled.size(0)*.8), replace=False)
+    train_idx = np.random.choice(X_scaled.size(0), size=int(X_scaled.size(0)*.9), replace=False)
     val_idx = list( set(range(X_scaled.size(0))) - set(train_idx))
 
     # load data into a specific dataloader class
@@ -101,6 +103,7 @@ def main():
         decoder_layers   = N_DECODER_LAYERS,
         latent_space_dim = LATENT_SPACE,
         decomposition_n  = DECOMPOSE_ANGLE,
+        dropout          = DROPOUT,
         **PARAMS,
     ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -155,7 +158,7 @@ def main():
 
     # Create the scheduler
     scheduler = CustomScheduler(
-        warmup_steps = 5e7,
+        warmup_steps = 10000, # 5e7,
         base_lr = 1e-7,
         max_lr = LR,
         patience = 10,
