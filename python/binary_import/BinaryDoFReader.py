@@ -85,6 +85,8 @@ class DoFBinaryReader:
         # build format given header info for grabbing data
         print("***EXTRACTING BINARY RAW DoF VALUES***")
         with open(self.binary_file, 'rb') as f:
+
+            print(self.skip_chunk)
             
             # Skip the amount we need to skip
             header = f.read(self.skip_chunk)
@@ -92,6 +94,18 @@ class DoFBinaryReader:
             # grab out the size of the protein
             protein_seq = re.search(r"SEQUENCE:.*?([A-Za-z]+)\n", header.decode('latin-1'))
             self.protein_len = len(protein_seq.group(1))
+
+            # Grab info
+            reference_pose = header.decode('latin-1')[104:]
+
+            # Encode info
+            test_utf = reference_pose.encode('utf-8')
+            len_utf = len(test_utf)
+
+            # assign info
+            # self.reference_pose = struct.pack(f'I{len_utf}s', len_utf, test_utf)
+            self.reference_pose = test_utf
+            self.ref_pose_len = len_utf
 
             # track sample idx
             tensor_sample = 0
@@ -156,10 +170,14 @@ class DoFBinaryReader:
 
             # extract out params that are useful for the model
             n_param_dict = {k:v for k,v in self.metadata_info.items() if k.endswith("_n")}
+            n_param_dict["filetype_major"] = self.metadata_info["filetype_major"]
+            n_param_dict["filetype_minor"] = self.metadata_info["filetype_minor"]
             n_param_dict["output_size"] = self.num_values
             n_param_dict["input_size"]  = self.num_values
             n_param_dict["normalize"]   = True
             n_param_dict["protein_len"] = self.protein_len
+            n_param_dict["reference_pose"] = self.reference_pose
+            n_param_dict["ref_pose_len"] = self.ref_pose_len
             
             # Generate the output file name
             out_file_pre = self.binary_file.split("/")[-1].split(".")[0]
