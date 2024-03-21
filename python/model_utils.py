@@ -396,17 +396,19 @@ class EncoderBlock64(nn.Module):
                 the batch size and N is the number of elements
         """
         # Inital ski
-        skip = x.clone()
+        # skip = x.clone()
 
-        for i, layer in enumerate(self.encoder_layers):
-            # If last layer then pass True
-            if i+1 == self.num_layers:
-                x = layer(torch.add(x, skip), True)
-            elif (i+1 != self.num_layers) or (i+1 != 1):
-                skip_connect = x.clone()
-                x = layer(x, True)
-            else:
-                x = layer(torch.add(x, skip_connect))
+        # for i, layer in enumerate(self.encoder_layers):
+        #     # If last layer then pass True
+        #     if i+1 == self.num_layers:
+        #         x = layer(torch.add(x, skip), True)
+        #     elif (i+1 != self.num_layers) or (i+1 != 1):
+        #         skip_connect = x.clone()
+        #         x = layer(x, True)
+        #     else:
+        #         x = layer(torch.add(x, skip_connect))
+        for layer in self.encoder_layers:
+            x = layer(x)
         return x
 
 ##### Base ENCODER
@@ -974,7 +976,7 @@ class ConformationalInputDecomposition(nn.Module):
         if self.energy_n != 0:
             out = torch.cat((out, energy), dim=-1)
 
-        return torsion_decompose #, out
+        return torsion_decompose, energy  #, out
 
     def decompose_angle_(self, x: torch.Tensor, decomposition_n: int, idx: torch.Tensor = None):
         """Break the angle up into sin & cos components"""
@@ -1423,11 +1425,23 @@ class ConformationalMLPAutoEncoder(nn.Module):
         #     end_size   = 64,
         # ).double()
 
-        # self.encoder_angle = EncoderBlock64(
-        #     num_layers = 2,
-        #     start_size = self.energy_n,
-        #     end_size = 1,
-        # )
+        self.energy_encode = EncoderBlock64(
+            num_layers = self.encoder_layers,
+            start_size = self.energy_n,
+            end_size = self.latent_space_dim,
+        ).double()
+        self.energy_decode = EncoderBlock64(
+            num_layers = self.decoder_layers,
+            start_size = self.latent_space_dim,
+            end_size = self.energy_n,
+        ).double()
+        self.output_energy = nn.Sequential(
+            nn.Linear(self.energy_n, self.energy_n, bias=False),
+            nn.BatchNorm1d(self.energy_n),
+            nn.LeakyReLU(),
+            nn.Linear(self.energy_n, self.energy_n, bias=False),
+        ).double()
+        
 
 
         self.encoder = EncoderBlock(
@@ -1485,7 +1499,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         B, D = x.shape
 
         # Extract out initial decomposed input for MSE Loss calc
-        initial_input = self.input_single_decomp(x.clone().detach())
+        initial_input = self.input_single_decomp(x.clone().detach())[0]
 
         ############## CONVOLUTION
         # decompose for conv
@@ -1502,33 +1516,36 @@ class ConformationalMLPAutoEncoder(nn.Module):
         ##############
 
         # decompose for non conv
-        x = self.input_decomposition(x)
+        x, energy = self.input_decomposition(x)
 
         # positional encodings
         positions = torch.arange(1,self.torsion+1, device=self.device)
         embeddings = self.embedding_dim(positions).repeat_interleave(self.decomposition_n)
         embeddings = torch.cat((embeddings, embeddings), dim=-1)
 
-        # # create_skip connection
-        # skip = self.encoder_1(x)
-        #
-        # # encode the information into latent
-        # x = self.encoder(skip)
+        # Encoder for angles Unit Circle + PE Embeddings
         x = self.encoder(torch.add(x, embeddings))
-        # x = self.encoder(x)
 
-        # pass the latent to itself (basically just returns passed in tensor)
-        x = self.latent(x)
+        # Encode the energy information 
+        energy = self.energy_encode(energy)
+
+        # sum together the energy and angle information
+        x = self.latent(torch.add(x, energy))
 
         # compute latent rmsd
         latent_clone = x.clone()
         latent_euclid_dist = self.compute_euclidean_distance(latent_clone)
 
         # Decode the information back to post-decomposition input size
-        # Return decoded x (decomposition size), latent_euclidean_distance, decomposed input
         out = self.output(self.decoder(x))
+
+        # Decode the energy information out
+        energy_out = self.output_energy(self.energy_decode(x))
+
+        # concat together 
+        out = torch.cat((out, energy_out), dim=-1)
+
         return out, latent_euclid_dist, latent_clone, initial_input
-        # return out, torch.tensor(0), latent_clone, initial_input
 
     def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
         """Compute the latent space RMSD"""

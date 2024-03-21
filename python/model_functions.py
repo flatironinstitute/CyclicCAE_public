@@ -272,8 +272,8 @@ def loss_function(
     # Compute individual linear loss terms
     bond_length_loss = torch.tensor(0.0)
     # bond_length_loss = linear_loss_term(bond_lengths_hat, bond_lengths) * 1000
-    energy_loss = torch.tensor(0.0)
-    # energy_loss = linear_loss_term(energy_hat, energy) * 1000
+    # energy_loss = torch.tensor(0.0)
+    energy_loss = linear_loss_term(energy_hat, energy)
 
     # extra latent space loss term
     enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100
@@ -323,6 +323,7 @@ def train(
     real_X: torch.Tensor,
     early_stop: object,
     latent_dim: int,
+    energy_n: int,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -464,19 +465,15 @@ def train(
             y_angle = real_X[indices, :angle_n].to(device)
 
             # linear terms
-            bond_lengths = y_linear[:, :-1]
-            energy = y_linear[:, -1]
-                
+            bond_lengths = y_linear[:, :-energy_n]
+            energy = y_linear[:, -energy_n]
+
             # args input for loss
-            args = {"y_hat_angle": out[:, :angle_n*2],
-            # args = {"y_hat_angle": out[:, :angle_n], # non_decomposed
-                    # "y_angle": y_angle,
-                    "y_angle": decomposed_x[:, :angle_n*2],
-                    # "decomposed_angle": angles_decomposed,
-                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-1)],
-                    # "bond_lengths_hat": out[:, angle_n: angle_n + (linear_n-1)], # non_decomposed
+            args = {"y_hat_angle": out[:, :angle_n], # Torsion only we get rid of the *2
+                    "y_angle": decomposed_x[:, :angle_n], # Torsion only we get rid of the *2
+                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-energy_n)],
                     "bond_lengths": bond_lengths, 
-                    "energy_hat": out[:, -1],
+                    "energy_hat": out[:, -energy_n],
                     "energy": energy,
                     "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                     "rmsd_latent": latent_rmsd_mat,
@@ -558,15 +555,16 @@ def train(
             y_angle = real_X[indices, :angle_n].to(device)
 
             # linear terms
-            bond_lengths = y_linear[:, :-1]
-            energy = y_linear[:, -1]
-                
+            bond_lengths = y_linear[:, :-energy_n]
+            energy = y_linear[:, -energy_n]
+
+
             # args input for loss
-            args = {"y_hat_angle": out[:, :angle_n*2],
-                    "y_angle": decomposed_x[:, :angle_n*2],
-                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-1)],
+            args = {"y_hat_angle": out[:, :angle_n], # Torsion only we get rid of the *2
+                    "y_angle": decomposed_x[:, :angle_n], # Torsion only we get rid of the *2
+                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-energy_n)],
                     "bond_lengths": bond_lengths, 
-                    "energy_hat": out[:, -1],
+                    "energy_hat": out[:, -energy_n],
                     "energy": energy,
                     "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                     "rmsd_latent": latent_rmsd_mat,

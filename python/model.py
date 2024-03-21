@@ -208,6 +208,7 @@ def main():
         real_X = X,
         early_stop = early_stopping,
         latent_dim = LATENT_SPACE,
+        energy_n = PARAMS["energy_n"],
     )
 
     # saved extract latent tensor
