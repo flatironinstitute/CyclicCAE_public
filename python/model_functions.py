@@ -272,8 +272,8 @@ def loss_function(
     # Compute individual linear loss terms
     bond_length_loss = torch.tensor(0.0)
     # bond_length_loss = linear_loss_term(bond_lengths_hat, bond_lengths) * 1000
-    # energy_loss = torch.tensor(0.0)
-    energy_loss = linear_loss_term(energy_hat, energy)
+    energy_loss = torch.tensor(0.0)
+    # energy_loss = linear_loss_term(energy_hat, energy)
 
     # extra latent space loss term
     enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100

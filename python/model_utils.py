@@ -1412,36 +1412,72 @@ class ConformationalMLPAutoEncoder(nn.Module):
         #         # nn.Linear(self.after_decomposition_size, self.after_decomposition_size, bias=True),
         # )
 
-        #### FOR ENCODER BLOCK 64 WITH SKIP CONNECTION THESE TWO ARE IMPORTANT
-        # self.encoder = EncoderBlock64(
-        #     num_layers = self.encoder_layers-1,
-        #     start_size = 64, #self.after_decomposition_size,
-        #     end_size   = self.latent_space_dim,
+        ### FOR ENCODER BLOCK 64 WITH SKIP CONNECTION THESE TWO ARE IMPORTANT
+
+        # Refer to https://docs.google.com/presentation/d/108BtzY6V326gqdxCST71rjD37zmHl9wsrWfiC_LQ2RY/edit#slide=id.g2c4e6a2ebe4_0_23
+        # for architecture image
+        self.encoder_skip_create = EncoderBlock64(
+            num_layers = 1,
+            start_size = self.after_decomposition_size,
+            end_size   = 64,
+        ).double()
+
+        self.encoder_4_64 = nn.Sequential(
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = 64,
+            ).double(),
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = 64,
+            ).double(),
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = 64,
+            ).double(),
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = self.latent_space_dim,
+            ).double(),
+        ).double()
+
+        self.decreasing_encoder(
+            nn.Sequential(
+                nn.Linear(64, 32),
+                nn.Tanh(),
+                nn.Linear(32, 16),
+                nn.Tanh(),
+                nn.Linear(16,8),
+                nn.Tanh(),
+                nn.Linear(8, self.latent_space_dim),
+            )
+        ).double()
+
+
+        # self.energy_encode = EncoderBlock64(
+        #     num_layers = 1,
+        #     start_size = self.energy_n,
+        #     end_size = 1,
         # ).double()
         #
-        # self.encoder_1 = EncoderBlock64(
+        # self.energy_decode = EncoderBlock64(
         #     num_layers = 1,
-        #     start_size = self.after_decomposition_size,
-        #     end_size   = 64,
+        #     start_size = self.latent_space_dim,
+        #     end_size = self.energy_n,
         # ).double()
-
-        self.energy_encode = EncoderBlock64(
-            num_layers = self.encoder_layers,
-            start_size = self.energy_n,
-            end_size = self.latent_space_dim,
-        ).double()
-        self.energy_decode = EncoderBlock64(
-            num_layers = self.decoder_layers,
-            start_size = self.latent_space_dim,
-            end_size = self.energy_n,
-        ).double()
-        self.output_energy = nn.Sequential(
-            nn.Linear(self.energy_n, self.energy_n, bias=False),
-            nn.BatchNorm1d(self.energy_n),
-            nn.LeakyReLU(),
-            nn.Linear(self.energy_n, self.energy_n, bias=False),
-        ).double()
+        #
+        # self.output_energy = nn.Sequential(
+        #     nn.Linear(self.energy_n, self.energy_n, bias=False),
+        #     nn.BatchNorm1d(self.energy_n),
+        #     nn.LeakyReLU(),
+        #     nn.Linear(self.energy_n, self.energy_n, bias=False),
+        # ).double()
         
+
 
 
         self.encoder = EncoderBlock(
@@ -1454,22 +1490,20 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim).double()
 
-        self.decoder = DecoderBlock(
-            num_layers = self.decoder_layers,
-            input_size = self.latent_space_dim,
-            output_size = self.angle_out_size,
-            dropout = self.dropout,
-        ).double()
+        # self.decoder = DecoderBlock(
+        #     num_layers = self.decoder_layers,
+        #     input_size = self.latent_space_dim,
+        #     output_size = self.angle_out_size,
+        #     dropout = self.dropout,
+        # ).double()
         # self.decoder = DecoderLayerUnitCircle(
         #     input_size = self.latent_space_dim,
         #     output_size = self.angle_out_size,
         # ).double()
 
-        # self.decoder = EncoderBlock64(
-        #     num_layers = self.decoder_layers,
-        #     end_size = self.angle_out_size,
-        #     start_size   = self.latent_space_dim,
-        # ).double()
+        self.decoder = nn.Sequential(
+            EncoderBlock64()
+        ).double()
 
         self.output = ConformationalOutputBlock(
             protein_len         = self.protein_len,
@@ -1524,26 +1558,38 @@ class ConformationalMLPAutoEncoder(nn.Module):
         embeddings = torch.cat((embeddings, embeddings), dim=-1)
 
         # Encoder for angles Unit Circle + PE Embeddings
-        x = self.encoder(torch.add(x, embeddings))
+        skip = self.encoder_skip_create(torch.add(x, embeddings))
+
+        encoder_4_64_x = self.encoder_4_64(skip)
+
+        encoder_to_latent = self.decreasing_encoder(
+            torch.add(encoder_4_64_x, skip)
+        )
 
         # Encode the energy information 
-        energy = self.energy_encode(energy)
+        # energy = self.energy_encode(energy)
 
         # sum together the energy and angle information
-        x = self.latent(torch.add(x, energy))
+        # x = self.latent(torch.add(x, energy))
+        # x = self.latent(x)
+        x = self.latent(encoder_to_latent)
 
         # compute latent rmsd
         latent_clone = x.clone()
         latent_euclid_dist = self.compute_euclidean_distance(latent_clone)
 
         # Decode the information back to post-decomposition input size
-        out = self.output(self.decoder(x))
+        post_latent_skip = self.decoder_4_64_skip(x)
+
+        post_latent = self.decoder_4_64(post_latent_skip)
+
+        out = self.output(self.decoder(torch.add(post_latent, post_latent_skip)))
 
         # Decode the energy information out
-        energy_out = self.output_energy(self.energy_decode(x))
+        # energy_out = self.output_energy(self.energy_decode(x))
 
         # concat together 
-        out = torch.cat((out, energy_out), dim=-1)
+        # out = torch.cat((out, energy_out), dim=-1)
 
         return out, latent_euclid_dist, latent_clone, initial_input
 

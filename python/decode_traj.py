@@ -229,6 +229,8 @@ if __name__ == "__main__":
     real_data = torch.load(args.y_tensor)
     trajectories = torch.load(args.trajectories)
 
+    print('Y tensor size:', real_data["x"].shape)
+
     # Pull out random values for testing 
     if (args.calculate_error) or (args.calculate_accuracy):
         random_tensor = torch.tensor(
