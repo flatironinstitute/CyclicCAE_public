@@ -19,6 +19,7 @@ from collections import defaultdict
 import os, sys
 import argparse
 import math
+import ast
 
 # Import loss function
 # from model_functions import sin_cos_loss # this is wrong and needs to be fixed
@@ -34,10 +35,15 @@ class DecodeTrajectories:
         model_params: dict,
         real_data: torch.Tensor,
         y_indicies: torch.Tensor = None,
+        num_samples: int = 0,
         error_calc: bool = True,
         encode_decode: bool = False,
+        generate_traj: bool = False,
+        start_point: list = [0., 0., 0.],
+        end_point: list = [0., 0., 0.],
         ):
         # Assign params
+        self.encode_decode_bool = encode_decode
         if len(trajectories.shape) == 3:
             self.trajectories = trajectories[:, -1, :].double()
         else:
@@ -56,7 +62,7 @@ class DecodeTrajectories:
 
             # Assign y test case and trajectories
             self.y = x[y_indicies, :torsion_main].double()
-            if not encode_decode:
+            if not self.encode_decode_bool:
                 self.trajectories = trajectories[y_indicies, -1, :].double()
 
 
@@ -75,9 +81,35 @@ class DecodeTrajectories:
         self.model.eval()
 
         # calculate trajectories if encode_decode
-        if self.encode_decode:
+        if self.encode_decode_bool:
             self.predictions = self.encode_decode
 
+        if generate_traj:
+            self.trajectories = self.interpolate_traj(
+            start_point = torch.tensor(start_point),
+            end_point = torch.tensor(end_point),
+            num_points = num_samples,
+            )
+            print(self.trajectories)
+
+
+    def interpolate_traj(
+        self, 
+        start_point: torch.Tensor,
+        end_point: torch.Tensor,
+        num_points: int
+        ):
+        """Interpolate a linear path of points from one point to another along a straight line"""
+        # Init points list
+        points = torch.zeros((num_points, 3), device="cuda" if torch.cuda.is_available() else "cpu")
+        for i in range(num_points):
+            # get time step value
+            t = i / num_points
+            # get interpolated point
+            C = start_point + (end_point - start_point) * t
+            # Add to tensor
+            points[i, :] = C
+        return points.double()
 
 
 
@@ -91,7 +123,7 @@ class DecodeTrajectories:
             trajectories: torch.Tensor
                 (N,3) Tensor that are points within the latent space
         """
-        if self.encode_decode:
+        if self.encode_decode_bool:
             return self.predictions[0]
         else:
             return self.model.output(self.model.decoder(self.trajectories))
@@ -187,6 +219,10 @@ if __name__ == "__main__":
                     (default: 10)")
     p.add_argument("--encode-decode", action="store_true", help="Run an unseen dataset for evaluation metric")
     p.add_argument("--tolerance", type=int, default=5, help="Amount +- around angle that is still considered correct (default: 5)")
+    p.add_argument("--generate-traj", action="store_true", help="Interpolate random-indicies-num amount of points. \
+                    Arguments start-point and end-point need to be set as well.")
+    p.add_argument("--start-point", type=str, default="[0., 0., 0.,]", help="Pass float list of start-point")
+    p.add_argument("--end-point", type=str, default="[0., 0., 0.,]", help="Pass float list of end-point")
     args = p.parse_args()
 
     # load in real data
@@ -203,7 +239,7 @@ if __name__ == "__main__":
 
     # Explicit model params, but will change the trajectories tensor to include it in the future
     # model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
-    model_params = {"decoder_layers": 32, "encoder_layers": 32, "latent_space_dim": 3, "decomposition_n": 4}
+    model_params = {"decoder_layers": 12, "encoder_layers": 12, "latent_space_dim": 3, "decomposition_n": 4}
     model_params.update(real_data["params"])
 
     decode_class = DecodeTrajectories(
@@ -212,8 +248,12 @@ if __name__ == "__main__":
         model_params = model_params,
         real_data = real_data,
         y_indicies = random_tensor,
+        num_samples = args.random_indicies_num,
         error_calc = args.calculate_error,
         encode_decode = args.encode_decode,
+        generate_traj = args.generate_traj,
+        start_point = ast.literal_eval(args.start_point),
+        end_point = ast.literal_eval(args.end_point),
     )
 
     predictions = decode_class.decode

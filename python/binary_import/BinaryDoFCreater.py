@@ -23,10 +23,12 @@ class DoFExport:
         self,
         params: dict,
         model_out: torch.Tensor,
+        torsion_only: bool = False,
         ):
         # Assign params
         self.params = params
         self.model_out = model_out
+        self.torsion_only = torsion_only
 
         self.extract_to_binary
 
@@ -46,7 +48,11 @@ class DoFExport:
         # Build packing value list
         values = [self.params[k] for k in param_keys]
 
-        # bools_values
+        if self.torsion_only:
+            # change all values to zero, but torsion
+            values = [k if n < 2 else 0 for n,k in enumerate(values)]
+
+        # set up bool values
         bool_values = [1 if x > 0 else 0 for x in values]
 
         reference_pose = self.params["reference_pose"]
@@ -78,10 +84,13 @@ class DoFExport:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model-out-data", type=str, required=True, help="Trajectories from the model, we want converted to Binary.")
+    p.add_argument("--dataset-used", type=str, default="./dof_vectors2024-03-19torch_tensor.pt",
+                   help="Set Dataset Used to Train model (default: dof_vectors2024-03-19torch_tensor.pt)")
+    p.add_argument("--torsion-only", action="store_true", help="Only Send Torsion Data")
     args = p.parse_args()
 
     # Load in speicifc dataset
-    dataset = torch.load("./dof_vectors2024-03-19torch_tensor.pt")
+    dataset = torch.load(args.dataset_used)
 
     # Load in passed model outputs
     out = torch.load(args.model_out_data)
@@ -91,6 +100,7 @@ if __name__ == "__main__":
     DoFExport(
         params = PARAMS,
         model_out = out,
+        torsion_only = args.torsion_only,
     )
 
 
