@@ -37,7 +37,7 @@ def plot_loss(
     if zoom:
         # extract zoomed in info
         zoom_df = data[(data["epoch"] >= lower_x) & (data["epoch"] <= upper_x)]
-        ymin, ymax = zoom_df["loss"].min(), zoom_df["loss"].max()
+        ymin, ymax = zoom_df["val_loss"].min(), zoom_df["val_loss"].max()
 
         ax.set_ylim(ymin, ymax)
         ax.set_xlim(lower_x, upper_x)
