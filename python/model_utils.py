@@ -101,10 +101,10 @@ class CustomScheduler:
         if (step < self.warmup_steps):
             self.increase_lr(step, self.warmup_steps)
 
-        elif (current_lr < 1e-6) and (step > self.warmup_steps):
-            # update step to check now.
-            self.warmup_steps = step + self.warmup_steps
-            self.increase_lr(step, self.warmup_steps)
+        # elif (current_lr < 1e-6) and (step > self.warmup_steps):
+        #     # update step to check now.
+        #     self.warmup_steps = step + self.warmup_steps
+        #     self.increase_lr(step, self.warmup_steps)
 
     def step_reduceLR(self, val_loss):
         """Step ReduceLR"""
@@ -293,6 +293,49 @@ class PositionalEncoding(nn.Module):
     def forward(self, x_pos: torch.Tensor):
         """Compute PE"""
         return self.embed_dim(x_pos)
+
+class CyclicPE(nn.Module):
+    def __init__(
+        self,
+        device: str,
+        seq_len: int = 58,
+        d_model: int = 1,
+        ):
+        """Apply cyclic offset PE for atom positions"""
+        super().__init__()
+        # set param
+        self.atom_n = seq_len
+
+        # Generate the ith column index
+        i = torch.arange(seq_len)
+
+        # Take make a 2d tensor of size (L, 2) Where we can (i, i+L), so we have to flip the stack
+        ij = torch.stack((i, i+seq_len), dim=-1)
+
+        # We make the same symmetric matrix from before
+        offset = i[:, None] - i[None, :]
+
+        # Now we use a dimension trick to compute the absolute distances between ij by adding ij.unsqueeze(1, 2) and ij.unsqueeze(0,1)
+        # This allows us to compute the cyclic position in the resulting tensors 2nd dimension. 
+        c_offset = torch.abs(ij[:, None,:, None] - ij[None, :, None, :])
+
+        # Then we an compute the distances by taking the min from that 2nd and 3rd resulting dimension
+        R = torch.tensor(c_offset.numpy().min((2,3)))
+
+        # Now we need to flip the sign of values that are less than the offset distance 
+        a = R < torch.abs(offset)
+        R[a] = -R[a]
+
+        # Fully we reflip the signs 
+        self.R = (R * torch.sign(offset)).to(device)
+
+        # setup embeddings
+        self.offset_embed = nn.Embedding(seq_len + 1, d_model)
+
+    def forward(self):
+        """Generate cyclic pe"""
+        offset_cyc = self.offset_embed(self.R + self.atom_n//2)
+        return offset_cyc
 
 
 class EncoderLayer64(nn.Module):
@@ -1220,11 +1263,13 @@ class ConformationalMLPAutoEncoder(nn.Module):
         jump_n: int = 0,
         energy_n: int = 0,
         dropout: float = 0.1,
-        device = "cuda" if torch.cuda.is_available() else "cpu",
-        filetype_major = 0,
-        filetype_minor = 1,
-        reference_pose = None,
-        ref_pose_len = 128,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        filetype_major: int = 0,
+        filetype_minor: int = 1,
+        reference_pose: int = None,
+        ref_pose_len: int = 128,
+        noise_std: int = 5,
+        cyclic: bool = False,
         ):
         """MLP Base Auto-Encoder Model (Base Model Architecture)
 
@@ -1302,6 +1347,8 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.decomposition_n     = decomposition_n
         self.dropout             = dropout
         self.device              = device
+        self.noise_std           = noise_std
+        self.cyclic              = cyclic
 
         # combine terms
         self.torsion = self.torsion_main_n + self.torsion_side_n
@@ -1414,50 +1461,90 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         ### FOR ENCODER BLOCK 64 WITH SKIP CONNECTION THESE TWO ARE IMPORTANT
 
+        ####### 0.3 Model Architecture
         # Refer to https://docs.google.com/presentation/d/108BtzY6V326gqdxCST71rjD37zmHl9wsrWfiC_LQ2RY/edit#slide=id.g2c4e6a2ebe4_0_23
         # for architecture image
-        self.encoder_skip_create = EncoderBlock64(
-            num_layers = 1,
-            start_size = self.after_decomposition_size,
-            end_size   = 64,
-        ).double()
+        if self.cyclic:
+            self.encoder_skip_create = EncoderBlock64(
+                num_layers = 1,
+                start_size = self.after_decomposition_size*self.torsion,
+                end_size   = 64,
+            ).double()
+        else:
+            self.encoder_skip_create = EncoderBlock64(
+                num_layers = 1,
+                start_size = self.after_decomposition_size,
+                end_size   = 64,
+            ).double()
 
         self.encoder_4_64 = nn.Sequential(
             EncoderBlock64(
                 num_layers = 6,
                 start_size = 64,
                 end_size   = 64,
-            ).double(),
+            ),
             EncoderBlock64(
                 num_layers = 6,
                 start_size = 64,
                 end_size   = 64,
-            ).double(),
+            ),
             EncoderBlock64(
                 num_layers = 6,
                 start_size = 64,
                 end_size   = 64,
-            ).double(),
+            ),
             EncoderBlock64(
                 num_layers = 6,
                 start_size = 64,
-                end_size   = self.latent_space_dim,
-            ).double(),
+                end_size   = 64,
+            ),
         ).double()
 
-        self.decreasing_encoder(
-            nn.Sequential(
-                nn.Linear(64, 32),
-                nn.Tanh(),
-                nn.Linear(32, 16),
-                nn.Tanh(),
-                nn.Linear(16,8),
-                nn.Tanh(),
-                nn.Linear(8, self.latent_space_dim),
-            )
+        self.decreasing_encoder = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.Tanh(),
+            nn.Linear(32, 16),
+            nn.Tanh(),
+            nn.Linear(16,8),
+            nn.Tanh(),
+            nn.Linear(8, self.latent_space_dim),
         ).double()
 
+        ##### DECODER
+        self.decoder_4_64_skip = EncoderBlock64(
+            num_layers = 1,
+            start_size = self.latent_space_dim,
+            end_size   = 64,
+        ).double()
+        self.decoder_4_64 = nn.Sequential(
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = 64,
+            ),
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = 64,
+            ),
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = 64,
+            ),
+            EncoderBlock64(
+                num_layers = 6,
+                start_size = 64,
+                end_size   = 64,
+            ),
+        ).double()
 
+        self.decoder = DecoderLayerUnitCircle(
+            input_size = 64,
+            output_size = self.angle_out_size,
+        ).double()
+
+        ####### 0.3 Model Architecture END
         # self.energy_encode = EncoderBlock64(
         #     num_layers = 1,
         #     start_size = self.energy_n,
@@ -1480,13 +1567,13 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
 
 
-        self.encoder = EncoderBlock(
-            num_layers = self.encoder_layers,
-            input_size = self.after_decomposition_size,
-            middle_size = 32,
-            output_size = self.latent_space_dim,
-            dropout = self.dropout,
-        ).double()
+        # self.encoder = EncoderBlock(
+        #     num_layers = self.encoder_layers,
+        #     input_size = self.after_decomposition_size,
+        #     middle_size = 32,
+        #     output_size = self.latent_space_dim,
+        #     dropout = self.dropout,
+        # ).double()
 
         self.latent = ConformationalLatentSpace(latent_space_dim=self.latent_space_dim).double()
 
@@ -1501,9 +1588,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         #     output_size = self.angle_out_size,
         # ).double()
 
-        self.decoder = nn.Sequential(
-            EncoderBlock64()
-        ).double()
+
 
         self.output = ConformationalOutputBlock(
             protein_len         = self.protein_len,
@@ -1524,6 +1609,12 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.embedding_dim = PositionalEncoding(
             device = self.device,
             seq_len = self.torsion+1,
+            d_model = 1,
+        ).double()
+
+        self.cyclic_embed = CyclicPE(
+            device = self.device,
+            seq_len = self.torsion,
             d_model = 1,
         ).double()
 
@@ -1549,16 +1640,40 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # x = torch.cat((x, energy), dim=-1)
         ##############
 
+        # Add noise for training
+        if self.training:
+            noise = torch.randn_like(x, device="cuda" if torch.cuda.is_available() else "cpu") * self.noise_std
+            x = x + noise
+
         # decompose for non conv
         x, energy = self.input_decomposition(x)
 
-        # positional encodings
-        positions = torch.arange(1,self.torsion+1, device=self.device)
-        embeddings = self.embedding_dim(positions).repeat_interleave(self.decomposition_n)
-        embeddings = torch.cat((embeddings, embeddings), dim=-1)
+        if self.cyclic:
+            # Compute Embeddings
+            embeddings = self.cyclic_embed().repeat_interleave(self.decomposition_n, dim=-2).unsqueeze(0).repeat(B, 1, 1, 1)
+            B, L, LD, _ = embeddings.shape
+            embeddings = embeddings.reshape(B, L, -1)
+            # grab sin/cos (N, LD) 
+            sin_x, cos_x = x[:, :LD], x[:, LD:]
+            # reshape x (N, LD) -> (N, L, LD)
+            sin_x, cos_x = sin_x.unsqueeze(1).repeat_interleave(L, dim=1), cos_x.unsqueeze(1).repeat_interleave(L, dim=1)
+            sin_x_pe, cos_x_pe = sin_x + embeddings, cos_x + embeddings
+            x = torch.cat(
+                (
+                    sin_x_pe.reshape(B, -1),
+                    cos_x_pe.reshape(B, -1),
+                ),
+                dim=-1,
+            )
+        else:
+            # positional encodings
+            positions = torch.arange(1,self.torsion+1, device=self.device)
+            embeddings = self.embedding_dim(positions).repeat_interleave(self.decomposition_n)
+            embeddings = torch.cat((embeddings, embeddings), dim=-1)
+            x = torch.add(x, embeddings)
 
         # Encoder for angles Unit Circle + PE Embeddings
-        skip = self.encoder_skip_create(torch.add(x, embeddings))
+        skip = self.encoder_skip_create(x)
 
         encoder_4_64_x = self.encoder_4_64(skip)
 

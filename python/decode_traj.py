@@ -126,7 +126,11 @@ class DecodeTrajectories:
         if self.encode_decode_bool:
             return self.predictions[0]
         else:
-            return self.model.output(self.model.decoder(self.trajectories))
+            post_latent_skip = self.model.decoder_4_64_skip(self.trajectories)
+            post_latent = self.model.decoder_4_64(post_latent_skip)
+            return self.model.output(self.model.decoder(
+                torch.add(post_latent, post_latent_skip)
+            ))
 
     @property
     def encode_decode(self):
@@ -241,7 +245,7 @@ if __name__ == "__main__":
 
     # Explicit model params, but will change the trajectories tensor to include it in the future
     # model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
-    model_params = {"decoder_layers": 12, "encoder_layers": 12, "latent_space_dim": 3, "decomposition_n": 4}
+    model_params = {"decoder_layers": 6, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 4}
     model_params.update(real_data["params"])
 
     decode_class = DecodeTrajectories(

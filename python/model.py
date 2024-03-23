@@ -62,6 +62,8 @@ def main():
     p.add_argument("--override-lr", action="store_true", help="Pass flag if you don't want to load \
                     weights LR in.")
     p.add_argument("--dropout", type=float, default=0.0, help="Apply Dropout (default: 0.0)")
+    p.add_argument("--noise-std", type=float, default=5.0, help="Training noise added to degrees (default: 5.0)")
+    p.add_argument("--cyclic", action="store_true", help="Use Cyclic Positional Encodings")
     args = p.parse_args()
 
     # load in dataset
@@ -81,6 +83,8 @@ def main():
     DECOMPOSE_ANGLE  = args.angle_decomposition
     LR               = args.learning_rate
     DROPOUT          = args.dropout
+    NOISE_STD        = args.noise_std
+    CYCLIC           = args.cyclic
 
     assert EPOCHS % PLOTLY_LATENT == 0, "Epochs for Plotly Number does not have remainder 0 for passed EPOCH number"
 
@@ -104,11 +108,13 @@ def main():
         latent_space_dim = LATENT_SPACE,
         decomposition_n  = DECOMPOSE_ANGLE,
         dropout          = DROPOUT,
+        noise_std        = NOISE_STD,
+        cyclic           = CYCLIC,
         **PARAMS,
     ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
     # init AdamW optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.0001)
 
     # load weights if specified
     if WEIGHTS != None:
@@ -158,8 +164,8 @@ def main():
 
     # Create the scheduler
     scheduler = CustomScheduler(
-        warmup_steps = 10000, # 5e7,
-        base_lr = 1e-7,
+        warmup_steps = 5000, # 10000,
+        base_lr = 1e-10,
         max_lr = LR,
         patience = 10,
         cooldown = 5,
