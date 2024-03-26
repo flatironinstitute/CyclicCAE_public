@@ -119,7 +119,15 @@ class ConvPEInput(nn.Module):
         ):
         super().__init__()
         """Apply Convolution to the PE based decomposition of the inputs."""
-        pass
+        # conv PE
+        self.conv1 = nn.Conv1d(channel_in, channel_out, stride=3, padding=0)
+        self.conv2 = nn.Conv1d(channel_out, channel_out, stride=3, padding=0)
+
+    def forward(self, x: torch.Tensor):
+        """Forward convPE"""
+        conv1 = F.relu(self.conv1(x))
+        conv2 = F.relu(self.conv2(conv1))
+        return conv2
 
 class EncoderLayerUnitCircle(nn.Module):
     def __init__(
