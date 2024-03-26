@@ -64,6 +64,7 @@ def main():
     p.add_argument("--dropout", type=float, default=0.0, help="Apply Dropout (default: 0.0)")
     p.add_argument("--noise-std", type=float, default=5.0, help="Training noise added to degrees (default: 5.0)")
     p.add_argument("--cyclic", action="store_true", help="Use Cyclic Positional Encodings")
+    p.add_argument("--linear-pe", action="store_true", help="Use Linear Positional Encodings")
     args = p.parse_args()
 
     # load in dataset
@@ -85,6 +86,7 @@ def main():
     DROPOUT          = args.dropout
     NOISE_STD        = args.noise_std
     CYCLIC           = args.cyclic
+    LINEAR           = args.linear_pe
 
     assert EPOCHS % PLOTLY_LATENT == 0, "Epochs for Plotly Number does not have remainder 0 for passed EPOCH number"
 
@@ -110,11 +112,14 @@ def main():
         dropout          = DROPOUT,
         noise_std        = NOISE_STD,
         cyclic           = CYCLIC,
+        pe_linear        = LINEAR,
         **PARAMS,
     ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
     # init AdamW optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.0001)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR,
+                                  betas=(0.9, 0.999), weight_decay=0.1,
+                                  eps=1e-8,)
 
     # load weights if specified
     if WEIGHTS != None:

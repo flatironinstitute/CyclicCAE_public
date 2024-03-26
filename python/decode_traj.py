@@ -127,7 +127,7 @@ class DecodeTrajectories:
             return self.predictions[0]
         else:
             post_latent_skip = self.model.decoder_4_64_skip(self.trajectories)
-            post_latent = self.model.decoder_4_64(post_latent_skip)
+            post_latent = self.model.decoder_n_64(post_latent_skip)
             return self.model.output(self.model.decoder(
                 torch.add(post_latent, post_latent_skip)
             ))
@@ -227,6 +227,7 @@ if __name__ == "__main__":
                     Arguments start-point and end-point need to be set as well.")
     p.add_argument("--start-point", type=str, default="[0., 0., 0.,]", help="Pass float list of start-point")
     p.add_argument("--end-point", type=str, default="[0., 0., 0.,]", help="Pass float list of end-point")
+    p.add_argument("--cyclic", action="store_true", help="Cyclic PE Encodings")
     args = p.parse_args()
 
     # load in real data
@@ -245,7 +246,8 @@ if __name__ == "__main__":
 
     # Explicit model params, but will change the trajectories tensor to include it in the future
     # model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
-    model_params = {"decoder_layers": 6, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 4}
+    model_params = {"decoder_layers": 12, "encoder_layers": 12, "latent_space_dim": 3, "decomposition_n": 4,
+                    "cyclic": args.cyclic}
     model_params.update(real_data["params"])
 
     decode_class = DecodeTrajectories(
