@@ -276,7 +276,7 @@ def loss_function(
     # energy_loss = linear_loss_term(energy_hat, energy)
 
     # extra latent space loss term
-    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100
+    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100000
     # enforce_latent_rmsd = torch.tensor(0.0)
 
     # reconstruction individual weights

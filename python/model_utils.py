@@ -110,6 +110,17 @@ class CustomScheduler:
         """Step ReduceLR"""
         return self.reduceLR.step(val_loss)
 
+class ConvPEInput(nn.Module):
+    def __init__(
+        self,
+        channel_in: int = 58,
+        channel_out: int = 12,
+        dropout: float = 0.2,
+        ):
+        super().__init__()
+        """Apply Convolution to the PE based decomposition of the inputs."""
+        pass
+
 class EncoderLayerUnitCircle(nn.Module):
     def __init__(
         self,
@@ -194,6 +205,36 @@ class EncoderBlock(nn.Module):
                 x = layer(x)
 
         return x
+
+class EncoderBlockList(nn.Module):
+    def __init__(
+        self,
+        num_layers: int,
+        input_size: int,
+        output_size: int,
+        middle_size: int = 64,
+        dropout: float = 0.2,
+        ):
+        super().__init__()
+        """Encoder Block for Cyclic PE and encoding"""
+        # layer input size and out
+        self.num_layers = num_layers
+        insize = [input_size] + [middle_size]*(num_layers-1)
+        outsize = [middle_size]*(num_layers-1) + [output_size]
+
+
+        self.encoder_layers = nn.ModuleList(
+            [
+                EncoderLayer64(insize[i], outsize[i], dropout) for i in range(num_layers)
+            ]
+        )
+
+    def forward(self, x:torch.Tensor):
+        # iter through layers
+        for layer in self.encoder_layers:
+            x = layer(x)
+        return x
+
 
 class DecoderLayerUnitCircle(nn.Module):
     def __init__(
@@ -344,6 +385,7 @@ class EncoderLayer64(nn.Module):
         input_size: int = 128,
         output_size: int = 3,
         layer_num: int = 0,
+        dropout: float = 0.0,
         ):
         """ A Basic MLP layer for the autoencoder model
 
@@ -371,6 +413,8 @@ class EncoderLayer64(nn.Module):
 
         self.batch_norm = nn.BatchNorm1d(output_size)
 
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x: torch.Tensor, final_layer:bool = False):
         """ forward pass of Encoderlayer
 
@@ -383,7 +427,7 @@ class EncoderLayer64(nn.Module):
         if final_layer:
             return self.linear(x)
         else:
-            return self.relu(self.batch_norm(self.linear(x)))
+            return self.relu(self.batch_norm(self.dropout(self.linear(x))))
             # return self.relu(self.batch_norm(self.linear(x)))
 
 class EncoderBlock64(nn.Module):
@@ -1270,6 +1314,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         ref_pose_len: int = 128,
         noise_std: int = 5,
         cyclic: bool = False,
+        pe_linear: bool = False,
         ):
         """MLP Base Auto-Encoder Model (Base Model Architecture)
 
@@ -1349,6 +1394,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.device              = device
         self.noise_std           = noise_std
         self.cyclic              = cyclic
+        self.pe_linear           = pe_linear
 
         # combine terms
         self.torsion = self.torsion_main_n + self.torsion_side_n
@@ -1394,6 +1440,9 @@ class ConformationalMLPAutoEncoder(nn.Module):
             energy_n            = self.energy_n,
             decomposition_n     = 1,
         ).double()
+
+        for param in self.input_single_decomp.parameters():
+            param.requires_grad = False
 
         ##### Basic Pyramid Shape Encoder Decoder
         # self.encoder = ConformationalMLPEncoderBlock(
@@ -1465,39 +1514,27 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # Refer to https://docs.google.com/presentation/d/108BtzY6V326gqdxCST71rjD37zmHl9wsrWfiC_LQ2RY/edit#slide=id.g2c4e6a2ebe4_0_23
         # for architecture image
         if self.cyclic:
+            input_size = self.after_decomposition_size * self.torsion
             self.encoder_skip_create = EncoderBlock64(
                 num_layers = 1,
                 start_size = self.after_decomposition_size*self.torsion,
+                # start_size = input_size//32,
                 end_size   = 64,
             ).double()
         else:
+            input_size = self.after_decomposition_size
             self.encoder_skip_create = EncoderBlock64(
                 num_layers = 1,
-                start_size = self.after_decomposition_size,
+                start_size = input_size//32,
                 end_size   = 64,
             ).double()
 
-        self.encoder_4_64 = nn.Sequential(
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
+        # encoder 64 
+        self.encoder_n_64 = EncoderBlockList(
+            num_layers = self.encoder_layers,
+            input_size = 64,
+            output_size = 64,
+            dropout = self.dropout,
         ).double()
 
         self.decreasing_encoder = nn.Sequential(
@@ -1516,35 +1553,30 @@ class ConformationalMLPAutoEncoder(nn.Module):
             start_size = self.latent_space_dim,
             end_size   = 64,
         ).double()
-        self.decoder_4_64 = nn.Sequential(
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
-            EncoderBlock64(
-                num_layers = 6,
-                start_size = 64,
-                end_size   = 64,
-            ),
+
+        self.decoder_n_64 = EncoderBlockList(
+            num_layers = self.decoder_layers,
+            input_size = 64,
+            output_size = 64,
+            dropout = self.dropout,
         ).double()
 
         self.decoder = DecoderLayerUnitCircle(
             input_size = 64,
             output_size = self.angle_out_size,
         ).double()
-
         ####### 0.3 Model Architecture END
+
+        ####### 0.3.1 Includes above and pyramid encode for reducing space
+        self.pyramid_encode = nn.Sequential(
+            nn.Linear(input_size, input_size//8),
+            nn.Tanh(),
+            nn.Linear(input_size//8, input_size//32),
+            nn.Tanh(),
+        ).double()
+
+        ###### END
+
         # self.energy_encode = EncoderBlock64(
         #     num_layers = 1,
         #     start_size = self.energy_n,
@@ -1563,9 +1595,6 @@ class ConformationalMLPAutoEncoder(nn.Module):
         #     nn.LeakyReLU(),
         #     nn.Linear(self.energy_n, self.energy_n, bias=False),
         # ).double()
-        
-
-
 
         # self.encoder = EncoderBlock(
         #     num_layers = self.encoder_layers,
@@ -1648,6 +1677,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # decompose for non conv
         x, energy = self.input_decomposition(x)
 
+        # Cyclic PE layer
         if self.cyclic:
             # Compute Embeddings
             embeddings = self.cyclic_embed().repeat_interleave(self.decomposition_n, dim=-2).unsqueeze(0).repeat(B, 1, 1, 1)
@@ -1658,24 +1688,37 @@ class ConformationalMLPAutoEncoder(nn.Module):
             # reshape x (N, LD) -> (N, L, LD)
             sin_x, cos_x = sin_x.unsqueeze(1).repeat_interleave(L, dim=1), cos_x.unsqueeze(1).repeat_interleave(L, dim=1)
             sin_x_pe, cos_x_pe = sin_x + embeddings, cos_x + embeddings
+            # This just added for reducing param num
+            # sin_x_sum, cos_x_sum = sin_x_pe.sum(dim=1), cos_x_pe.sum(dim=1)
             x = torch.cat(
                 (
+                    # sin_x_sum.reshape(B, -1),
+                    # cos_x_sum.reshape(B, -1),
                     sin_x_pe.reshape(B, -1),
                     cos_x_pe.reshape(B, -1),
                 ),
                 dim=-1,
             )
-        else:
+        # Positional Encoding Linear Layers
+        elif self.pe_linear:
             # positional encodings
             positions = torch.arange(1,self.torsion+1, device=self.device)
             embeddings = self.embedding_dim(positions).repeat_interleave(self.decomposition_n)
             embeddings = torch.cat((embeddings, embeddings), dim=-1)
             x = torch.add(x, embeddings)
+        # no positional Encodings
+        else:
+            pass
+            
+
+        # if self.pe_linear:
+            # This is for linear peptides/proteins. This should be a reduction in size
+        x = self.pyramid_encode(x)
 
         # Encoder for angles Unit Circle + PE Embeddings
         skip = self.encoder_skip_create(x)
 
-        encoder_4_64_x = self.encoder_4_64(skip)
+        encoder_4_64_x = self.encoder_n_64(skip)
 
         encoder_to_latent = self.decreasing_encoder(
             torch.add(encoder_4_64_x, skip)
@@ -1696,7 +1739,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # Decode the information back to post-decomposition input size
         post_latent_skip = self.decoder_4_64_skip(x)
 
-        post_latent = self.decoder_4_64(post_latent_skip)
+        post_latent = self.decoder_n_64(post_latent_skip)
 
         out = self.output(self.decoder(torch.add(post_latent, post_latent_skip)))
 
