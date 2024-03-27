@@ -1745,6 +1745,8 @@ class ConformationalMLPAutoEncoder(nn.Module):
         if self.training:
             noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
             x = x + noise
+            x = torch.clamp(x, -180, 180)
+
 
         # decompose for non conv
         x, energy = self.input_decomposition(x)
