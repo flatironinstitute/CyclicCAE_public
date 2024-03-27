@@ -17,6 +17,31 @@ A simple informative overlay of what each file is and what they do/house.
     specified here. As well as loss per epoch training run file, and every $n$ epoch
     weights saved tensor.
 
+- `graph_loss.py`:
+    Plot the train and validatin loss of a particular model run. There are additional
+    options that allow you to zoom in on a specific $x$-axis region.
+
+- `graph_latentspace.py`:
+    Plot the latent space $f(X+E)$, where $X$ are our inputs, $E$ is some noise added
+    to it, and $f(\cdot)$ is the encoding function. You can also, animate the particular
+    latent space trajectory through its various epochs. This animation can be manipulated.
+
+- `decode_traj.py`:
+    Take the weights of a particular model run and use them to generate trajectories from
+    a particular latent space from $(A, B)$ points. You can linearlly interpolate between these
+    two points. Allowing you to animate how the protein/peptide moves, as you time step through
+    the latent space. Also, you can calculate an error and accuracy metric if you want to see how
+    closely we are recapitulating the angles and sin/cos values.
+
+- `binary_import/BinaryDoFCreater.py`:
+    Takes a trajectory generated from `decode_traj.py` and converts it into a binary files that can
+    be read by Rosetta to reconstruct the decoded protien/peptide.
+
+- `binary_import/BinaryDoFReader.py`:
+    Takes binary generated datasets from Rosetta and converts them into DoF `.pt` torch files that
+    can be used for training with the ML model.
+
+
 ## Folders
 
 - `outputs/`:
@@ -25,3 +50,8 @@ A simple informative overlay of what each file is and what they do/house.
     - `model_weights/`:
         Specific folder for model specific weights. Both current epoch and every $n$ epoch
         saved weights.
+
+- `binary_import/`:
+    Houses the scripts for converting Binary to `.pt` and `.pt` to binary. Also, houses dataset
+    that were computed to `.pt` from binary.
+
