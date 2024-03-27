@@ -64,6 +64,7 @@ class CustomScheduler:
         optimizer: torch.optim,
         threshold: float = 1e-3,
         factor: float = 0.5,
+        low_lr_cutoff: float = 1e-7,
         ):
         """Custom Warmup with ReduceLROnPlateau scheduler"""
         # Assign params
@@ -72,6 +73,7 @@ class CustomScheduler:
         self.base_lr = base_lr
         self.optimizer = optimizer
         self.max_lr = max_lr
+        self.low_lr_cutoff = low_lr_cutoff
 
         # set schedulers
         # self.cycleLR = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = max_lr, total_steps = warmup_steps*2)
@@ -101,10 +103,10 @@ class CustomScheduler:
         if (step < self.warmup_steps):
             self.increase_lr(step, self.warmup_steps)
 
-        # elif (current_lr < 1e-6) and (step > self.warmup_steps):
-        #     # update step to check now.
-        #     self.warmup_steps = step + self.warmup_steps
-        #     self.increase_lr(step, self.warmup_steps)
+        elif (current_lr < self.low_lr_cutoff) and (step > self.warmup_steps):
+            # update step to check now.
+            self.warmup_steps = step + self.warmup_steps
+            self.increase_lr(step, self.warmup_steps)
 
     def step_reduceLR(self, val_loss):
         """Step ReduceLR"""
@@ -113,21 +115,58 @@ class CustomScheduler:
 class ConvPEInput(nn.Module):
     def __init__(
         self,
-        channel_in: int = 58,
-        channel_out: int = 12,
+        channel_in: int = 116,
+        channel_out: int = 58,
+        d_model: int = 58,
+        stride: int = 1,
+        padding: int = 0,
+        kernel_size: int = 24, 
         dropout: float = 0.2,
         ):
         super().__init__()
         """Apply Convolution to the PE based decomposition of the inputs."""
+        ###### NOTE FOR MYSELF LATER
+        ###### Might want to think about padding sequences, so I don't have to do the linear layer at the end of 
+        ###### this block. !!!!
+        ###### Paper: https://arxiv.org/pdf/1705.03122.pdf
         # conv PE
-        self.conv1 = nn.Conv1d(channel_in, channel_out, stride=3, padding=0)
-        self.conv2 = nn.Conv1d(channel_out, channel_out, stride=3, padding=0)
+        self.conv1 = nn.Conv1d(channel_in, channel_in, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.conv2 = nn.Conv1d(channel_in, channel_out, kernel_size=kernel_size//2, stride=stride, padding=padding)
+
+        # calculate d size
+        d_1 = d_model+(2* (kernel_size)) - kernel_size + 1
+        d_2 = d_1 - kernel_size//2 + 1
+
+        # batch norm per L
+        self.batch_norm1 = nn.BatchNorm1d(num_features=channel_in)
+        self.batch_norm2 = nn.BatchNorm1d(num_features=channel_out)
+        self.batch_norm3 = nn.BatchNorm1d(d_model*2)
+
+        # Linear Layer
+        self.linear_out = nn.Linear(d_2*channel_out, d_model*2)
 
     def forward(self, x: torch.Tensor):
         """Forward convPE"""
-        conv1 = F.relu(self.conv1(x))
-        conv2 = F.relu(self.conv2(conv1))
-        return conv2
+        # extract shape (remember that the shape is permuted for pytorch)
+        B, D, L = x.shape
+
+        # padding size
+        padding_size = self.conv1.kernel_size[0] - 1
+
+        # cyclic padd
+        x = torch.cat(
+            (
+                x[:, :, -padding_size:],
+                x,
+                x[:, :, :-padding_size],
+            ),
+            dim = -1,
+        )
+
+        # Apply convolutions
+        conv1 = F.tanh(self.batch_norm1(self.conv1(x)))
+        conv2 = F.tanh(self.batch_norm2(self.conv2(conv1)))
+        return F.tanh(self.batch_norm3(self.linear_out(conv2.reshape(B, -1))))
 
 class EncoderLayerUnitCircle(nn.Module):
     def __init__(
@@ -1525,8 +1564,8 @@ class ConformationalMLPAutoEncoder(nn.Module):
             input_size = self.after_decomposition_size * self.torsion
             self.encoder_skip_create = EncoderBlock64(
                 num_layers = 1,
-                start_size = self.after_decomposition_size*self.torsion,
-                # start_size = input_size//32,
+                # start_size = self.after_decomposition_size*self.torsion,
+                start_size = 64, ### This is for model 0.4 after conv1d
                 end_size   = 64,
             ).double()
         else:
@@ -1581,6 +1620,18 @@ class ConformationalMLPAutoEncoder(nn.Module):
             nn.Tanh(),
             nn.Linear(input_size//8, input_size//32),
             nn.Tanh(),
+        ).double()
+
+        ###### END
+
+        ###### 0.4 Model Conv1d
+        self.convPE = ConvPEInput(
+            channel_in = self.after_decomposition_size,
+            channel_out = self.after_decomposition_size//4,
+            d_model = self.torsion,
+            stride = 1,
+            padding = 0,
+            kernel_size = self.torsion//2,
         ).double()
 
         ###### END
@@ -1655,6 +1706,8 @@ class ConformationalMLPAutoEncoder(nn.Module):
             d_model = 1,
         ).double()
 
+        self.linear_conv_to_encoder = nn.Linear(self.torsion*2, 64).double()
+
     def forward(self, x: torch.Tensor, ):
         """Train and Test Forward Method"""
         # Grab dimensions
@@ -1684,6 +1737,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         # decompose for non conv
         x, energy = self.input_decomposition(x)
+        x_skip = x.clone()
 
         # Cyclic PE layer
         if self.cyclic:
@@ -1702,8 +1756,8 @@ class ConformationalMLPAutoEncoder(nn.Module):
                 (
                     # sin_x_sum.reshape(B, -1),
                     # cos_x_sum.reshape(B, -1),
-                    sin_x_pe.reshape(B, -1),
-                    cos_x_pe.reshape(B, -1),
+                    sin_x_pe.reshape(B, L, -1),
+                    cos_x_pe.reshape(B, L, -1),
                 ),
                 dim=-1,
             )
@@ -1721,7 +1775,11 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         # if self.pe_linear:
             # This is for linear peptides/proteins. This should be a reduction in size
-        x = self.pyramid_encode(x)
+        # x = self.pyramid_encode(x)
+        x = self.convPE(x.permute(0, 2, 1))
+        
+        # skip connection from intial decomposition to after PE and Conv.
+        x = self.linear_conv_to_encoder(torch.add(x, x_skip))
 
         # Encoder for angles Unit Circle + PE Embeddings
         skip = self.encoder_skip_create(x)
