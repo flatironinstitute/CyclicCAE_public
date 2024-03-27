@@ -129,21 +129,28 @@ class ConvPEInput(nn.Module):
         ###### Might want to think about padding sequences, so I don't have to do the linear layer at the end of 
         ###### this block. !!!!
         ###### Paper: https://arxiv.org/pdf/1705.03122.pdf
-        # conv PE
-        self.conv1 = nn.Conv1d(channel_in, channel_in, kernel_size=kernel_size, stride=stride, padding=padding)
-        self.conv2 = nn.Conv1d(channel_in, channel_out, kernel_size=kernel_size//2, stride=stride, padding=padding)
+
+        # 1x1 Element wise convolution
+        self.conv_depth_reduce1 = nn.Conv1d(channel_in, channel_in//2, kernel_size=1)
+        self.conv_depth_reduce2 = nn.Conv1d(channel_in//2, channel_out, kernel_size=1)
+
+        # Temporal Conv
+        self.conv_temporal1 = nn.Conv1d(channel_in//2, channel_in//2, kernel_size=kernel_size, stride=stride, padding=padding)
+
+        # pooling output
+        self.average_pooling = nn.AdaptiveAvgPool1d(output_size=(116//channel_out))
 
         # calculate d size
         d_1 = d_model+(2* (kernel_size)) - kernel_size + 1
         d_2 = d_1 - kernel_size//2 + 1
 
         # batch norm per L
-        self.batch_norm1 = nn.BatchNorm1d(num_features=channel_in)
-        self.batch_norm2 = nn.BatchNorm1d(num_features=channel_out)
-        self.batch_norm3 = nn.BatchNorm1d(d_model*2)
+        self.batch_norm1 = nn.BatchNorm1d(num_features=channel_in//2)
+        self.batch_norm2 = nn.BatchNorm1d(num_features=channel_in//2)
+        self.batch_norm3 = nn.BatchNorm1d(num_features=channel_out)
 
         # Linear Layer
-        self.linear_out = nn.Linear(d_2*channel_out, d_model*2)
+        # self.linear_out = nn.Linear(d_2*channel_out, d_model*2)
 
     def forward(self, x: torch.Tensor):
         """Forward convPE"""
@@ -151,7 +158,7 @@ class ConvPEInput(nn.Module):
         B, D, L = x.shape
 
         # padding size
-        padding_size = self.conv1.kernel_size[0] - 1
+        padding_size = self.conv_temporal1.kernel_size[0] - 1
 
         # cyclic padd
         x = torch.cat(
@@ -164,9 +171,11 @@ class ConvPEInput(nn.Module):
         )
 
         # Apply convolutions
-        conv1 = F.tanh(self.batch_norm1(self.conv1(x)))
-        conv2 = F.tanh(self.batch_norm2(self.conv2(conv1)))
-        return F.tanh(self.batch_norm3(self.linear_out(conv2.reshape(B, -1))))
+        conv1 = F.tanh(self.batch_norm1(self.conv_depth_reduce1(x)))
+        conv2 = F.tanh(self.batch_norm2(self.conv_temporal1(conv1)))
+        conv3 = F.tanh(self.batch_norm3(self.conv_depth_reduce2(conv2)))
+        pool  = self.average_pooling(conv3)
+        return F.tanh(pool.view(B, -1))
 
 class EncoderLayerUnitCircle(nn.Module):
     def __init__(
@@ -1362,6 +1371,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         noise_std: int = 5,
         cyclic: bool = False,
         pe_linear: bool = False,
+        convolution_layer: bool = False,
         ):
         """MLP Base Auto-Encoder Model (Base Model Architecture)
 
@@ -1442,6 +1452,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
         self.noise_std           = noise_std
         self.cyclic              = cyclic
         self.pe_linear           = pe_linear
+        self.conv                = convolution_layer
 
         # combine terms
         self.torsion = self.torsion_main_n + self.torsion_side_n
@@ -1631,7 +1642,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
             d_model = self.torsion,
             stride = 1,
             padding = 0,
-            kernel_size = self.torsion//2,
+            kernel_size = 3,
         ).double()
 
         ###### END
@@ -1732,7 +1743,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         # Add noise for training
         if self.training:
-            noise = torch.randn_like(x, device="cuda" if torch.cuda.is_available() else "cpu") * self.noise_std
+            noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
             x = x + noise
 
         # decompose for non conv
@@ -1763,11 +1774,14 @@ class ConformationalMLPAutoEncoder(nn.Module):
             )
         # Positional Encoding Linear Layers
         elif self.pe_linear:
+            # grab dimension shape
+            B, D = x.shape
             # positional encodings
             positions = torch.arange(1,self.torsion+1, device=self.device)
             embeddings = self.embedding_dim(positions).repeat_interleave(self.decomposition_n)
             embeddings = torch.cat((embeddings, embeddings), dim=-1)
             x = torch.add(x, embeddings)
+            x = x.reshape(B, D//7, -1)
         # no positional Encodings
         else:
             pass
@@ -1776,9 +1790,10 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # if self.pe_linear:
             # This is for linear peptides/proteins. This should be a reduction in size
         # x = self.pyramid_encode(x)
-        x = self.convPE(x.permute(0, 2, 1))
+        if self.conv:
+            x = self.convPE(x.permute(0, 2, 1))
         
-        # skip connection from intial decomposition to after PE and Conv.
+        # skip connection from intial decomposition to after PE and Conv. (B, torsion_n*2) -> (B, torsion_n)
         x = self.linear_conv_to_encoder(torch.add(x, x_skip))
 
         # Encoder for angles Unit Circle + PE Embeddings
