@@ -35,6 +35,52 @@ def subset_dataset(dataset, indices):
     # This function returns a Subset of the original dataset but keeps track of the indices.
     return torch.utils.data.Subset(dataset, indices)
 
+def rotate_samples(dataset):
+    """Generate L rotations of the input; only torsion for right now"""
+    # grab size
+    N, D = dataset.shape
+
+    main = dataset[:, :58]
+    extra = dataset[:, 58:]
+
+    # grab atoms
+    main_atoms = main[:, :-2]
+    cut_points = main[:, -2:]
+
+    total_data = main.clone()
+
+    # reshape
+    data_reshape = main_atoms.reshape(N, 8, -1)
+
+    # generate rotation permutations
+    for l in range(1, 8):
+        # rotate values
+        rotate_l = torch.cat(
+            (
+                data_reshape[:, -l:, :],
+                data_reshape[:, :-l, :]
+            ),
+            dim=-2,
+        )
+        # reshape to input
+        rotate_l = rotate_l.reshape(N, -1)
+
+        # add cutpoint back in
+        rotate_l = torch.cat(
+            (
+                rotate_l[:, :l*7],
+                cut_points,
+                rotate_l[:, l*7:],
+            ),
+            dim=-1,
+        )
+
+        total_data = torch.cat((total_data, rotate_l), dim=0)
+
+    total_data = torch.cat((total_data, extra.repeat(8, 1)), dim=-1)
+    return total_data
+
+
 ##################################################################################################################
 #                                                Classes
 ##################################################################################################################
@@ -74,6 +120,7 @@ class CustomScheduler:
         self.optimizer = optimizer
         self.max_lr = max_lr
         self.low_lr_cutoff = low_lr_cutoff
+        self.step_size = 0
 
         # set schedulers
         # self.cycleLR = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = max_lr, total_steps = warmup_steps*2)
@@ -98,15 +145,17 @@ class CustomScheduler:
 
     def step_cycleLR(self, step):
         """Step cycleLR"""
+        self.step_size += 1
         current_lr = self.optimizer.param_groups[0]['lr']
 
-        if (step < self.warmup_steps):
-            self.increase_lr(step, self.warmup_steps)
+        if (self.step_size < self.warmup_steps):
+            self.increase_lr(self.step_size, self.warmup_steps)
 
-        elif (current_lr < self.low_lr_cutoff) and (step > self.warmup_steps):
+        elif (current_lr < self.low_lr_cutoff) and (self.step_size > self.warmup_steps):
             # update step to check now.
-            self.warmup_steps = step + self.warmup_steps
-            self.increase_lr(step, self.warmup_steps)
+            self.step_size = 0
+            # self.warmup_steps = step + self.warmup_steps
+            self.increase_lr(self.step_size, self.warmup_steps)
 
     def step_reduceLR(self, val_loss):
         """Step ReduceLR"""
@@ -130,15 +179,19 @@ class ConvPEInput(nn.Module):
         ###### this block. !!!!
         ###### Paper: https://arxiv.org/pdf/1705.03122.pdf
 
+        #### MODEL 0.4.1 Try 1x1 and temporal only
         # 1x1 Element wise convolution
         self.conv_depth_reduce1 = nn.Conv1d(channel_in, channel_in//2, kernel_size=1)
-        self.conv_depth_reduce2 = nn.Conv1d(channel_in//2, channel_out, kernel_size=1)
+        self.conv_depth_reduce2 = nn.Conv1d(channel_in//2, channel_out, kernel_size=3)
 
         # Temporal Conv
-        self.conv_temporal1 = nn.Conv1d(channel_in//2, channel_in//2, kernel_size=kernel_size, stride=stride, padding=padding)
+        # self.conv_temporal1 = nn.Conv1d(channel_, channel_out, kernel_size=kernel_size, stride=stride, padding=padding)
+
+        # Max Pool
+        self.max_pool = nn.MaxPool1d(kernel_size=3, stride=2)
 
         # pooling output
-        self.average_pooling = nn.AdaptiveAvgPool1d(output_size=(116//channel_out))
+        self.average_pooling = nn.AdaptiveAvgPool1d(output_size=(64//channel_out))
 
         # calculate d size
         d_1 = d_model+(2* (kernel_size)) - kernel_size + 1
@@ -146,8 +199,8 @@ class ConvPEInput(nn.Module):
 
         # batch norm per L
         self.batch_norm1 = nn.BatchNorm1d(num_features=channel_in//2)
-        self.batch_norm2 = nn.BatchNorm1d(num_features=channel_in//2)
-        self.batch_norm3 = nn.BatchNorm1d(num_features=channel_out)
+        self.batch_norm2 = nn.BatchNorm1d(num_features=channel_out)
+        # self.batch_norm3 = nn.BatchNorm1d(num_features=channel_out)
 
         # Linear Layer
         # self.linear_out = nn.Linear(d_2*channel_out, d_model*2)
@@ -158,7 +211,8 @@ class ConvPEInput(nn.Module):
         B, D, L = x.shape
 
         # padding size
-        padding_size = self.conv_temporal1.kernel_size[0] - 1
+        padding_size = self.max_pool.kernel_size - 1
+        
 
         # cyclic padd
         x = torch.cat(
@@ -171,11 +225,12 @@ class ConvPEInput(nn.Module):
         )
 
         # Apply convolutions
-        conv1 = F.tanh(self.batch_norm1(self.conv_depth_reduce1(x)))
-        conv2 = F.tanh(self.batch_norm2(self.conv_temporal1(conv1)))
-        conv3 = F.tanh(self.batch_norm3(self.conv_depth_reduce2(conv2)))
-        pool  = self.average_pooling(conv3)
-        return F.tanh(pool.view(B, -1))
+        conv1 = self.max_pool(F.relu(self.batch_norm1(self.conv_depth_reduce1(x))))
+        conv2 = F.relu(self.batch_norm2(self.conv_depth_reduce2((conv1))))
+        # conv2 = F.tanh(self.batch_norm2(self.conv_temporal1(conv1)))
+        # conv3 = F.tanh(self.batch_norm3(self.conv_depth_reduce2(conv2)))
+        pool  = self.average_pooling(conv2)
+        return pool.view(B, -1)
 
 class EncoderLayerUnitCircle(nn.Module):
     def __init__(
@@ -1575,15 +1630,16 @@ class ConformationalMLPAutoEncoder(nn.Module):
             input_size = self.after_decomposition_size * self.torsion
             self.encoder_skip_create = EncoderBlock64(
                 num_layers = 1,
-                # start_size = self.after_decomposition_size*self.torsion,
-                start_size = 64, ### This is for model 0.4 after conv1d
+                start_size = self.torsion,
+                # start_size = 58, ### This is for model 0.4 after conv1d
                 end_size   = 64,
             ).double()
         else:
             input_size = self.after_decomposition_size
             self.encoder_skip_create = EncoderBlock64(
                 num_layers = 1,
-                start_size = input_size//32,
+                # start_size = input_size//32,
+                start_size = self.torsion, # linear_decompose_to_skip portion
                 end_size   = 64,
             ).double()
 
@@ -1642,9 +1698,10 @@ class ConformationalMLPAutoEncoder(nn.Module):
             d_model = self.torsion,
             stride = 1,
             padding = 0,
-            kernel_size = 3,
+            kernel_size = 5, # 7, # for model 4852 & 7022
         ).double()
 
+        self.linear_decompose_to_skip = nn.Linear(self.after_decomposition_size, self.torsion).double()
         ###### END
 
         # self.energy_encode = EncoderBlock64(
@@ -1750,7 +1807,6 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         # decompose for non conv
         x, energy = self.input_decomposition(x)
-        x_skip = x.clone()
 
         # Cyclic PE layer
         if self.cyclic:
@@ -1794,9 +1850,11 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # x = self.pyramid_encode(x)
         if self.conv:
             x = self.convPE(x.permute(0, 2, 1))
-        
+        else:
+            x = self.linear_decompose_to_skip(x)
+
         # skip connection from intial decomposition to after PE and Conv. (B, torsion_n*2) -> (B, torsion_n)
-        x = self.linear_conv_to_encoder(torch.add(x, x_skip))
+        # x = self.linear_conv_to_encoder(torch.add(x, x_skip))
 
         # Encoder for angles Unit Circle + PE Embeddings
         skip = self.encoder_skip_create(x)
@@ -1845,6 +1903,34 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # distance matrix
         # distance_matrix = torch.sqrt(squared_distances)
         return distances
+
+    def residue_level_convolution(self, x: torch.Tensor):
+        """This takes in a (N, D) matrix and converts it to (N, L, F)
+        where L is the number of residues and F is the atoms within them
+        with np(-inf) as the placeholder."""
+
+        # extract shape
+        N, D = x.shape
+
+        # input extract
+        main_atoms = x[:, :-2]
+        cut_points = x[:, -2:]
+
+        # generate holding tensor with a deafult 8 atom count, but this should be changed later
+        atom_tensor = torch.zeros(N, 8, 8, dtype=torch.float64)
+
+        # reshpae main atoms and fill atom tensor
+        atom_tensor[:, :, :-1] = main_atoms.reshape(N, 8, -1)
+
+        # fill in cut points
+        atom_tensor[:, 0, -1] = cut_points[:, 1]
+        atom_tensor[:, -1, -1] = cut_points[:, 0]
+
+        return atom_tensor
+
+
+
+
 
 
 

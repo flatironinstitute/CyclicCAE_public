@@ -120,7 +120,8 @@ def angle_loss_term(y_hat: torch.Tensor, y: torch.Tensor):
     angle_y = torch.where(angle_y.abs()<0.9, torch.tensor(0.0), angle_y)
     angle_hat = torch.where(angle_hat.abs()<0.9, torch.tensor(0.0), angle_hat)
     # return torch.mean(torch.sqrt(1. - torch.cos(y - y_hat)))
-    return torch.mean(torch.pow(angle_y - angle_hat, 2))
+    arccos_diff = torch.arccos(torch.cos(angle_y - angle_hat))
+    return torch.mean(torch.pow(arccos_diff, 2))
 
 def linear_loss_term(y_hat: torch.Tensor, y: torch.Tensor, scale:int = 1):
     """General L2 Linear Loss"""
@@ -256,6 +257,7 @@ def loss_function(
     # bond_angle_loss = linear_loss_term(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:])
     # torsion_loss = sin_cos_linear_loss(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
     torsion_loss = sin_cos_linear_loss(y_hat_angle, y_angle) * 100000
+    # torsion_loss += angle_loss_term(y_hat_angle, y_angle) * 10000
 
     # Uncomment This
     bond_angle_loss = torch.tensor(0.0) 
@@ -276,8 +278,8 @@ def loss_function(
     # energy_loss = linear_loss_term(energy_hat, energy)
 
     # extra latent space loss term
-    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100000
-    # enforce_latent_rmsd = torch.tensor(0.0)
+    # enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100000
+    enforce_latent_rmsd = torch.tensor(0.0)
 
     # reconstruction individual weights
     lambda_lin, lambda_ang = 1, 1
@@ -475,8 +477,8 @@ def train(
                     "bond_lengths": bond_lengths, 
                     "energy_hat": out[:, -energy_n],
                     "energy": energy,
-                    "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
-                    "rmsd_latent": latent_rmsd_mat,
+                    "rmsd_real": None,#real_rmsd_mat[indices.view(-1, 1), indices].to(device),
+                    "rmsd_latent": None,#latent_rmsd_mat,
                     "device": device,
                     "epoch": e+1,
                     "angle_size": angle_n,
@@ -502,7 +504,7 @@ def train(
             optimizer.step()
 
             # scheduler.step(e+n / len(dataset))
-            scheduler.step_cycleLR(step_size)
+            scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
             # scheduler.step()
 
             # increment step size for tracking
@@ -514,6 +516,9 @@ def train(
         l_mean = sum(l_loss) / len(l_loss)
         lat_mean = sum(lat_loss) / len(lat_loss)
         cons_mean = sum(constrain_list) / len(constrain_list)
+
+        # This is only for overfitting values
+        # scheduler.step(mean_loss)
 
         ##########
         # VALIDATION
@@ -566,8 +571,8 @@ def train(
                     "bond_lengths": bond_lengths, 
                     "energy_hat": out[:, -energy_n],
                     "energy": energy,
-                    "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
-                    "rmsd_latent": latent_rmsd_mat,
+                    "rmsd_real": None, #real_rmsd_mat[indices.view(-1, 1), indices].to(device),
+                    "rmsd_latent": None, #latent_rmsd_mat,
                     "device": device,
                     "epoch": e+1,
                     "angle_size": angle_n,
@@ -587,7 +592,7 @@ def train(
 
         model.train(True)
 
-        # UpdateLR on Plateau Scheduler step
+        # UpdateLR on Plateau Scheduler step This is the custom scheduler
         scheduler.step_reduceLR(mean_val_loss)
 
         # check if loss is lower

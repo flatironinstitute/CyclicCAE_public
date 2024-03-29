@@ -20,7 +20,7 @@ from model_functions import train as mse_train
 from model_functions import scale, xavier_init
 
 # Model 
-from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper, CustomScheduler, subset_dataset
+from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper, CustomScheduler, subset_dataset, rotate_samples
 
 def compare_model_state_dicts(state_dict1, state_dict2):
     for key in state_dict1:
@@ -52,8 +52,8 @@ def main():
                    help="Output saved model weights every N number of epochs (default: 1000)")
     p.add_argument("--load_weights", type=str, default=None, 
                    help="Load in specific weights from known stopping position. (default: None)")
-    p.add_argument("--path_to_output_dir", type=str, default="./outputs/",
-                   help="Specify model output specific directory (default: ./outputs/)")
+    p.add_argument("--path_to_output_dir", type=str, default="/mnt/ceph/users/apowers/outputs_old/",
+                   help="Specify model output specific directory (default: /mnt/ceph/users/apowers/outputs_old/)")
     p.add_argument("--plotly_latent_animate", type=int, default=0,
                    help="Generate plotly latent 3D matrix. Specify the N epochs to take snapshot \
                    (default: 0)")
@@ -65,6 +65,10 @@ def main():
     p.add_argument("--noise-std", type=float, default=5.0, help="Training noise added to degrees (default: 5.0)")
     p.add_argument("--cyclic", action="store_true", help="Use Cyclic Positional Encodings")
     p.add_argument("--linear-pe", action="store_true", help="Use Linear Positional Encodings")
+    p.add_argument("--overfit", action="store_true", help="Select only a couple samples to overfit")
+    p.add_argument("--overfit-n", type=int, default=0, help="Select sample amount (default: 0)")
+    p.add_argument("--convolution", action="store_true", help="Include Convolution after PE embedding")
+    p.add_argument("--rotation-permutation", action="store_true", help="Include Rotation Permutations of Data only Torsion currently")
     args = p.parse_args()
 
     # load in dataset
@@ -87,32 +91,49 @@ def main():
     NOISE_STD        = args.noise_std
     CYCLIC           = args.cyclic
     LINEAR           = args.linear_pe
+    CONVOLUTION      = args.convolution
 
     assert EPOCHS % PLOTLY_LATENT == 0, "Epochs for Plotly Number does not have remainder 0 for passed EPOCH number"
 
     # scale data
     X_scaled = scale(X, PARAMS)
 
+    if args.rotation_permutation:
+        # rotate samples
+        X_scaled = rotate_samples(X_scaled)
+
+
     # pass to custom dataset class
     dataset = MyDataset(X_scaled)
 
-    # Generate train/val split
-    train_idx = np.random.choice(X_scaled.size(0), size=int(X_scaled.size(0)*.9), replace=False)
-    val_idx = list( set(range(X_scaled.size(0))) - set(train_idx))
 
-    # load data into a specific dataloader class
-    train_loader = torch.utils.data.DataLoader(subset_dataset(dataset, train_idx), batch_size=args.batch_size, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(subset_dataset(dataset, val_idx), batch_size=args.batch_size, shuffle=True)
+    if args.overfit:
+        # Generate train/val split
+        train_idx = np.random.choice(X_scaled.size(0), size=args.overfit_n, replace=False)
+
+        # load data into a specific dataloader class
+        train_loader = torch.utils.data.DataLoader(subset_dataset(dataset, train_idx), batch_size=args.batch_size, shuffle=False)
+        val_loader = torch.utils.data.DataLoader(subset_dataset(dataset, train_idx), batch_size=args.batch_size, shuffle=False)
+
+    else:
+        # Generate train/val split
+        train_idx = np.random.choice(X_scaled.size(0), size=int(X_scaled.size(0)*.9), replace=False)
+        val_idx = list( set(range(X_scaled.size(0))) - set(train_idx))
+
+        # load data into a specific dataloader class
+        train_loader = torch.utils.data.DataLoader(subset_dataset(dataset, train_idx), batch_size=args.batch_size, shuffle=True)
+        val_loader = torch.utils.data.DataLoader(subset_dataset(dataset, val_idx), batch_size=args.batch_size, shuffle=True)
 
     model = ConformationalMLPAutoEncoder(
-        encoder_layers   = N_ENCODER_LAYERS,
-        decoder_layers   = N_DECODER_LAYERS,
-        latent_space_dim = LATENT_SPACE,
-        decomposition_n  = DECOMPOSE_ANGLE,
-        dropout          = DROPOUT,
-        noise_std        = NOISE_STD,
-        cyclic           = CYCLIC,
-        pe_linear        = LINEAR,
+        encoder_layers    = N_ENCODER_LAYERS,
+        decoder_layers    = N_DECODER_LAYERS,
+        latent_space_dim  = LATENT_SPACE,
+        decomposition_n   = DECOMPOSE_ANGLE,
+        dropout           = DROPOUT,
+        noise_std         = NOISE_STD,
+        cyclic            = CYCLIC,
+        pe_linear         = LINEAR,
+        convolution_layer = CONVOLUTION,
         **PARAMS,
     ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -169,7 +190,7 @@ def main():
 
     # Create the scheduler
     scheduler = CustomScheduler(
-        warmup_steps = 5000, # 10000,
+        warmup_steps = 20000,#5000, # 10000,
         base_lr = 1e-10,
         max_lr = LR,
         patience = 10,
@@ -215,15 +236,15 @@ def main():
         file_num = random_num,
         real_rmsd_mat = RMSD_REAL,
         latent_plotly = PLOTLY_LATENT,
-        sample_n = X.size(0),
-        real_X = X,
+        sample_n = X_scaled.size(0) if args.rotation_permutation else X.size(0),
+        real_X = X_scaled if args.rotation_permutation else X,
         early_stop = early_stopping,
         latent_dim = LATENT_SPACE,
         energy_n = PARAMS["energy_n"],
     )
 
     # saved extract latent tensor
-    torch.save(latent_plotly, os.path.join("outputs/data_tensor", f"model_run_{random_num}_latent_tensor.pt"))
+    torch.save(latent_plotly, os.path.join("/mnt/ceph/users/apowers/outputs_old/data_tensor", f"model_run_{random_num}_latent_tensor.pt"))
 
     # Save to combo file
     md_combo_out_file = os.path.join(args.path_to_output_dir, "results.md")
