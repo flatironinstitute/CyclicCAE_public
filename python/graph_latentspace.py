@@ -99,8 +99,9 @@ class GraphLatent:
         # ax = plt.axes(projection='3d')
         ax = fig.add_subplot(111, projection='3d')
 
+
         # plot 3d points
-        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1], cmap="viridis", marker="o", s=self.marker_size)
+        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1].repeat(8), cmap="viridis", marker="o", s=self.marker_size)
         # scatter_plot = ax.scatter(self.latent[:, 1, 0], self.latent[:, 1, 1], self.latent[:, 1, 2], c=self.X[:, -1], cmap="viridis", marker="o", s=self.marker_size)
         # scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c="red", marker="x", s=self.marker_size)
 
@@ -111,12 +112,12 @@ class GraphLatent:
         color_mat = self.distances < self.rmsd_cutoff
 
         # pick random indices
-        indices = np.random.choice(np.arange(0, self.latent.size(0)), size=1, replace=False)
+        indices = np.random.choice(np.arange(0, self.X.size(0)), size=1, replace=False)
         ax.scatter(self.latent[indices[0], -1, 0], self.latent[indices[0], -1, 1], self.latent[indices[0], -1, 2], marker="o", c="red", s=self.marker_size*2)
 
         # new loop through pairs and generate colored lines
         # for i in range(10):
-        for j in range(self.latent.size(0)):
+        for j in range(self.X.size(0)):
             if (indices[0] != j) and (self.distances[indices[0], j] < self.rmsd_cutoff):
                 ax.plot(
                     [self.latent[indices[0], -1, 0], self.latent[j, -1, 0]],

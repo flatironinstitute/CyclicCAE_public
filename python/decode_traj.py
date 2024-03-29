@@ -44,10 +44,11 @@ class DecodeTrajectories:
         ):
         # Assign params
         self.encode_decode_bool = encode_decode
-        if len(trajectories.shape) == 3:
-            self.trajectories = trajectories[:, -1, :].double()
-        else:
-            self.trajectories = trajectories.double()
+        if not encode_decode:
+            if len(trajectories.shape) == 3:
+                self.trajectories = trajectories[:, -1, :].double()
+            else:
+                self.trajectories = trajectories.double()
         self.y_indicies = y_indicies
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -228,11 +229,15 @@ if __name__ == "__main__":
     p.add_argument("--start-point", type=str, default="[0., 0., 0.,]", help="Pass float list of start-point")
     p.add_argument("--end-point", type=str, default="[0., 0., 0.,]", help="Pass float list of end-point")
     p.add_argument("--cyclic", action="store_true", help="Cyclic PE Encodings")
+    p.add_argument("--convolution", action="store_true", help="Apply convolution")
     args = p.parse_args()
 
     # load in real data
     real_data = torch.load(args.y_tensor)
-    trajectories = torch.load(args.trajectories)
+    if not args.encode_decode:
+        trajectories = torch.load(args.trajectories)
+    else:
+        trajectories = None
 
     print('Y tensor size:', real_data["x"].shape)
 
@@ -246,8 +251,8 @@ if __name__ == "__main__":
 
     # Explicit model params, but will change the trajectories tensor to include it in the future
     # model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
-    model_params = {"decoder_layers": 12, "encoder_layers": 12, "latent_space_dim": 3, "decomposition_n": 4,
-                    "cyclic": args.cyclic}
+    model_params = {"encoder_layers": 8, "decoder_layers": 8, "latent_space_dim": 3, "decomposition_n": 1,
+                    "cyclic": args.cyclic, 'convolution_layer': args.convolution}
     model_params.update(real_data["params"])
 
     decode_class = DecodeTrajectories(
