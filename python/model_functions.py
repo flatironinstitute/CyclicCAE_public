@@ -326,6 +326,7 @@ def train(
     early_stop: object,
     latent_dim: int,
     energy_n: int,
+    overfit: bool,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -524,76 +525,82 @@ def train(
         # VALIDATION
         ##########
 
-        model.eval()
+        # if it is actual training and not sanity check then run eval
+        if not overfit:
 
-        # loop through dataset 
-        for n, (data, indices) in enumerate(val_dataset):
+            model.eval()
 
-            # send to device
-            x = data.to(device)
+            # loop through dataset 
+            for n, (data, indices) in enumerate(val_dataset):
 
-            # run model
-            # out, angles_decomposed, latent_rmsd_mat, latent_space, decomposed_x = model(x)
-            out, latent_rmsd_mat, latent_space, decomposed_x = model(x)
+                # send to device
+                x = data.to(device)
 
-            # Extract out the latent tensor if multiple middle dimensions
-            if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
+                # run model
+                # out, angles_decomposed, latent_rmsd_mat, latent_space, decomposed_x = model(x)
+                out, latent_rmsd_mat, latent_space, decomposed_x = model(x)
 
-                # Keep track of the epoch and where we are in the middle index
-                if old_epoch != (e+1):
-                    plotly_index += 1
-                    old_epoch = (e+1)
-                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+                # Extract out the latent tensor if multiple middle dimensions
+                if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
 
-            # pull out initial  0 epoch latent
-            elif (e == 0) and (extract_latent_epoch != epochs):
-                # pass
-                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+                    # Keep track of the epoch and where we are in the middle index
+                    if old_epoch != (e+1):
+                        plotly_index += 1
+                        old_epoch = (e+1)
+                    latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
 
-            # if not passed then only extract the last epochs tensor
-            elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
-                # pass
-                latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
+                # pull out initial  0 epoch latent
+                elif (e == 0) and (extract_latent_epoch != epochs):
+                    # pass
+                    latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
 
-            # Create output tensor to check
-            y_linear = real_X[indices, angle_n:].to(device)
-            y_angle = real_X[indices, :angle_n].to(device)
+                # if not passed then only extract the last epochs tensor
+                elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
+                    # pass
+                    latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
 
-            # linear terms
-            bond_lengths = y_linear[:, :-energy_n]
-            energy = y_linear[:, -energy_n]
+                # Create output tensor to check
+                y_linear = real_X[indices, angle_n:].to(device)
+                y_angle = real_X[indices, :angle_n].to(device)
+
+                # linear terms
+                bond_lengths = y_linear[:, :-energy_n]
+                energy = y_linear[:, -energy_n]
 
 
-            # args input for loss
-            args = {"y_hat_angle": out[:, :angle_n], # Torsion only we get rid of the *2
-                    "y_angle": decomposed_x[:, :angle_n], # Torsion only we get rid of the *2
-                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-energy_n)],
-                    "bond_lengths": bond_lengths, 
-                    "energy_hat": out[:, -energy_n],
-                    "energy": energy,
-                    "rmsd_real": None, #real_rmsd_mat[indices.view(-1, 1), indices].to(device),
-                    "rmsd_latent": None, #latent_rmsd_mat,
-                    "device": device,
-                    "epoch": e+1,
-                    "angle_size": angle_n,
-                    }
+                # args input for loss
+                args = {"y_hat_angle": out[:, :angle_n], # Torsion only we get rid of the *2
+                        "y_angle": decomposed_x[:, :angle_n], # Torsion only we get rid of the *2
+                        "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-energy_n)],
+                        "bond_lengths": bond_lengths, 
+                        "energy_hat": out[:, -energy_n],
+                        "energy": energy,
+                        "rmsd_real": None, #real_rmsd_mat[indices.view(-1, 1), indices].to(device),
+                        "rmsd_latent": None, #latent_rmsd_mat,
+                        "device": device,
+                        "epoch": e+1,
+                        "angle_size": angle_n,
+                        }
 
-            # generate loss and append
-            val_loss, _, _, _, _ = loss_function(**args)
+                # generate loss and append
+                val_loss, _, _, _, _ = loss_function(**args)
 
-            # Complete loss
-            val_loss_all.append(val_loss.item())
+                # Complete loss
+                val_loss_all.append(val_loss.item())
 
-        # calculate val loss
-        mean_val_loss = sum(val_loss_all) / len(val_loss_all)
+            # calculate val loss
+            mean_val_loss = sum(val_loss_all) / len(val_loss_all)
 
-        # clear val loss list
-        val_loss_all.clear()
+            # clear val loss list
+            val_loss_all.clear()
 
-        model.train(True)
+            model.train(True)
 
-        # UpdateLR on Plateau Scheduler step This is the custom scheduler
-        scheduler.step_reduceLR(mean_val_loss)
+            # UpdateLR on Plateau Scheduler step This is the custom scheduler
+            scheduler.step_reduceLR(mean_val_loss)
+        else:
+            scheduler.step_reduceLR(mean_loss)
+            mean_val_loss = 0
 
         # check if loss is lower
         if mean_loss < lowest_loss:

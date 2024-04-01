@@ -241,6 +241,7 @@ def main():
         early_stop = early_stopping,
         latent_dim = LATENT_SPACE,
         energy_n = PARAMS["energy_n"],
+        overfit = args.overfit,
     )
 
     # saved extract latent tensor
