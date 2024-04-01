@@ -487,6 +487,7 @@ class CyclicPE(nn.Module):
     def forward(self):
         """Generate cyclic pe"""
         offset_cyc = self.offset_embed(self.R + self.atom_n//2)
+        print("OFFSET SHAPE:", offset_cyc.shape)
         return offset_cyc
 
 
@@ -1770,8 +1771,8 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
         self.cyclic_embed = CyclicPE(
             device = self.device,
-            seq_len = self.torsion,
-            d_model = 1,
+            seq_len = 8, # upgraded this to residue level
+            d_model = 8, # changed from 1 to 8 for L x L x F
         ).double()
 
         self.linear_conv_to_encoder = nn.Linear(self.torsion*2, 64).double()
@@ -1808,28 +1809,45 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # decompose for non conv
         x, energy = self.input_decomposition(x)
 
+
         # Cyclic PE layer
         if self.cyclic:
+
+            # reshape x
+            sin_x = self.residue_level_convolution(x[:, :58]).to(self.device)
+            cos_x = self.residue_level_convolution(x[:, 58:]).to(self.device)
+
             # Compute Embeddings
             embeddings = self.cyclic_embed().repeat_interleave(self.decomposition_n, dim=-2).unsqueeze(0).repeat(B, 1, 1, 1)
+            print("embeddings after repeat:", embeddings.shape)
             B, L, LD, _ = embeddings.shape
-            embeddings = embeddings.reshape(B, L, -1)
+            # embeddings = embeddings.repeat(1, 1, 1, 2)
+
             # grab sin/cos (N, LD) 
-            sin_x, cos_x = x[:, :LD], x[:, LD:]
+            # sin_x, cos_x = self.residue_level_convolution(x[:, :LD]), self.residue_level_convolution(x[:, LD:])
+
             # reshape x (N, LD) -> (N, L, LD)
-            sin_x, cos_x = sin_x.unsqueeze(1).repeat_interleave(L, dim=1), cos_x.unsqueeze(1).repeat_interleave(L, dim=1)
+            sin_x, cos_x = sin_x.unsqueeze(1).repeat_interleave(8, dim=1), cos_x.unsqueeze(1).repeat_interleave(8, dim=1)
+            print('residue level stuff:', sin_x.shape, cos_x.shape)
             sin_x_pe, cos_x_pe = sin_x + embeddings, cos_x + embeddings
+            print(sin_x_pe.shape)
+            print(sin_x_pe.reshape(B, 8, -1).shape)
+
+            ##### PROBLEM WITH SHAPE currently returning 128, and I need the normal 116 at the end. (I think) It has to do with having
+            ##### The tensor shape of 32, 8, 8, 8. Might need to think about the shape first
+
             # This just added for reducing param num
             # sin_x_sum, cos_x_sum = sin_x_pe.sum(dim=1), cos_x_pe.sum(dim=1)
             x = torch.cat(
                 (
                     # sin_x_sum.reshape(B, -1),
                     # cos_x_sum.reshape(B, -1),
-                    sin_x_pe.reshape(B, L, -1),
-                    cos_x_pe.reshape(B, L, -1),
+                    sin_x_pe.reshape(B, 8, -1),
+                    cos_x_pe.reshape(B, 8, -1),
                 ),
                 dim=-1,
             )
+            print(x.shape)
         # Positional Encoding Linear Layers
         elif self.pe_linear:
             # grab dimension shape
