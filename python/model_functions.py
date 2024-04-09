@@ -505,7 +505,7 @@ def train(
             optimizer.step()
 
             # scheduler.step(e+n / len(dataset))
-            scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
+            # scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
             # scheduler.step()
 
             # increment step size for tracking
@@ -597,9 +597,9 @@ def train(
             model.train(True)
 
             # UpdateLR on Plateau Scheduler step This is the custom scheduler
-            scheduler.step_reduceLR(mean_val_loss)
+            # scheduler.step_reduceLR(mean_val_loss)
         else:
-            scheduler.step_reduceLR(mean_loss)
+            # scheduler.step_reduceLR(mean_loss)
             mean_val_loss = 0
 
         # check if loss is lower

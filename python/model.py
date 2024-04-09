@@ -21,6 +21,7 @@ from model_functions import scale, xavier_init
 
 # Model 
 from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper, CustomScheduler, subset_dataset, rotate_samples
+from test_case import TestCase1
 
 def compare_model_state_dicts(state_dict1, state_dict2):
     for key in state_dict1:
@@ -124,7 +125,8 @@ def main():
         train_loader = torch.utils.data.DataLoader(subset_dataset(dataset, train_idx), batch_size=args.batch_size, shuffle=True)
         val_loader = torch.utils.data.DataLoader(subset_dataset(dataset, val_idx), batch_size=args.batch_size, shuffle=True)
 
-    model = ConformationalMLPAutoEncoder(
+    # model = ConformationalMLPAutoEncoder(
+    model = TestCase1(
         encoder_layers    = N_ENCODER_LAYERS,
         decoder_layers    = N_DECODER_LAYERS,
         latent_space_dim  = LATENT_SPACE,
@@ -135,7 +137,7 @@ def main():
         pe_linear         = LINEAR,
         convolution_layer = CONVOLUTION,
         **PARAMS,
-    ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu")).double()
 
     # init AdamW optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR,
@@ -189,14 +191,14 @@ def main():
 
 
     # Create the scheduler
-    scheduler = CustomScheduler(
-        warmup_steps = 20000,#5000, # 10000,
-        base_lr = 1e-10,
-        max_lr = LR,
-        patience = 10,
-        cooldown = 5,
-        optimizer = optimizer,
-    )
+    # scheduler = CustomScheduler(
+    #     warmup_steps = 10000, #20000, #5000, # 10000,
+    #     base_lr = 1e-10,
+    #     max_lr = LR,
+    #     patience = 10,
+    #     cooldown = 5,
+    #     optimizer = optimizer,
+    # )
 
     # init scheduler
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
@@ -207,7 +209,7 @@ def main():
     #                                                        min_lr = 1e-20,
     #                                                        )
 
-    # scheduler = None
+    scheduler = None
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
