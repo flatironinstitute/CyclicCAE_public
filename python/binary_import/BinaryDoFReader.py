@@ -64,14 +64,17 @@ class DoFBinaryReader:
                           "bond_angle_main_bool", "bond_angle_side_bool", "bond_length_main_bool", 
                           "bond_length_side_bool", "jump_bool", "energy_bool", "torsion_main_n", 
                           "torsion_side_n", "bond_angle_main_n", "bond_angle_side_n", "bond_length_main_n",
-                          "bond_length_side_n", "jump_n", "energy_n", "nstructs", "bytes_to_skip"] 
+                          "bond_length_side_n", "jump_n", "energy_n", "total_n_dof", "nstructs", "bytes_to_skip"]
 
         # Format to use for unpacking the binary information
-        self.format = [("Q", 8), ("Q", 8), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8)]
+        self.format = [("Q", 8), ("Q", 8), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8)] 
 
         # fill in metadata_info
         print("***EXTRATING HEADER METADATA***")
         self.skip_chunk, self.data_per_sample = self.read_header
+
+        version_number = str(self.metadata_info["filetype_major"]) + "." + str(self.metadata_info["filetype_minor"])
+        assert version_number == "1.3", f"Version Number is incorrect, we have {version_number} instead of 1.3"
 
         # build extract information data format
         self.data_format, self.num_values = self.binary_data_format
@@ -86,7 +89,7 @@ class DoFBinaryReader:
         print("***EXTRACTING BINARY RAW DoF VALUES***")
         with open(self.binary_file, 'rb') as f:
 
-            print(self.skip_chunk)
+            print('Amount of Bytes to Skip:', self.skip_chunk)
             
             # Skip the amount we need to skip
             header = f.read(self.skip_chunk)
@@ -178,6 +181,7 @@ class DoFBinaryReader:
             n_param_dict["protein_len"] = self.protein_len
             n_param_dict["reference_pose"] = self.reference_pose
             n_param_dict["ref_pose_len"] = self.ref_pose_len
+            n_param_dict["dof_residue_metadata"] = self.metadata_info["dof_residue_metadata"]
             
             # Generate the output file name
             out_file_pre = self.binary_file.split("/")[-1].split(".")[0]
@@ -223,17 +227,47 @@ class DoFBinaryReader:
         # init the amount of values in total that should are available
         avail_vals = 0
 
+        # for 1.3 entry addition
+        format_res = "QQB"
+        bytes_res = 17
+        bytes_skip_dof = 0
+
         # fill in metadata_info
         with open(self.binary_file, 'rb') as bf:
 
             # loop through known header format information
             for i, entry in enumerate(self.format):
 
-                # Pull out specific amount of bytes specified in format entry tuple
-                chunk = bf.read(entry[1])
+                if self.param_set[i] == "total_n_dof":
+                    # Pull out specific amount of bytes specified in format entry tuple
+                    chunk = bf.read(entry[1])
 
-                # Assign the correct decoded value from the header for each of the param options
-                self.metadata_info[self.param_set[i]] = struct.unpack(entry[0], chunk)[0]
+                    # Assign the correct decoded value from the header for each of the param options
+                    dof_n = struct.unpack(entry[0], chunk)[0]
+                    self.metadata_info[self.param_set[i]] = dof_n
+
+                    # generate torch tensor
+                    dof_residue_metadata = torch.zeros((dof_n, 3), dtype=torch.float64)
+
+                    # grab specific 1.3 added info
+                    for dof_i in range(dof_n):
+
+                        #pull specific 
+                        chunk = bf.read(bytes_res)
+
+                        dof_residue_metadata[dof_i, :] = torch.tensor(struct.unpack(format_res, chunk))
+
+                        bytes_skip_dof += bytes_res
+
+                    # Add to metadata and include amount to skip
+                    self.metadata_info["dof_residue_metadata"] = dof_residue_metadata
+                    total_bytes_to_skip += bytes_skip_dof
+                else:
+                    # Pull out specific amount of bytes specified in format entry tuple
+                    chunk = bf.read(entry[1])
+
+                    # Assign the correct decoded value from the header for each of the param options
+                    self.metadata_info[self.param_set[i]] = struct.unpack(entry[0], chunk)[0]
 
                 # total bytes to skip
                 total_bytes_to_skip += entry[1]
