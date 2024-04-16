@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import argparse
 
@@ -332,8 +333,12 @@ class EncoderBlock64(nn.Module):
                 The DoF input vector of size (B, N) where B is
                 the batch size and N is the number of elements
         """
-        for layer in self.encoder_layers:
-                x = layer(x) #, True)
+        for i, layer in enumerate(self.encoder_layers):
+            if i+1 != self.num_layers:
+                x = layer(x, False)
+            else:
+                x = layer(x, True)
+        
         return x
 
 # class EncoderBlock64(nn.Module):
@@ -415,6 +420,7 @@ class TestCase1(nn.Module):
         decoder_layers: int,
         encoder_layers: int,
         latent_space_dim: int,
+        dof_residue_metadata: torch.Tensor,
         decomposition_n: int = 1,
         torsion_main_n: int = 0,
         torsion_side_n: int = 0,
@@ -437,11 +443,14 @@ class TestCase1(nn.Module):
         ):
         super().__init__()
         """Only an Encoder/Decoder Block"""
+        # Grab needed values for forward
+        self.noise_std = noise_std
+        self.dof_metadata = dof_residue_metadata
 
         # encoder first set
         self.encoder_one = EncoderBlock64(
             num_layers = 1,
-            start_size = 116,
+            start_size = torsion_main_n*2,
             end_size = 64,
             dropout = dropout,
         )
@@ -514,16 +523,11 @@ class TestCase1(nn.Module):
             dropout = dropout,
         )
 
-        # This was a test to see if the pyramid was necessary
-        # self.encoder2latent = nn.Sequential(
-        #     nn.Linear(64, latent_space_dim),
-        #     nn.Tanh(),
-        # )
-
         self.final_layer = nn.Sequential(
-            nn.Linear(64, 116),
+            nn.Linear(64, torsion_main_n*2),
             # nn.Tanh(),
         )
+
         self.input_decompose = ConformationalInputDecomposition(
             protein_len = protein_len,
             torsion_main_n = torsion_main_n,
@@ -539,6 +543,12 @@ class TestCase1(nn.Module):
 
     def forward(self, x: torch.Tensor):
         """Forward"""
+        # Add noise if we are training and not validating
+        if self.training:
+            noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
+            x = x + noise
+            x = torch.clamp(x, -180, 180)
+
         # decompose
         x, energy = self.input_decompose(x)
         initial_input = x.clone().detach()
@@ -546,6 +556,444 @@ class TestCase1(nn.Module):
         ##### ENCODER
         # Convert 116 -> 64 for encoder block training
         x = self.encoder_one(x)
+        skip_one = x.clone()
+
+        # First Encoder block 64 -> 64
+        x = self.encoder(x)
+        skip_n1 = x.clone()
+
+        # Second Encoder Block 64 -> 64 
+        # x = self.encoder_n2(torch.add(x, skip_one))
+        x = self.encoder_n2(x)
+        skip_n2 = x.clone() 
+
+        # Third Encoder Block 64 -> 64
+        # x = self.encoder_n3(torch.add(x, skip_n1))
+        x = self.encoder_n3(x)
+
+        # Pyramid Encoder 64 -> 32 -> 16 -> 8 -> 3
+        # x = self.encoder_pyramid(torch.add(x, skip_n2))
+        x = self.encoder_pyramid(x)
+        ##### ENCODER END
+
+
+
+        ##### LATENT SPACE
+        # Copy and compute distance for latent space
+        latent_space = x.clone()
+        latent_euclid_dist = self.compute_euclidean_distance(latent_space)
+        ##### LATENT SPACE END
+
+
+
+        ##### DECODER
+        # Decoder latent to decoder blocks size 3 -> 64
+        x = self.decoder_skip(x)
+        decode_skip1 = x.clone()
+
+        # First Decoder Block 64 -> 64
+        x = self.decoder_n(x)
+        dskip_n1 = x.clone()
+
+        # Second Decoder Block 64 -> 64
+        # x = self.decoder_n2(torch.add(x, decode_skip1))
+        x = self.decoder_n2(x)
+        dskip_n2 = x.clone()
+
+        # Third Decoder Block 64 -> 64
+        # x = self.decoder_n3(torch.add(x, dskip_n1))
+        x = self.decoder_n3(x)
+
+        # FINAL decoder layer 64 -> 116 out size
+        # out = self.final_layer(torch.add(x, dskip_n2))
+        out = self.final_layer(x) # allo of these are for testing without residual connection
+        ##### DECODER END
+
+        return out, latent_euclid_dist, latent_space, initial_input 
+
+    def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
+        """Compute the latent space RMSD"""
+        # compute pairwise diff
+        differences = xyz_mat.unsqueeze(1) - xyz_mat.unsqueeze(0)
+
+        # squared_distances along last dim
+        distances = torch.sum( torch.pow( differences, 2), dim=-1)
+        return distances
+
+class ConvCycTest2d(nn.Module):
+    def __init__(
+        self,
+        channel_in: int,
+        channel_out: int,
+        out_size: int,
+        kernel_seq: int,
+        kernel_feats: int,
+        kernel_max: int,
+        ):
+        super().__init__()
+        """Apply Convolution to the cyclic peptides"""
+        # Temporal Convolution
+        self.conv_temporal1 = nn.Conv2d(channel_in, channel_out, kernel_size=(kernel_seq, kernel_feats), stride=1, padding=1)
+        # self.conv_temporal2 = nn.Conv2d(channel_in, channel_out, kernel_size=(kernel_seq, kernel_feats), stride=1, padding=1)
+
+        output_size = out_size // channel_out
+        # pooling output
+        # self.average_pooling = nn.AdaptiveAvgPool1d(output_size=int(output_size))
+        self.adaptive_maxpool = nn.AdaptiveMaxPool2d(8)
+
+        # Layer Norm
+        # self.layernorm = nn.LayerNorm([channel_out, output_size])
+
+    def forward(self, x: torch.Tensor):
+        """Forward Cyclic Conv"""
+        B, C, L, D = x.shape
+
+        # padding size extract for cyclic convolution
+        padding_cyc_size = self.conv_temporal1.kernel_size[0] - 1
+
+        # cyclic padding
+        x = torch.cat(
+            (
+                x[:, :, -padding_cyc_size:, :],
+                x,
+                x[:, :, :-padding_cyc_size, :],
+            ),
+            dim = -2,
+        )
+
+        # Apply convolution
+        # print('x', x.shape)
+        # x = F.relu(self.batch_temporal1(self.conv_temporal1(x)))
+        x = F.tanh(self.conv_temporal1(x))
+        # print('conv1', x.shape)
+        # x = F.tanh(self.conv_temporal2(x))
+        # print('conv2', x.shape)
+        # x = self.average_pooling(x)
+        x = self.adaptive_maxpool(x)
+        # print('pool', x.shape)
+        # x = self.layernorm(x)
+        return x.view(B, -1)
+
+class ConvCycDecoder(nn.Module):
+    def __init__(
+        self,
+        channel_in: int,
+        channel_out: int,
+        out_size: int,
+        kernel_size1: int,
+        kernel_size2: int,
+        ):
+        super().__init__()
+        """Apply Convolution to the cyclic peptides"""
+
+        self.channel_in = channel_in
+
+        # Convolution
+        self.conv1 = nn.ConvTranspose1d(channel_in, channel_in//2, kernel_size=kernel_size1, stride=2, padding=(kernel_size1-1)//2, output_padding=0)
+        self.conv2 = nn.ConvTranspose1d(channel_in//2, channel_out, kernel_size=kernel_size2, stride=2, padding=(kernel_size2-1)//2, output_padding=1)
+
+        # pooling output
+        # self.maxpool = nn.MaxPool1d(2)
+        
+        #activation
+        # self.glu = nn.GLU(dim=1)
+
+        outsize = channel_in*36
+        # Convert to 64
+        self.linear = nn.Sequential(
+            nn.Linear(64, outsize//4),
+            nn.Tanh(),
+            nn.Linear(outsize//4, outsize//2),
+            nn.Tanh(),
+            nn.Linear(outsize//2, outsize),
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Forward Cyclic Conv"""
+        B, D = x.shape
+        # print("decoder x", x.shape)
+        # Apply convolution
+        x = F.tanh(self.linear(x))
+        # print('linear', x.shape)
+        # reshape x
+        x = x.view(B, self.channel_in, -1)
+        # print('reshape', x.shape)
+        x = F.tanh(self.conv1(x))
+        # print("conv1", x.shape)
+        # print("conv1", x.shape)
+        x = F.tanh(self.conv2(x))
+        # print("conv2", x.shape)
+        # print("conv2", x.shape)
+        # print("linear", x.shape)
+        return x
+
+class ConvCycEncoder(nn.Module):
+    def __init__(
+        self,
+        channel_in: int,
+        channel_out: int,
+        out_size: int,
+        kernel_size1: int,
+        kernel_size2: int,
+        ):
+        super().__init__()
+        """Apply Convolution to the cyclic peptides"""
+        # Convolution
+        self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=kernel_size1//2)
+        self.conv2 = nn.Conv1d(channel_out//2, channel_out, kernel_size=kernel_size2, stride=1, padding=kernel_size2//2)
+
+        # pooling output
+        self.maxpool = nn.MaxPool1d(2)
+        
+        #activation
+        # self.glu = nn.GLU(dim=1)
+
+        outsize = channel_out*36
+        # Convert to 64
+        self.linear = nn.Sequential(
+            nn.Linear(outsize, (outsize)//2),
+            nn.Tanh(),
+            nn.Linear(outsize//2, outsize//4),
+            nn.Tanh(),
+            nn.Linear(outsize//4, 64),
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Forward Cyclic Conv"""
+        B, L, D = x.shape
+
+        # padding size extract for cyclic convolution
+        padding_cyc_size = self.conv1.kernel_size[0] - 1
+
+        # cyclic padding
+        x = torch.cat(
+            (
+                x[:, :, -padding_cyc_size:],
+                x,
+                x[:, :, :-padding_cyc_size],
+            ),
+            dim = -1,
+        )
+
+        # Apply convolution
+        # print("Encoder x", x.shape)
+        x = self.maxpool(F.tanh(self.conv1(x)))
+        # print("conv1", x.shape)
+        x = self.maxpool(F.tanh(self.conv2(x)))
+        # print("conv2", x.shape)
+        x = F.tanh(self.linear(x.view(B, -1)))
+        # print("linear", x.shape)
+        return x
+
+class ConvCase1(nn.Module):
+    def __init__(
+        self,
+        protein_len: int,
+        output_size: int,
+        input_size: int,
+        normalize: bool,
+        decoder_layers: int,
+        encoder_layers: int,
+        latent_space_dim: int,
+        dof_residue_metadata: torch.Tensor,
+        decomposition_n: int = 1,
+        torsion_main_n: int = 0,
+        torsion_side_n: int = 0,
+        bond_angle_main_n: int = 0,
+        bond_angle_side_n: int = 0,
+        bond_length_main_n: int = 0,
+        bond_length_side_n: int = 0,
+        jump_n: int = 0,
+        energy_n: int = 0,
+        dropout: float = 0.1,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        filetype_major: int = 0,
+        filetype_minor: int = 1,
+        reference_pose: int = None,
+        ref_pose_len: int = 128,
+        noise_std: int = 5,
+        cyclic: bool = False,
+        pe_linear: bool = False,
+        convolution_layer: bool = False,
+        ):
+        super().__init__()
+        """Only an Encoder/Decoder Block"""
+        # Grab needed values for forward
+        self.noise_std = noise_std
+        self.dof_residue_metadata = dof_residue_metadata
+        self.device = device
+        self.convolution = convolution_layer
+        self.torsion_main_n = torsion_main_n
+
+        # grab atom Length residue length
+        F = self.dof_residue_metadata[:, 1].max().long()
+
+
+        in_channel = 2
+        out_channel = 32
+        # Convolution 
+        self.conv_cyc_encoder = ConvCycEncoder(
+            channel_in = in_channel,
+            channel_out = out_channel,
+            kernel_size1 = 9,
+            kernel_size2 = 18,
+            out_size = 64,
+        )
+        self.conv_cyc_decoder = ConvCycDecoder(
+            channel_in = out_channel,
+            channel_out = in_channel,
+            kernel_size1 = 18,
+            kernel_size2 = 9,
+            out_size = (8*9)*2,
+        )
+        # self.conv_cyc2d = ConvCycTest2d(
+        #     channel_in = 2,
+        #     channel_out = 1,
+        #     kernel_seq = 5,
+        #     kernel_feats = 3,
+        #     kernel_max = 3,
+        #     out_size = 64//2,
+        # )
+
+        # encoder first set
+        self.encoder_one = EncoderBlock64(
+            num_layers = 1,
+            start_size = torsion_main_n*2,
+            end_size = 64,
+            dropout = dropout,
+        )
+        
+        # encoder block
+        self.encoder = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.encoder_n2 = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.encoder_n3 = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        # Decreasing encoder block
+        self.encoder_pyramid = nn.Sequential(
+            # layer 1
+            nn.Linear(64, 32),
+            nn.Tanh(),
+            # layer 2
+            nn.Linear(32, 16),
+            nn.Tanh(),
+            # layer 3
+            nn.Linear(16, 8),
+            nn.Tanh(),
+            # layer 4
+            nn.Linear(8, latent_space_dim),
+            nn.Tanh(),
+        )
+
+        ##### DECODER PORTION
+
+        # Decreasing encoder block
+        self.decoder_pyramid = nn.Sequential(
+            # layer 1
+            nn.Linear(latent_space_dim, 8),
+            nn.Tanh(),
+            # layer 2
+            nn.Linear(8, 16),
+            nn.Tanh(),
+            # layer 3
+            nn.Linear(16, 32),
+            nn.Tanh(),
+            # layer 4
+            nn.Linear(32, 64),
+            nn.Tanh(),
+        )
+        # self.decoder_skip = EncoderBlock64(
+        #     num_layers = 1,
+        #     start_size = 
+        #     end_size = 64,
+        #     dropout = dropout,
+        # )
+
+        self.decoder_n = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.decoder_n2 = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.decoder_n3 = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        self.final_layer = nn.Sequential(
+            nn.Linear((8*9)*4, torsion_main_n*2),
+        )
+
+        self.input_decompose = ConformationalInputDecomposition(
+            protein_len = protein_len,
+            torsion_main_n = torsion_main_n,
+            torsion_side_n = torsion_side_n,
+            bond_angle_main_n = bond_angle_main_n,
+            bond_angle_side_n = bond_angle_side_n,
+            bond_length_main_n = bond_length_main_n,
+            bond_length_side_n = bond_length_side_n,
+            jump_n = jump_n,
+            energy_n = energy_n,
+            decomposition_n = 1,
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Forward"""
+        # Add noise if we are training and not validating
+        if self.training:
+            noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
+            x = x + noise
+            x = torch.clamp(x, -180, 180)
+
+        # decompose
+        x, energy = self.input_decompose(x)
+        initial_input = x.clone().detach()
+
+        ##### ENCODER
+        # If convolution is true then reformat and apply convolution
+        if self.convolution:
+            sin_x = self.reformat_convolution2(x[:, :self.torsion_main_n], self.dof_residue_metadata)
+            cos_x = self.reformat_convolution2(x[:, self.torsion_main_n:], self.dof_residue_metadata)
+            x_combo = torch.cat(
+                (
+                    sin_x.unsqueeze(-1),
+                    cos_x.unsqueeze(-1),
+                ),
+                dim=-1,
+            )
+            # reshape from (N, L, D, 2) -> (N, 2, D*L)
+            B, L, D, C = x_combo.shape
+            x = self.conv_cyc_encoder(x_combo.reshape(B, C, D*L)) # 1D
+            # x = self.conv_cyc2d(x_combo.permute(0, 3, 1, 2)) # 2D
+            # sin_conv = self.conv_cyc(sin_x.permute(0, 2, 1))
+            # cos_conv = self.conv_cyc(cos_x.permute(0, 2, 1))
+            # x = torch.cat((sin_conv, cos_conv), dim=-1)
+            # x = torch.add(sin_conv, cos_conv)
+        else:
+        # Convert 116 -> 64 for encoder block training
+            x = self.encoder_one(x)
         skip_one = x.clone()
 
         # First Encoder block 64 -> 64
@@ -563,12 +1011,311 @@ class TestCase1(nn.Module):
         x = self.encoder_pyramid(torch.add(x, skip_n2))
         ##### ENCODER END
 
+
+
+        ##### LATENT SPACE
         # Copy and compute distance for latent space
         latent_space = x.clone()
         latent_euclid_dist = self.compute_euclidean_distance(latent_space)
+        ##### LATENT SPACE END
+
+
 
         ##### DECODER
+        # Decoder latent to decoder blocks size 3 -> 64
+        x = self.decoder_pyramid(x)
+        decode_skip1 = x.clone()
 
+        # First Decoder Block 64 -> 64
+        x = self.decoder_n(x)
+        dskip_n1 = x.clone()
+
+        # Second Decoder Block 64 -> 64
+        x = self.decoder_n2(torch.add(x, decode_skip1))
+        dskip_n2 = x.clone()
+
+        # Third Decoder Block 64 -> 64
+        x = self.decoder_n3(torch.add(x, dskip_n1))
+
+        # FINAL decoder layer 64 -> 116 out size
+        if self.convolution:
+            B, D = x.shape
+            x = self.conv_cyc_decoder(x).view(B, -1)
+        # out = self.final_layer(torch.add(x, dskip_n2))
+        out = self.final_layer(x)
+        ##### DECODER END
+
+        return out, latent_euclid_dist, latent_space, initial_input 
+
+    def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
+        """Compute the latent space RMSD"""
+        # compute pairwise diff
+        differences = xyz_mat.unsqueeze(1) - xyz_mat.unsqueeze(0)
+
+        # squared_distances along last dim
+        distances = torch.sum( torch.pow( differences, 2), dim=-1)
+        return distances
+
+    def reformat_convolution2(self, x: torch.Tensor, format: torch.Tensor):
+        """Format x for cyclic convolution"""
+        # grab shape
+        B, D = x.shape
+        format = format.long()
+        # grab residue and index amount
+        L = format[:D, 0].max()
+        F = format[:D, 1].max()
+
+        # generate holding tensor
+        atom_tensor = torch.zeros(B, L, F, dtype=torch.float64, device=self.device)
+
+        # grab indices
+        residue_indices = format[:D, 0] - 1
+        atom_indicies = format[:D, 1] - 1
+
+        # create a gride for batch indices
+        batch_indices = torch.arange(B, device=self.device)[:, None].expand(B, D)
+
+        # advance indexing to fill in atom tensor
+        atom_tensor[batch_indices, residue_indices, atom_indicies] = x
+
+        return atom_tensor
+
+    def reformat_convolution(self, x: torch.Tensor, format: torch.Tensor):
+        """Format x for cyclic convolution"""
+        # grab shape
+        B, D = x.shape
+        # grab residue and index amount
+        L = format[:, 0].max().to(torch.long)
+        F = format[:, 1].max().to(torch.long) - 1
+
+        # input extract
+        cut_points = x[:, [F, -1]]
+        indices = torch.arange(x.size(-1), device=self.device)
+        mask = (indices != F) & (indices != x.size(-1)-1)
+        main_atoms = x[:, indices[mask]]
+
+        # generate holding tensor
+        atom_tensor = torch.zeros(B, L, F, dtype=torch.float64, device=self.device)
+
+        # reshaep main atoms and fill atom tensor
+        atom_tensor[:, :, :-1] = main_atoms.reshape(B, L, -1)
+
+        # fill cutpoints
+        atom_tensor[:,  0, -1] = cut_points[:, 0]
+        atom_tensor[:, -1, -1] = cut_points[:,-1]
+
+        return atom_tensor
+
+class HingeModel(nn.Module):
+    def __init__(
+        self,
+        protein_len: int,
+        output_size: int,
+        input_size: int,
+        normalize: bool,
+        decoder_layers: int,
+        encoder_layers: int,
+        latent_space_dim: int,
+        # dof_residue_metadata: torch.Tensor,
+        decomposition_n: int = 1,
+        torsion_main_n: int = 0,
+        torsion_side_n: int = 0,
+        bond_angle_main_n: int = 0,
+        bond_angle_side_n: int = 0,
+        bond_length_main_n: int = 0,
+        bond_length_side_n: int = 0,
+        jump_n: int = 0,
+        energy_n: int = 0,
+        dropout: float = 0.1,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        filetype_major: int = 0,
+        filetype_minor: int = 1,
+        reference_pose: int = None,
+        ref_pose_len: int = 128,
+        noise_std: int = 5,
+        cyclic: bool = False,
+        pe_linear: bool = False,
+        convolution_layer: bool = False,
+        ):
+        super().__init__()
+        """Hinge Protein Model"""
+        # Grab needed values for forward
+        self.noise_std = noise_std
+        # self.dof_metadata = dof_residue_metadata
+        print((torsion_main_n*2)//4)
+
+        self.reduce_input = nn.Sequential(
+            nn.Linear(torsion_main_n*2, (torsion_main_n*2)//2),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//2, (torsion_main_n*2)//4),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//4, (torsion_main_n*2)//6),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//6, (torsion_main_n*2)//8),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//8, (torsion_main_n*2)//10),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//10, (torsion_main_n*2)//12),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//12, (torsion_main_n*2)//14),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//14, (torsion_main_n*2)//16),
+            nn.Tanh(),
+        )
+
+        # encoder first set
+        self.encoder_one = EncoderBlock64(
+            num_layers = 1,
+            start_size = (torsion_main_n*2)//16,
+            end_size = 64,
+            dropout = dropout,
+        )
+        
+        # encoder block
+        self.encoder = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            # d_model = 232,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.encoder_n2 = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.encoder_n3 = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            # d_model = 5,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        # Decreasing encoder block
+        self.encoder_pyramid = nn.Sequential(
+            # layer 1
+            nn.Linear(64, 32),
+            nn.Tanh(),
+            # layer 2
+            nn.Linear(32, 16),
+            nn.Tanh(),
+            # layer 3
+            nn.Linear(16, 8),
+            nn.Tanh(),
+            # layer 4
+            nn.Linear(8, latent_space_dim),
+            nn.Tanh(),
+        )
+
+        ##### DECODER PORTION
+        self.decoder_skip = EncoderBlock64(
+            num_layers = 1,
+            start_size = latent_space_dim,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        self.decoder_n = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            # d_model = 120,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.decoder_n2 = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            # d_model = 120,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.decoder_n3 = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            # d_model = 120,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        self.final_layer = nn.Sequential(
+            nn.Linear(64, (torsion_main_n*2)//16),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//16, (torsion_main_n*2)//14),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//14, (torsion_main_n*2)//12),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//12, (torsion_main_n*2)//10),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//10, (torsion_main_n*2)//8),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//8, (torsion_main_n*2)//6),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//6, (torsion_main_n*2)//4),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//4, (torsion_main_n*2)//2),
+            nn.Tanh(),
+            nn.Linear((torsion_main_n*2)//2, torsion_main_n*2),
+            # nn.Tanh(),
+        )
+
+        self.input_decompose = ConformationalInputDecomposition(
+            protein_len = protein_len,
+            torsion_main_n = torsion_main_n,
+            torsion_side_n = torsion_side_n,
+            bond_angle_main_n = bond_angle_main_n,
+            bond_angle_side_n = bond_angle_side_n,
+            bond_length_main_n = bond_length_main_n,
+            bond_length_side_n = bond_length_side_n,
+            jump_n = jump_n,
+            energy_n = energy_n,
+            decomposition_n = 1,
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Forward"""
+        # Add noise if we are training and not validating
+        if self.training:
+            noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
+            x = x + noise
+            x = torch.clamp(x, -180, 180)
+
+        # decompose
+        x, energy = self.input_decompose(x)
+        initial_input = x.clone().detach()
+
+        ##### ENCODER
+        # Convert 116 -> 64 for encoder block training
+        x = self.encoder_one(self.reduce_input(x))
+        skip_one = x.clone()
+
+        # First Encoder block 64 -> 64
+        x = self.encoder(x)
+        skip_n1 = x.clone()
+
+        # Second Encoder Block 64 -> 64 
+        x = self.encoder_n2(torch.add(x, skip_one))
+        skip_n2 = x.clone() 
+
+        # Third Encoder Block 64 -> 64
+        x = self.encoder_n3(torch.add(x, skip_n1))
+
+        # Pyramid Encoder 64 -> 32 -> 16 -> 8 -> 3
+        x = self.encoder_pyramid(torch.add(x, skip_n2))
+        ##### ENCODER END
+
+
+
+        ##### LATENT SPACE
+        # Copy and compute distance for latent space
+        latent_space = x.clone()
+        latent_euclid_dist = self.compute_euclidean_distance(latent_space)
+        ##### LATENT SPACE END
+
+
+
+        ##### DECODER
         # Decoder latent to decoder blocks size 3 -> 64
         x = self.decoder_skip(x)
         decode_skip1 = x.clone()
@@ -597,12 +1344,7 @@ class TestCase1(nn.Module):
 
         # squared_distances along last dim
         distances = torch.sum( torch.pow( differences, 2), dim=-1)
-
-        # distance matrix
-        # distance_matrix = torch.sqrt(squared_distances)
         return distances
-
-
 
 
         
