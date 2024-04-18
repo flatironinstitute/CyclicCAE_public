@@ -278,8 +278,8 @@ def loss_function(
     # energy_loss = linear_loss_term(energy_hat, energy)
 
     # extra latent space loss term
-    # enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100000
-    enforce_latent_rmsd = torch.tensor(0.0)
+    enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100 #* 100_000
+    # enforce_latent_rmsd = torch.tensor(0.0)
 
     # reconstruction individual weights
     lambda_lin, lambda_ang = 1, 1
@@ -428,6 +428,13 @@ def train(
     lat_loss = list()
     constrain_list = list()
 
+    # init loss
+    loss_noise = 0
+    angle_noise_loss  = 0
+    linear_noise_loss = 0
+    latent_noise_loss = 0
+    constrain_noise_loss = 0
+
     # loop through epochs
     for e in range(begin_epoch, epochs+begin_epoch):
 
@@ -440,9 +447,9 @@ def train(
             # send to device
             x = data.to(device)
 
-            # run model
+            # run model with noise
             # out, angles_decomposed, latent_rmsd_mat, latent_space, decomposed_x = model(x)
-            out, latent_rmsd_mat, latent_space, decomposed_x = model(x)
+            out, latent_rmsd_mat, latent_space, decomposed_x = model(x, True)
 
             # Extract out the latent tensor if multiple middle dimensions
             if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
@@ -478,8 +485,8 @@ def train(
                     "bond_lengths": bond_lengths, 
                     "energy_hat": out[:, -energy_n],
                     "energy": energy,
-                    "rmsd_real": None,#real_rmsd_mat[indices.view(-1, 1), indices].to(device),
-                    "rmsd_latent": None,#latent_rmsd_mat,
+                    "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
+                    "rmsd_latent": latent_rmsd_mat,
                     "device": device,
                     "epoch": e+1,
                     "angle_size": angle_n,
@@ -488,16 +495,61 @@ def train(
             # generate loss and append
             loss, angle_loss, linear_loss, latent_loss, constrain_loss = loss_function(**args)
 
+            # loss track
+            loss_noise += loss
+            angle_noise_loss += angle_loss
+            linear_noise_loss += linear_loss
+            latent_noise_loss += latent_loss
+            constrain_noise_loss += constrain_loss
+
+            # # Complete loss
+            # loss_all.append(loss.item())
+            #
+            # # Extra loss terms
+            # a_loss.append(angle_loss.item())
+            # l_loss.append(linear_loss.item())
+            # lat_loss.append(latent_loss.item())
+            # constrain_list.append(constrain_loss.item())
+
+            ### Run same set without noise
+            out, latent_rmsd_mat, latent_space, decomposed_x = model(x, False)
+
+            # Create output tensor to check
+            y_linear = real_X[indices, angle_n:].to(device)
+            y_angle = real_X[indices, :angle_n].to(device)
+
+            # linear terms
+            bond_lengths = y_linear[:, :-energy_n]
+            energy = y_linear[:, -energy_n]
+
+            # args input for loss
+            args = {"y_hat_angle": out[:, :angle_n], # Torsion only we get rid of the *2
+                    "y_angle": decomposed_x[:, :angle_n], # Torsion only we get rid of the *2
+                    "bond_lengths_hat": out[:, angle_n*2: angle_n*2 + (linear_n-energy_n)],
+                    "bond_lengths": bond_lengths, 
+                    "energy_hat": out[:, -energy_n],
+                    "energy": energy,
+                    "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
+                    "rmsd_latent": latent_rmsd_mat,
+                    "device": device,
+                    "epoch": e+1,
+                    "angle_size": angle_n,
+                    }
+
+            # generate loss and append
+            loss_nonoise, angle_loss_nonoise, linear_loss_nonoise, latent_loss_nonoise, constrain_loss_nonoise = loss_function(**args)
+
             # Complete loss
-            loss_all.append(loss.item())
+            loss_all.append(((loss_noise + loss_nonoise)/noise_iterations).item())
 
             # Extra loss terms
-            a_loss.append(angle_loss.item())
-            l_loss.append(linear_loss.item())
-            lat_loss.append(latent_loss.item())
-            constrain_list.append(constrain_loss.item())
-
+            a_loss.append(((angle_loss_nonoise + angle_noise_loss)/noise_iterations).item())
+            l_loss.append(((linear_loss_nonoise + linear_noise_loss)/noise_iterations).item())
+            lat_loss.append(((latent_loss_nonoise + latent_noise_loss)/noise_iterations).item())
+            constrain_list.append(((constrain_loss_nonoise + constrain_noise_loss)/noise_iterations).item())
             # backprop weights and clip
+
+            loss = (loss_noise + loss_nonoise)/noise_iterations
             loss.backward() 
             # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
@@ -505,11 +557,18 @@ def train(
             optimizer.step()
 
             # scheduler.step(e+n / len(dataset))
-            # scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
+            scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
             # scheduler.step()
 
             # increment step size for tracking
             step_size += 1
+
+            # clear loss
+            loss_noise = 0
+            angle_noise_loss  = 0
+            linear_noise_loss = 0
+            latent_noise_loss = 0
+            constrain_noise_loss = 0
 
         # calc mean loss
         mean_loss = sum(loss_all) / len(loss_all)
@@ -538,7 +597,7 @@ def train(
 
                 # run model
                 # out, angles_decomposed, latent_rmsd_mat, latent_space, decomposed_x = model(x)
-                out, latent_rmsd_mat, latent_space, decomposed_x = model(x)
+                out, latent_rmsd_mat, latent_space, decomposed_x = model(x, False)
 
                 # Extract out the latent tensor if multiple middle dimensions
                 if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
@@ -575,8 +634,8 @@ def train(
                         "bond_lengths": bond_lengths, 
                         "energy_hat": out[:, -energy_n],
                         "energy": energy,
-                        "rmsd_real": None, #real_rmsd_mat[indices.view(-1, 1), indices].to(device),
-                        "rmsd_latent": None, #latent_rmsd_mat,
+                        "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
+                        "rmsd_latent": latent_rmsd_mat,
                         "device": device,
                         "epoch": e+1,
                         "angle_size": angle_n,
@@ -597,9 +656,9 @@ def train(
             model.train(True)
 
             # UpdateLR on Plateau Scheduler step This is the custom scheduler
-            # scheduler.step_reduceLR(mean_val_loss)
+            scheduler.step_reduceLR(mean_val_loss)
         else:
-            # scheduler.step_reduceLR(mean_loss)
+            scheduler.step_reduceLR(mean_loss)
             mean_val_loss = 0
 
         # check if loss is lower
