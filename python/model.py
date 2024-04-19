@@ -21,7 +21,7 @@ from model_functions import scale, xavier_init
 
 # Model 
 from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper, CustomScheduler, subset_dataset, rotate_samples
-from test_case import TestCase1
+from test_case import TestCase1, HingeModel, ConvCase1, ConvCase2, ConvCase3
 
 def compare_model_state_dicts(state_dict1, state_dict2):
     for key in state_dict1:
@@ -70,6 +70,7 @@ def main():
     p.add_argument("--overfit-n", type=int, default=0, help="Select sample amount (default: 0)")
     p.add_argument("--convolution", action="store_true", help="Include Convolution after PE embedding")
     p.add_argument("--rotation-permutation", action="store_true", help="Include Rotation Permutations of Data only Torsion currently")
+    p.add_argument("--noise-iterations", type=int, default=0, help="Number of rounds of noise during a batch (default: 0)")
     args = p.parse_args()
 
     # load in dataset
@@ -126,7 +127,9 @@ def main():
         val_loader = torch.utils.data.DataLoader(subset_dataset(dataset, val_idx), batch_size=args.batch_size, shuffle=True)
 
     # model = ConformationalMLPAutoEncoder(
-    model = TestCase1(
+    # model = HingeModel(
+    # model = ConvCase1(
+    model = ConvCase3(
         encoder_layers    = N_ENCODER_LAYERS,
         decoder_layers    = N_DECODER_LAYERS,
         latent_space_dim  = LATENT_SPACE,
@@ -191,14 +194,14 @@ def main():
 
 
     # Create the scheduler
-    # scheduler = CustomScheduler(
-    #     warmup_steps = 10000, #20000, #5000, # 10000,
-    #     base_lr = 1e-10,
-    #     max_lr = LR,
-    #     patience = 10,
-    #     cooldown = 5,
-    #     optimizer = optimizer,
-    # )
+    scheduler = CustomScheduler(
+        warmup_steps = 10000, #10000, #20000, #5000, # 10000,
+        base_lr = 1e-10,
+        max_lr = LR,
+        patience = 10,
+        cooldown = 5,
+        optimizer = optimizer,
+    )
 
     # init scheduler
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
@@ -209,7 +212,7 @@ def main():
     #                                                        min_lr = 1e-20,
     #                                                        )
 
-    scheduler = None
+    # scheduler = None
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
@@ -244,6 +247,7 @@ def main():
         latent_dim = LATENT_SPACE,
         energy_n = PARAMS["energy_n"],
         overfit = args.overfit,
+        noise_iterations = args.noise_iterations,
     )
 
     # saved extract latent tensor
