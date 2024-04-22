@@ -778,7 +778,7 @@ def train(
         # Early Stopping
         # if early_stop.early_stop(mean_loss):
         #     return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor, e+1
-        print(f"Best Model Weights For {file_num} Are From Epoch: {best_weights_epoch}")
+    print(f"Best Model Weights For {file_num} Are From Epoch: {best_weights_epoch}")
     return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor, e+1
 
 
