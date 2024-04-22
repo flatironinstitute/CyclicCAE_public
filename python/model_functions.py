@@ -256,14 +256,14 @@ def loss_function(
     # torsion_loss = linear_loss_term(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
     # bond_angle_loss = linear_loss_term(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:])
     # torsion_loss = sin_cos_linear_loss(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
-    print("Full y_hat_angle", y_hat_angle.shape)
-    print("torsion y_hat_angle", y_hat_angle[:, y_hat_angle.size(-1)//2:].shape)
+    # print("Full y_hat_angle", y_hat_angle.shape)
+    # print("torsion y_hat_angle", y_hat_angle[:, y_hat_angle.size(-1)//2:].shape)
     torsion_loss = sin_cos_linear_loss(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_angle.size(-1)//2]) * 100_000
     # torsion_loss += angle_loss_term(y_hat_angle, y_angle) * 10000
 
     # Uncomment This
     # bond_angle_loss = torch.tensor(0.0) 
-    print("bond angle y_hat_angle", y_hat_angle[:, :y_hat_angle.size(-1)//2].shape)
+    # print("bond angle y_hat_angle", y_hat_angle[:, :y_hat_angle.size(-1)//2].shape)
     bond_angle_loss = sin_cos_linear_loss(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_angle.size(-1)//2:]) * 100_000
 
     # This is constrain loss for sin/cos pairs
@@ -571,7 +571,7 @@ def train(
             optimizer.step()
 
             # scheduler.step(e+n / len(dataset))
-            scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
+            # scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
             # scheduler.step()
 
             # increment step size for tracking
@@ -670,9 +670,9 @@ def train(
             model.train(True)
 
             # UpdateLR on Plateau Scheduler step This is the custom scheduler
-            scheduler.step_reduceLR(mean_val_loss)
+            # scheduler.step_reduceLR(mean_val_loss)
         else:
-            scheduler.step_reduceLR(mean_loss)
+            # scheduler.step_reduceLR(mean_loss)
             mean_val_loss = 0
 
         # check if loss is lower

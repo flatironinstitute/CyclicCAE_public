@@ -1383,8 +1383,12 @@ class ConvCase3(nn.Module):
             dropout = dropout,
         )
 
-        self.final_layer = nn.Sequential(
-            nn.Linear(720, torsion_main_n*2),
+        self.head_torsion_angle = nn.Sequential(
+            nn.Linear(720, 720//2),
+            nn.Tanh(),
+            nn.Linear(720//2, 720//4),
+            nn.Tanh(),
+            nn.Linear(720//4, torsion_main_n*2),
         )
 
         self.head_bond_length = nn.Sequential(
@@ -1499,7 +1503,7 @@ class ConvCase3(nn.Module):
             B, D = x.shape
             x = self.conv_cyc_decoder(x).view(B, -1)
         # out = self.final_layer(torch.add(x, dskip_n2))
-        torsion_angle_pred = self.final_layer(x)
+        torsion_angle_pred = self.head_torsion_angle(x)
         bond_angle_pred = self.head_bond_angle(x)
         bond_length_pred = self.head_bond_length(x)
         ##### DECODER END
