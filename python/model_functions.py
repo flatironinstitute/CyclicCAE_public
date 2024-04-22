@@ -256,11 +256,14 @@ def loss_function(
     # torsion_loss = linear_loss_term(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
     # bond_angle_loss = linear_loss_term(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_hat_angle.size(-1)//2:])
     # torsion_loss = sin_cos_linear_loss(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
+    print("Full y_hat_angle", y_hat_angle.shape)
+    print("torsion y_hat_angle", y_hat_angle[:, y_hat_angle.size(-1)//2:].shape)
     torsion_loss = sin_cos_linear_loss(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_angle.size(-1)//2]) * 100_000
     # torsion_loss += angle_loss_term(y_hat_angle, y_angle) * 10000
 
     # Uncomment This
     # bond_angle_loss = torch.tensor(0.0) 
+    print("bond angle y_hat_angle", y_hat_angle[:, :y_hat_angle.size(-1)//2].shape)
     bond_angle_loss = sin_cos_linear_loss(y_hat_angle[:, y_hat_angle.size(-1)//2:], y_angle[:, y_angle.size(-1)//2:]) * 100_000
 
     # This is constrain loss for sin/cos pairs
@@ -525,8 +528,8 @@ def train(
             energy = y_linear[:, -energy_n]
 
             # args input for loss
-            args = {"y_hat_angle": out[:, :angle_n*2], # Torsion only we get rid of the *2
-                    "y_angle": decomposed_x[:, :angle_n*2], # Torsion only we get rid of the *2
+            args = {"y_hat_angle": out[:, :angle_n*2], 
+                    "y_angle": decomposed_x[:, :angle_n*2], 
                     "bond_lengths_hat": out[:, angle_n*2: ], # This currently is because we don't have energy #angle_n*2 + (linear_n-energy_n)],
                     "bond_lengths": bond_lengths, 
                     "energy_hat": None, #out[:, -energy_n],

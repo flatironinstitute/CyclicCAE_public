@@ -179,28 +179,27 @@ class ConvPEInput(nn.Module):
         ###### this block. !!!!
         ###### Paper: https://arxiv.org/pdf/1705.03122.pdf
 
-        #### MODEL 0.4.1 Try 1x1 and temporal only
         # 1x1 Element wise convolution
         self.conv_depth_reduce1 = nn.Conv1d(channel_in, channel_in//2, kernel_size=1)
-        self.conv_depth_reduce2 = nn.Conv1d(channel_in//2, channel_out, kernel_size=3)
+        self.conv_depth_reduce2 = nn.Conv1d(channel_in//2, channel_out, kernel_size=1)
 
         # Temporal Conv
-        # self.conv_temporal1 = nn.Conv1d(channel_, channel_out, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.conv_temporal = nn.Conv1d(channel_in, channel_in, kernel_size=kernel_size, stride=stride, padding=padding)
 
         # Max Pool
-        self.max_pool = nn.MaxPool1d(kernel_size=3, stride=2)
+        # self.max_pool = nn.MaxPool1d(kernel_size=3, stride=2)
 
         # pooling output
         self.average_pooling = nn.AdaptiveAvgPool1d(output_size=(64//channel_out))
 
         # calculate d size
-        d_1 = d_model+(2* (kernel_size)) - kernel_size + 1
-        d_2 = d_1 - kernel_size//2 + 1
+        # d_1 = d_model+(2* (kernel_size)) - kernel_size + 1
+        # d_2 = d_1 - kernel_size//2 + 1
 
         # batch norm per L
-        self.batch_norm1 = nn.BatchNorm1d(num_features=channel_in//2)
-        self.batch_norm2 = nn.BatchNorm1d(num_features=channel_out)
-        # self.batch_norm3 = nn.BatchNorm1d(num_features=channel_out)
+        self.batch_temporal = nn.BatchNorm1d(num_features=channel_in)
+        self.batch_reduce = nn.BatchNorm1d(num_features=channel_in//2)
+        self.batch_out = nn.BatchNorm1d(num_features=channel_out)
 
         # Linear Layer
         # self.linear_out = nn.Linear(d_2*channel_out, d_model*2)
@@ -211,7 +210,7 @@ class ConvPEInput(nn.Module):
         B, D, L = x.shape
 
         # padding size
-        padding_size = self.max_pool.kernel_size - 1
+        padding_size = self.conv_temporal.kernel_size[0] - 1
         
 
         # cyclic padd
@@ -225,11 +224,11 @@ class ConvPEInput(nn.Module):
         )
 
         # Apply convolutions
-        conv1 = self.max_pool(F.relu(self.batch_norm1(self.conv_depth_reduce1(x))))
-        conv2 = F.relu(self.batch_norm2(self.conv_depth_reduce2((conv1))))
-        # conv2 = F.tanh(self.batch_norm2(self.conv_temporal1(conv1)))
-        # conv3 = F.tanh(self.batch_norm3(self.conv_depth_reduce2(conv2)))
-        pool  = self.average_pooling(conv2)
+        # Two temporal convolutions with batch and relu
+        conv = F.relu(self.batch_temporal(self.conv_temporal(F.relu(self.batch_temporal(self.conv_temporal(x))))))
+        reduce_channel1 = F.relu(self.batch_reduce(self.conv_depth_reduce1(conv)))
+        reduce_channel2 = F.relu(self.batch_out(self.conv_depth_reduce2(reduce_channel1)))
+        pool = self.average_pooling(reduce_channel2)
         return pool.view(B, -1)
 
 class EncoderLayerUnitCircle(nn.Module):
@@ -487,7 +486,6 @@ class CyclicPE(nn.Module):
     def forward(self):
         """Generate cyclic pe"""
         offset_cyc = self.offset_embed(self.R + self.atom_n//2)
-        print("OFFSET SHAPE:", offset_cyc.shape)
         return offset_cyc
 
 
@@ -1631,8 +1629,7 @@ class ConformationalMLPAutoEncoder(nn.Module):
             input_size = self.after_decomposition_size * self.torsion
             self.encoder_skip_create = EncoderBlock64(
                 num_layers = 1,
-                start_size = self.torsion,
-                # start_size = 58, ### This is for model 0.4 after conv1d
+                start_size = 64,
                 end_size   = 64,
             ).double()
         else:
@@ -1693,14 +1690,24 @@ class ConformationalMLPAutoEncoder(nn.Module):
         ###### END
 
         ###### 0.4 Model Conv1d
-        self.convPE = ConvPEInput(
-            channel_in = self.after_decomposition_size,
-            channel_out = self.after_decomposition_size//4,
-            d_model = self.torsion,
-            stride = 1,
-            padding = 0,
-            kernel_size = 5, # 7, # for model 4852 & 7022
-        ).double()
+        if self.cyclic:
+            self.convPE = ConvPEInput(
+                channel_in = 128,
+                channel_out = 16,
+                d_model = 8,
+                stride = 2,
+                padding = 0,
+                kernel_size = 2, 
+            ).double()
+        else:
+            self.convPE = ConvPEInput(
+                channel_in = self.after_decomposition_size,
+                channel_out = self.after_decomposition_size//4,
+                d_model = self.torsion,
+                stride = 1,
+                padding = 0,
+                kernel_size = 5, # 7, # for model 4852 & 7022
+            ).double()
 
         self.linear_decompose_to_skip = nn.Linear(self.after_decomposition_size, self.torsion).double()
         ###### END
@@ -1813,13 +1820,13 @@ class ConformationalMLPAutoEncoder(nn.Module):
         # Cyclic PE layer
         if self.cyclic:
 
+
             # reshape x
             sin_x = self.residue_level_convolution(x[:, :58]).to(self.device)
             cos_x = self.residue_level_convolution(x[:, 58:]).to(self.device)
 
             # Compute Embeddings
             embeddings = self.cyclic_embed().repeat_interleave(self.decomposition_n, dim=-2).unsqueeze(0).repeat(B, 1, 1, 1)
-            print("embeddings after repeat:", embeddings.shape)
             B, L, LD, _ = embeddings.shape
             # embeddings = embeddings.repeat(1, 1, 1, 2)
 
@@ -1828,13 +1835,11 @@ class ConformationalMLPAutoEncoder(nn.Module):
 
             # reshape x (N, LD) -> (N, L, LD)
             sin_x, cos_x = sin_x.unsqueeze(1).repeat_interleave(8, dim=1), cos_x.unsqueeze(1).repeat_interleave(8, dim=1)
-            print('residue level stuff:', sin_x.shape, cos_x.shape)
             sin_x_pe, cos_x_pe = sin_x + embeddings, cos_x + embeddings
-            print(sin_x_pe.shape)
-            print(sin_x_pe.reshape(B, 8, -1).shape)
 
             ##### PROBLEM WITH SHAPE currently returning 128, and I need the normal 116 at the end. (I think) It has to do with having
             ##### The tensor shape of 32, 8, 8, 8. Might need to think about the shape first
+            ##### It has to be 128 now, as we have 8 * 8 = 64 atoms instead of 8*7 + 2 = 58 atoms
 
             # This just added for reducing param num
             # sin_x_sum, cos_x_sum = sin_x_pe.sum(dim=1), cos_x_pe.sum(dim=1)
@@ -1847,7 +1852,6 @@ class ConformationalMLPAutoEncoder(nn.Module):
                 ),
                 dim=-1,
             )
-            print(x.shape)
         # Positional Encoding Linear Layers
         elif self.pe_linear:
             # grab dimension shape

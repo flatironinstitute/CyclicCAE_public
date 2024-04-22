@@ -1080,7 +1080,7 @@ class ConvCase1(nn.Module):
             x = torch.clamp(x, -180, 180)
 
         # decompose
-        x, energy = self.input_decompose(x)
+        x, _, _,  energy = self.input_decompose(x)
         initial_input = x.clone().detach()
 
         ##### ENCODER
@@ -1428,10 +1428,7 @@ class ConvCase3(nn.Module):
             cos_x = self.reformat_convolution2(x[:, self.torsion_main_n:], self.dof_residue_metadata[:self.torsion_main_n,:])
             sin_x_bond = self.reformat_convolution2(bond_angle[:, :self.bond_angle_main_n], self.dof_residue_metadata[self.torsion_main_n:self.torsion_main_n + self.bond_angle_main_n, :])
             cos_x_bond = self.reformat_convolution2(bond_angle[:, self.bond_angle_main_n:], self.dof_residue_metadata[self.torsion_main_n+self.bond_angle_main_n : self.torsion_main_n+self.bond_angle_main_n+self.bond_length_main_n, :])
-            print(sin_x_bond.shape)
-            print(sin_x_bond.unsqueeze(-1).shape)
             bond_length_transform = self.bond_length_trans(bond_length)
-            print('bond length', bond_length_transform.shape)
             B, L, D = sin_x_bond.shape
             x_combo = torch.cat(
                 (
