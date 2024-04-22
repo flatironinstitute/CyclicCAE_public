@@ -431,6 +431,7 @@ def train(
     lat_loss = list()
     constrain_list = list()
     best_mean_val_loss = float('inf')
+    best_weights_epoch = 0
 
     # init loss
     loss_noise = 0
@@ -709,8 +710,10 @@ def train(
             if mean_val_loss < best_mean_val_loss:
                 # update mean val loss
                 best_mean_val_loss = mean_val_loss
+                best_weights_epoch = e+1
+
                 # save best epoch weights
-                current_weights = os.path.join(first_layer_dir, f"model_{file_num}_epoch_{e+1}_best_weights.pt")
+                current_weights = os.path.join(first_layer_dir, f"model_{file_num}_best_weights.pt")
                 torch.save(
                     {
                         "epoch": e+1,
@@ -775,6 +778,7 @@ def train(
         # Early Stopping
         # if early_stop.early_stop(mean_loss):
         #     return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor, e+1
+        print(f"Best Model Weights For {file_num} Are From Epoch: {best_weights_epoch}")
     return mean_loss, lowest_loss, epoch_lowest_loss, latent_plotly_tensor, e+1
 
 
