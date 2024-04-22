@@ -48,6 +48,7 @@ class GraphLatent:
         rmsd_cutoff: float,
         marker_size: int,
         file: str,
+        latent_dim: int,
         ):
 
         """Heuristically Interrogate the Latent Space (Color RMSD Close and Far distances differently)
@@ -77,6 +78,7 @@ class GraphLatent:
         self.rmsd_cutoff = rmsd_cutoff
         self.marker_size = marker_size
         self.file = file
+        self.latent_dim = latent_dim
 
     def plot(self):
         """Plot latent space"""
@@ -101,7 +103,7 @@ class GraphLatent:
 
 
         # plot 3d points
-        scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c=self.X[:, -1].repeat(8), cmap="viridis", marker="o", s=self.marker_size)
+        scatter_plot = ax.scatter(self.latent[:, self.latent_dim, 0], self.latent[:, self.latent_dim, 1], self.latent[:, self.latent_dim, 2], c=self.X[:, -1], cmap="viridis", marker="o", s=self.marker_size)
         # scatter_plot = ax.scatter(self.latent[:, 1, 0], self.latent[:, 1, 1], self.latent[:, 1, 2], c=self.X[:, -1], cmap="viridis", marker="o", s=self.marker_size)
         # scatter_plot = ax.scatter(self.latent[:, -1, 0], self.latent[:, -1, 1], self.latent[:, -1, 2], c="red", marker="x", s=self.marker_size)
 
@@ -113,16 +115,16 @@ class GraphLatent:
 
         # pick random indices
         indices = np.random.choice(np.arange(0, self.X.size(0)), size=1, replace=False)
-        ax.scatter(self.latent[indices[0], -1, 0], self.latent[indices[0], -1, 1], self.latent[indices[0], -1, 2], marker="o", c="red", s=self.marker_size*2)
+        ax.scatter(self.latent[indices[0], self.latent_dim, 0], self.latent[indices[0], self.latent_dim, 1], self.latent[indices[0], self.latent_dim, 2], marker="o", c="red", s=self.marker_size*2)
 
         # new loop through pairs and generate colored lines
         # for i in range(10):
         for j in range(self.X.size(0)):
             if (indices[0] != j) and (self.distances[indices[0], j] < self.rmsd_cutoff):
                 ax.plot(
-                    [self.latent[indices[0], -1, 0], self.latent[j, -1, 0]],
-                    [self.latent[indices[0], -1, 1], self.latent[j, -1, 1]],
-                    [self.latent[indices[0], -1, 2], self.latent[j, -1, 2]],
+                    [self.latent[indices[0], self.latent_dim, 0], self.latent[j, self.latent_dim, 0]],
+                    [self.latent[indices[0], self.latent_dim, 1], self.latent[j, self.latent_dim, 1]],
+                    [self.latent[indices[0], self.latent_dim, 2], self.latent[j, self.latent_dim, 2]],
                     color="blue", #if color_mat[indices[0],j] else "red",
                     alpha=0.5,
                     linewidth=2,
@@ -208,11 +210,13 @@ def main():
     p.add_argument("--rmsd-cutoff", default=1.0, type=float, help="Cutoff point to graph lines drawn on \
     a random sample for the graph (default: 1.0)")
     p.add_argument("--marker-size", default=10, type=int, help="Maker Size in Plots (default: 10)")
+    p.add_argument("--latent-dim", default=-1, type=int, help="Specify latent graph (default: -1)")
     args = p.parse_args()
 
     # load in latent space
     latent = torch.load(args.latent_dataset)
-    specific_file = args.latent_dataset.split("_")[3]
+    specific_file = args.latent_dataset.split("_")[4]
+    print(specific_file)
 
     # rmsd
     data = torch.load(args.rmsd_dataset)
@@ -227,6 +231,7 @@ def main():
         rmsd_cutoff=args.rmsd_cutoff,
         marker_size=args.marker_size,
         file = specific_file,
+        latent_dim = args.latent_dim,
     )
 
     # Plot 
