@@ -430,6 +430,7 @@ def train(
     l_loss = list()
     lat_loss = list()
     constrain_list = list()
+    best_mean_val_loss = float('inf')
 
     # init loss
     loss_noise = 0
@@ -571,7 +572,7 @@ def train(
             optimizer.step()
 
             # scheduler.step(e+n / len(dataset))
-            # scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
+            scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
             # scheduler.step()
 
             # increment step size for tracking
@@ -670,9 +671,9 @@ def train(
             model.train(True)
 
             # UpdateLR on Plateau Scheduler step This is the custom scheduler
-            # scheduler.step_reduceLR(mean_val_loss)
+            scheduler.step_reduceLR(mean_val_loss)
         else:
-            # scheduler.step_reduceLR(mean_loss)
+            scheduler.step_reduceLR(mean_loss)
             mean_val_loss = 0
 
         # check if loss is lower
@@ -704,6 +705,22 @@ def train(
                 },
                 current_weights,
             )
+
+            if mean_val_loss < best_mean_val_loss:
+                # update mean val loss
+                best_mean_val_loss = mean_val_loss
+                # save best epoch weights
+                current_weights = os.path.join(first_layer_dir, f"model_{file_num}_epoch_{e+1}_best_weights.pt")
+                torch.save(
+                    {
+                        "epoch": e+1,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        # "scheduler_state_dict": scheduler.state_dict(),
+                        "loss": loss,
+                    },
+                    current_weights,
+                )
 
             # Save weights for passed epoch numbers
             if (e+1) % weight_save_n == 0:
