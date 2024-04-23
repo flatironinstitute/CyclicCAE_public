@@ -851,7 +851,8 @@ class ConvCycEncoder(nn.Module):
         super().__init__()
         """Apply Convolution to the cyclic peptides"""
         # Convolution
-        self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=kernel_size1//2)
+        self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=0) # change to not include padding first
+        # self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=kernel_size1//2)
         self.conv2 = nn.Conv1d(channel_out//2, channel_out, kernel_size=kernel_size2, stride=1, padding=kernel_size2//2)
 
         # pooling output
@@ -874,19 +875,27 @@ class ConvCycEncoder(nn.Module):
         """Forward Cyclic Conv"""
         B, L, D = x.shape
 
+        print(x.shape)
         # padding size extract for cyclic convolution
+        # padding_cyc_size = self.conv1.kernel_size[0] - 1 + self.conv1.kernel_size[0]//2
         padding_cyc_size = self.conv1.kernel_size[0] - 1
+        print(padding_cyc_size)
+
+        # cyclic padding 
+        # (kernel-size left, kernel-size right, 0 top, 0 bottom)
+        x = F.pad(x, (padding_cyc_size, padding_cyc_size, 0, 0), mode="circular")
 
         # cyclic padding
-        x = torch.cat(
-            (
-                x[:, :, -padding_cyc_size:],
-                x,
-                x[:, :, :-padding_cyc_size],
-            ),
-            dim = -1,
-        )
+        # x = torch.cat(
+        #     (
+        #         x[:, :, -padding_cyc_size:],
+        #         x,
+        #         x[:, :, :-padding_cyc_size],
+        #     ),
+        #     dim = -1,
+        # )
 
+        print(x.shape)
         # Apply convolution
         # print("Encoder x", x.shape)
         x = self.maxpool(F.tanh(self.conv1(x)))
