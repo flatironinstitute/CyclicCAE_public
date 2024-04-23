@@ -810,7 +810,7 @@ class ConvCycDecoder(nn.Module):
         #activation
         # self.glu = nn.GLU(dim=1)
 
-        outsize = channel_in*36
+        outsize = channel_in*22
         # Convert to 64
         self.linear = nn.Sequential(
             nn.Linear(64, outsize//4),
@@ -861,7 +861,7 @@ class ConvCycEncoder(nn.Module):
         #activation
         # self.glu = nn.GLU(dim=1)
 
-        outsize = channel_out*36
+        outsize = channel_out*22
         # Convert to 64
         self.linear = nn.Sequential(
             nn.Linear(outsize, (outsize)//2),
@@ -875,11 +875,9 @@ class ConvCycEncoder(nn.Module):
         """Forward Cyclic Conv"""
         B, L, D = x.shape
 
-        print(x.shape)
         # padding size extract for cyclic convolution
-        # padding_cyc_size = self.conv1.kernel_size[0] - 1 + self.conv1.kernel_size[0]//2
-        padding_cyc_size = self.conv1.kernel_size[0] - 1
-        print(padding_cyc_size)
+        padding_cyc_size = self.conv1.kernel_size[0] - 1 + self.conv1.kernel_size[0]//2
+        # padding_cyc_size = self.conv1.kernel_size[0] - 1
 
         # cyclic padding 
         # (kernel-size left, kernel-size right, 0 top, 0 bottom)
@@ -895,7 +893,6 @@ class ConvCycEncoder(nn.Module):
         #     dim = -1,
         # )
 
-        print(x.shape)
         # Apply convolution
         # print("Encoder x", x.shape)
         x = self.maxpool(F.tanh(self.conv1(x)))
@@ -1393,19 +1390,19 @@ class ConvCase3(nn.Module):
         )
 
         self.head_torsion_angle = nn.Sequential(
-            nn.Linear(720, 720//2),
+            nn.Linear(440, 440//2),
             nn.Tanh(),
-            nn.Linear(720//2, 720//4),
+            nn.Linear(440//2, 440//4),
             nn.Tanh(),
-            nn.Linear(720//4, torsion_main_n*2),
+            nn.Linear(440//4, torsion_main_n*2),
         )
 
         self.head_bond_length = nn.Sequential(
-            nn.Linear(720, bond_length_main_n),
+            nn.Linear(440, bond_length_main_n),
         )
 
         self.head_bond_angle = nn.Sequential(
-            nn.Linear(720, bond_angle_main_n*2),
+            nn.Linear(440, bond_angle_main_n*2),
         )
 
         self.input_decompose = ConformationalInputDecomposition(
