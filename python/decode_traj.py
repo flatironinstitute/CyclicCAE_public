@@ -25,7 +25,7 @@ import datetime
 # Import loss function
 # from model_functions import sin_cos_loss # this is wrong and needs to be fixed
 from model_utils import ConformationalMLPAutoEncoder
-from test_case import TestCase1, ConvCase1, ConvCase3
+from test_case import TestCase1, ConvCase1, ConvCase3, ConvCase3_prefixed
 
 #### Class
 
@@ -92,6 +92,7 @@ class DecodeTrajectories:
         # ).to(self.device)
         # self.model = ConvCase1(
         self.model = ConvCase3(
+        # self.model = ConvCase3_prefixed(
         # self.model = TestCase1(
             **model_params,
         ).double().to(self.device)
@@ -174,7 +175,7 @@ class DecodeTrajectories:
                 x = self.model.conv_cyc_decoder(x).view(B, -1)
 
             # FINAL decoder layer 64 -> 116 out size
-            torsion_angle_pred = self.model.final_layer(x)
+            torsion_angle_pred = self.model.head_torsion_angle(x)
             bond_angle_pred = self.model.head_bond_angle(x)
             bond_length_pred = self.model.head_bond_length(x)
 
