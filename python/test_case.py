@@ -21,6 +21,7 @@ class ConformationalInputDecomposition(nn.Module):
         jump_n: int = 0,
         energy_n: int = 0,
         decomposition_n: int = 1,
+        noise_std: float = 0,
         ):
         """Decomposes DoF input portion into Sin and Cos
 
@@ -69,9 +70,10 @@ class ConformationalInputDecomposition(nn.Module):
         self.jump_n              = jump_n
         self.energy_n            = energy_n
         self.decomposition_n     = decomposition_n
+        self.noise_std           = noise_std
         
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, training: bool, noise_bool: bool):
         """ Forward of Input Decompose
         PARAMS
         ------
@@ -92,6 +94,10 @@ class ConformationalInputDecomposition(nn.Module):
         if torsion_size != 0:
             # pul out the specific numbers from the passed params
             torsion = x[:, :torsion_size]
+            if training and noise_bool:
+                noise = torch.normal(torch.zeros(torsion.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
+                torsion = torsion + noise
+                torsion = torch.clamp(torsion, -180, 180)
             # decompose pulled out angles into both sin and cos
             torsion_decompose = self.decompose_angle_(torsion, self.decomposition_n)
             # torsion_decompose = torsion * torch.pi / 180
@@ -105,6 +111,10 @@ class ConformationalInputDecomposition(nn.Module):
         if bond_angle_size != 0:
             # pull out the specific numbers from the passed params
             bond_angle = x[:, index_in : index_in + bond_angle_size]
+            if training and noise_bool:
+                noise = torch.normal(torch.zeros(bond_angle.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
+                bond_angle = bond_angle + noise
+                bond_angle = torch.clamp(bond_angle, -180, 180)
             # decompose pulled out angles into both sin and cos
             bond_angle_decompose = self.decompose_angle_(bond_angle, self.decomposition_n)
             # bond_angle_decompose = bond_angle * torch.pi / 180
@@ -118,6 +128,10 @@ class ConformationalInputDecomposition(nn.Module):
         if bond_length_size != 0:
             # pull out number of passed params
             bond_length = x[:, index_in : index_in + bond_length_size]
+            if training and noise_bool:
+                noise = torch.normal(torch.zeros(bond_length.shape), 1).to("cuda" if torch.cuda.is_available() else "cpu")
+                bond_length = bond_length + noise
+                bond_length = torch.clamp(bond_length, -1, 3)
 
         # update index_in
         index_in += bond_length_size
@@ -786,59 +800,6 @@ class ConvCycTest2d(nn.Module):
         # x = self.layernorm(x)
         return x.view(B, -1)
 
-class ConvCycDecoder(nn.Module):
-    def __init__(
-        self,
-        channel_in: int,
-        channel_out: int,
-        out_size: int,
-        kernel_size1: int,
-        kernel_size2: int,
-        ):
-        super().__init__()
-        """Apply Convolution to the cyclic peptides"""
-
-        self.channel_in = channel_in
-
-        # Convolution
-        self.conv1 = nn.ConvTranspose1d(channel_in, channel_in//2, kernel_size=kernel_size1, stride=2, padding=(kernel_size1-1)//2, output_padding=0)
-        self.conv2 = nn.ConvTranspose1d(channel_in//2, channel_out, kernel_size=kernel_size2, stride=2, padding=(kernel_size2-1)//2, output_padding=1)
-
-        # pooling output
-        # self.maxpool = nn.MaxPool1d(2)
-        
-        #activation
-        # self.glu = nn.GLU(dim=1)
-
-        outsize = channel_in*22
-        # outsize = channel_in*36
-        # Convert to 64
-        self.linear = nn.Sequential(
-            nn.Linear(64, outsize//4),
-            nn.Tanh(),
-            nn.Linear(outsize//4, outsize//2),
-            nn.Tanh(),
-            nn.Linear(outsize//2, outsize),
-        )
-
-    def forward(self, x: torch.Tensor):
-        """Forward Cyclic Conv"""
-        B, D = x.shape
-        # print("decoder x", x.shape)
-        # Apply convolution
-        x = F.tanh(self.linear(x))
-        # print('linear', x.shape)
-        # reshape x
-        x = x.view(B, self.channel_in, -1)
-        # print('reshape', x.shape)
-        x = F.tanh(self.conv1(x))
-        # print("conv1", x.shape)
-        # print("conv1", x.shape)
-        x = F.tanh(self.conv2(x))
-        # print("conv2", x.shape)
-        # print("conv2", x.shape)
-        # print("linear", x.shape)
-        return x
 
 
 class ConvCycDecoder_prefixed(nn.Module):
@@ -960,6 +921,60 @@ class ConvCycEncoder_prefixed(nn.Module):
         # print("linear", x.shape)
         return x
 
+class ConvCycDecoder(nn.Module):
+    def __init__(
+        self,
+        channel_in: int,
+        channel_out: int,
+        out_size: int,
+        kernel_size1: int,
+        kernel_size2: int,
+        ):
+        super().__init__()
+        """Apply Convolution to the cyclic peptides"""
+
+        self.channel_in = channel_in
+
+        # Convolution
+        self.conv1 = nn.ConvTranspose1d(channel_in, channel_in//2, kernel_size=kernel_size1, stride=1, padding=(kernel_size1-1)//2, output_padding=0)
+        self.conv2 = nn.ConvTranspose1d(channel_in//2, channel_out, kernel_size=kernel_size2, stride=2, padding=(kernel_size2-1)//2, output_padding=1)
+
+        # pooling output
+        # self.maxpool = nn.MaxPool1d(2)
+        
+        #activation
+        # self.glu = nn.GLU(dim=1)
+
+        outsize = channel_in*37
+        # outsize = channel_in*36
+        # Convert to 64
+        self.linear = nn.Sequential(
+            nn.Linear(64, outsize//4),
+            nn.Tanh(),
+            nn.Linear(outsize//4, outsize//2),
+            nn.Tanh(),
+            nn.Linear(outsize//2, outsize),
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Forward Cyclic Conv"""
+        B, D = x.shape
+        # print("decoder x", x.shape)
+        # Apply convolution
+        x = F.tanh(self.linear(x))
+        # print('linear', x.shape)
+        # reshape x
+        x = x.view(B, self.channel_in, -1)
+        # print('reshape', x.shape)
+        x = F.tanh(self.conv1(x))
+        # print("conv1", x.shape)
+        # print("conv1", x.shape)
+        x = F.tanh(self.conv2(x))
+        # print("conv2", x.shape)
+        # print("conv2", x.shape)
+        # print("linear", x.shape)
+        return x
+
 class ConvCycEncoder(nn.Module):
     def __init__(
         self,
@@ -974,7 +989,8 @@ class ConvCycEncoder(nn.Module):
         # Convolution
         self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=0) # change to not include padding first
         # self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=kernel_size1//2)
-        self.conv2 = nn.Conv1d(channel_out//2, channel_out, kernel_size=kernel_size2, stride=1, padding=kernel_size2//2)
+        # self.conv2 = nn.Conv1d(channel_out//2, channel_out, kernel_size=kernel_size2, stride=1, padding=kernel_size2//2)
+        self.conv2 = nn.Conv1d(channel_out//2, channel_out, kernel_size=kernel_size2, stride=1, padding=0)
 
         # pooling output
         self.maxpool = nn.MaxPool1d(2)
@@ -982,7 +998,7 @@ class ConvCycEncoder(nn.Module):
         #activation
         # self.glu = nn.GLU(dim=1)
 
-        outsize = channel_out*22
+        outsize = channel_out*37
         # Convert to 64
         self.linear = nn.Sequential(
             nn.Linear(outsize, (outsize)//2),
@@ -997,29 +1013,24 @@ class ConvCycEncoder(nn.Module):
         B, L, D = x.shape
 
         # padding size extract for cyclic convolution
-        padding_cyc_size = self.conv1.kernel_size[0] - 1 + self.conv1.kernel_size[0]//2
-        # padding_cyc_size = self.conv1.kernel_size[0] - 1
+        # padding_cyc_size  = self.conv1.kernel_size[0] - 1 + self.conv1.kernel_size[0]//2
+        padding_cyc_size  = self.conv1.kernel_size[0]//2
+        padding_cyc_size2 = self.conv2.kernel_size[0]//2
 
         # cyclic padding 
         # (kernel-size left, kernel-size right, 0 top, 0 bottom)
         x = F.pad(x, (padding_cyc_size, padding_cyc_size, 0, 0), mode="circular")
 
-        # cyclic padding
-        # x = torch.cat(
-        #     (
-        #         x[:, :, -padding_cyc_size:],
-        #         x,
-        #         x[:, :, :-padding_cyc_size],
-        #     ),
-        #     dim = -1,
-        # )
-
         # Apply convolution
-        # print("Encoder x", x.shape)
+        # print("Encoder x after pad", x.shape)
         x = self.maxpool(F.tanh(self.conv1(x)))
         # print("conv1", x.shape)
-        x = self.maxpool(F.tanh(self.conv2(x)))
+        x = F.pad(x, (padding_cyc_size2, padding_cyc_size2, 0, 0), mode="circular")
+        # print("Pad x", x.shape)
+        # x = self.maxpool(F.tanh(self.conv2(x)))
         # print("conv2", x.shape)
+        x = F.tanh(self.conv2(x))
+        # print("conv2 no maxpool", x.shape)
         x = F.tanh(self.linear(x.view(B, -1)))
         # print("linear", x.shape)
         return x
@@ -1873,19 +1884,19 @@ class ConvCase3(nn.Module):
         )
 
         self.head_torsion_angle = nn.Sequential(
-            nn.Linear(440, 440//2),
+            nn.Linear(380, 380//2),
             nn.Tanh(),
-            nn.Linear(440//2, 440//4),
+            nn.Linear(380//2, 380//4),
             nn.Tanh(),
-            nn.Linear(440//4, torsion_main_n*2),
+            nn.Linear(380//4, torsion_main_n*2),
         )
 
         self.head_bond_length = nn.Sequential(
-            nn.Linear(440, bond_length_main_n),
+            nn.Linear(380, bond_length_main_n),
         )
 
         self.head_bond_angle = nn.Sequential(
-            nn.Linear(440, bond_angle_main_n*2),
+            nn.Linear(380, bond_angle_main_n*2),
         )
 
         self.input_decompose = ConformationalInputDecomposition(
@@ -1899,30 +1910,36 @@ class ConvCase3(nn.Module):
             jump_n = jump_n,
             energy_n = energy_n,
             decomposition_n = 1,
+            noise_std = self.noise_std,
         )
 
     def forward(self, x: torch.Tensor, noise: bool):
         """Forward"""
         # Add noise if we are training and not validating
-        if self.training and noise:
-            noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
-            x = x + noise
-            x = torch.clamp(x, -180, 180)
+        # if self.training and noise:
+        #     noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
+        #     x = x + noise
+        #     x = torch.clamp(x, -180, 180)
 
         # decompose angles/ return linear terms
-        x, bond_angle, bond_length, energy = self.input_decompose(x)
+        x, bond_angle, bond_length, energy = self.input_decompose(x, self.training, noise)
         init_x = torch.cat((x, bond_angle, bond_length), dim=-1)
         initial_input = init_x.clone().detach()
 
         ##### ENCODER
         # If convolution is true then reformat and apply convolution
         if self.convolution:
+            # Torsion reshape
             sin_x = self.reformat_convolution2(x[:, :self.torsion_main_n], self.dof_residue_metadata[:self.torsion_main_n,:])
             cos_x = self.reformat_convolution2(x[:, self.torsion_main_n:], self.dof_residue_metadata[:self.torsion_main_n,:])
+            # Bond Angle Reshape
             sin_x_bond = self.reformat_convolution2(bond_angle[:, :self.bond_angle_main_n], self.dof_residue_metadata[self.torsion_main_n:self.torsion_main_n + self.bond_angle_main_n, :])
             cos_x_bond = self.reformat_convolution2(bond_angle[:, self.bond_angle_main_n:], self.dof_residue_metadata[self.torsion_main_n+self.bond_angle_main_n : self.torsion_main_n+self.bond_angle_main_n+self.bond_length_main_n, :])
+            # non-linear transform bond_length to match input dim for convolution
             bond_length_transform = self.bond_length_trans(bond_length)
             B, L, D = sin_x_bond.shape
+
+            # Concat together
             x_combo = torch.cat(
                 (
                     sin_x.unsqueeze(-1),
@@ -1937,10 +1954,6 @@ class ConvCase3(nn.Module):
             B, L, D, C = x_combo.shape
             x = self.conv_cyc_encoder(x_combo.reshape(B, C, D*L)) # 1D
             # x = self.conv_cyc2d(x_combo.permute(0, 3, 1, 2)) # 2D
-            # sin_conv = self.conv_cyc(sin_x.permute(0, 2, 1))
-            # cos_conv = self.conv_cyc(cos_x.permute(0, 2, 1))
-            # x = torch.cat((sin_conv, cos_conv), dim=-1)
-            # x = torch.add(sin_conv, cos_conv)
         else:
         # Convert 116 -> 64 for encoder block training
             x = self.encoder_one(x)
@@ -1991,7 +2004,7 @@ class ConvCase3(nn.Module):
         if self.convolution:
             B, D = x.shape
             x = self.conv_cyc_decoder(x).view(B, -1)
-        # out = self.final_layer(torch.add(x, dskip_n2))
+
         torsion_angle_pred = self.head_torsion_angle(x)
         bond_angle_pred = self.head_bond_angle(x)
         bond_length_pred = self.head_bond_length(x)
