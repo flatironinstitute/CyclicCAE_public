@@ -129,7 +129,7 @@ class ConformationalInputDecomposition(nn.Module):
             # pull out number of passed params
             bond_length = x[:, index_in : index_in + bond_length_size]
             if training and noise_bool:
-                noise = torch.normal(torch.zeros(bond_length.shape), 1).to("cuda" if torch.cuda.is_available() else "cpu")
+                noise = torch.normal(torch.zeros(bond_length.shape), 0.5).to("cuda" if torch.cuda.is_available() else "cpu")
                 bond_length = bond_length + noise
                 bond_length = torch.clamp(bond_length, -1, 3)
 
@@ -1718,6 +1718,45 @@ class ConvCase3_prefixed(nn.Module):
 
         return atom_tensor
 
+#### Linear Position Encodings
+class LinearPE(nn.Module):
+    def __init__(
+        self,
+        residue_length: int,
+        out_dim: int,
+        atom_number: int,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        ):
+        super().__init__()
+        """Apply Linear Positional Encodings to keep track
+        of where each residue is.
+
+        PARAMS:
+        ------
+            residue_length: int
+                Number of residues, length of residue
+
+            out_dim: int
+                Number of dimensions to encode the L_i for
+
+            atom_number: int
+                Max number of atoms in a residue
+
+            device: str
+                GPU or CPU
+        """
+        self.atom_number = atom_number
+        # generate on the fly embeddings
+        self.positions = torch.arange(1, residue_length+1, dtype=torch.long, device=device)
+
+        # embeddings
+        self.embed = nn.Embedding(residue_length+1, out_dim, dtype=torch.float64, device=device)
+
+    def forward(self):
+        # generate positional encodings
+        pe = self.embed(self.positions)
+        pe = pe.view(-1, 1).repeat(1, self.atom_number).unsqueeze(-1)
+        return pe
 
 class ConvCase3(nn.Module):
     def __init__(
@@ -1763,7 +1802,13 @@ class ConvCase3(nn.Module):
 
         # grab atom Length residue length
         F = self.dof_residue_metadata[:, 1].max().long()
+        L = self.dof_residue_metadata[:, 0].max().long()
 
+        self.pe = LinearPE(
+            residue_length = L,
+            atom_number = F,
+            out_dim = 1,
+        )
 
         in_channel = 5
         out_channel = 32
@@ -1926,6 +1971,9 @@ class ConvCase3(nn.Module):
         init_x = torch.cat((x, bond_angle, bond_length), dim=-1)
         initial_input = init_x.clone().detach()
 
+        # generate linear pe
+        pe = self.pe()
+
         ##### ENCODER
         # If convolution is true then reformat and apply convolution
         if self.convolution:
@@ -1950,6 +1998,8 @@ class ConvCase3(nn.Module):
                 ),
                 dim=-1,
             )
+            # Add in positional encodings
+            x_combo = torch.add(x_combo, pe.unsqueeze(0))
             # reshape from (N, L, D, 2) -> (N, 2, D*L)
             B, L, D, C = x_combo.shape
             x = self.conv_cyc_encoder(x_combo.reshape(B, C, D*L)) # 1D
