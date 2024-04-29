@@ -194,14 +194,14 @@ def main():
 
 
     # Create the scheduler
-    # scheduler = CustomScheduler(
-    #     warmup_steps = 10000, #10000, #20000, #5000, # 10000,
-    #     base_lr = 1e-10,
-    #     max_lr = LR,
-    #     patience = 10,
-    #     cooldown = 5,
-    #     optimizer = optimizer,
-    # )
+    scheduler = CustomScheduler(
+        warmup_steps = 10000, #20000, #5000, # 10000,
+        base_lr = 1e-10,
+        max_lr = LR,
+        patience = 10,
+        cooldown = 5,
+        optimizer = optimizer,
+    )
 
     # init scheduler
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
@@ -212,7 +212,7 @@ def main():
     #                                                        min_lr = 1e-20,
     #                                                        )
 
-    scheduler = None
+    # scheduler = None
 
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)

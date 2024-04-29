@@ -594,7 +594,7 @@ def train(
         cons_mean = sum(constrain_list) / len(constrain_list)
 
         # This is only for overfitting values
-        # scheduler.step(mean_loss)
+        # scheduler.step_reduceLR(mean_loss)
 
         ##########
         # VALIDATION
