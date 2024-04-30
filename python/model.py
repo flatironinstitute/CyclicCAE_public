@@ -195,7 +195,7 @@ def main():
 
     # Create the scheduler
     scheduler = CustomScheduler(
-        warmup_steps = 10000, #20000, #5000, # 10000,
+        warmup_steps = 5000, #10000, #20000, #5000, # 10000,
         base_lr = 1e-10,
         max_lr = LR,
         patience = 10,
