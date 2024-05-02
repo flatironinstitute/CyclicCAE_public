@@ -15,6 +15,9 @@ import torch
 #numpy
 import numpy as np
 
+# pytorch
+import torch.nn as nn
+
 # train 
 from model_functions import train as mse_train
 from model_functions import scale, xavier_init
@@ -173,6 +176,26 @@ def main():
             LR = weights["optimizer_state_dict"]["param_groups"][0]["lr"]
     else:
         model.apply(xavier_init)
+
+    # print(model.named_children())
+
+    ##### Model 0.6
+    # Apply spectral normalization to all linear and convolutional layers
+    def apply_spectral_norm(model, lipschitz_constant=1):
+        for name, module in model.named_children():
+            if isinstance(module, (nn.Conv1d, nn.ConvTranspose1d, nn.Linear)):  # Check if the layer type is Conv2d or Linear
+                # Apply spectral norm
+                # print('module name', module)
+                # print('module list', module.children())
+                nn.utils.spectral_norm(module, n_power_iterations=1)
+                with torch.no_grad():
+                    module.weight_u *= lipschitz_constant
+            elif len(list(module.children())) > 0:  # If the module has children, recursively apply to its children
+                apply_spectral_norm(module, lipschitz_constant)
+
+    # Apply spectral normalization to the entire network
+    # apply_spectral_norm(model, 100)
+    ##### Model 0.6
 
     # Specify angle and linear number for L2 loss specifics
     angle_number = PARAMS["torsion_main_n"] + PARAMS["torsion_side_n"] + PARAMS["bond_angle_main_n"] + PARAMS["bond_angle_side_n"]

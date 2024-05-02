@@ -169,7 +169,7 @@ def SSE_latent_RMSD_loss_term(rmsd_real: torch.Tensor, rmsd_latent: torch.Tensor
     rmsd_latent.masked_fill_(mask, 0)
 
     # Need to set lambda some how right now I will just randomly fill in with values
-    lambda_real = 1 #2
+    lambda_real   = 1 #2
     lambda_latent = 1 #2
 
     # Compute each component of the function sum((real_component - latent_component)**2)
