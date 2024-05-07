@@ -22,6 +22,33 @@ import torch.nn as nn
 #                                               Classes
 ##################################################################################################################
 
+class ScaleOutputs:
+    def __init__(
+        self,
+        input_tensor: torch.Tensor,
+        ):
+        """Take the predicted value and scale them, but store min/max for inverse scaling
+
+        PARAMS
+        : input_tensor torch.Tensor: INput tensors that will be predicted, but not encoded.
+        """
+        # store input tensor
+        self.input_tensor = input_tensor
+        # create holding min/max values
+        self.max = torch.max(input_tensor, dim=0).values
+        self.min = torch.min(input_tensor, dim=0).values
+        # scaled values
+        self.scaled_vals = self.scale_values.to("cuda" if torch.cuda.is_available() else "cpu")
+
+    @property
+    def scale_values(self):
+        """Perform Scaling to [0,1]"""
+        return (self.input_tensor - self.min) / (self.max - self.min)
+
+    def inverse_scale(self, scaled_input: torch.Tensor):
+        """Perform Inverse Scaling which goes from [0,1] back to the original magnitude."""
+        return scaled_input.cpu() * (self.max - self.min) + self.min
+
 class CustomSinCosLoss(nn.Module):
     def __init__(self, sin_weight=1.0, cos_weight=1.0):
         super().__init__()
@@ -227,6 +254,28 @@ def loss_terms_reg(term1: torch.float32, term2: torch.float32, threshold:int=10)
     else:
         return 1, ratio
 
+def triangle_inequality(latent_batch: torch.Tensor):
+    """Perform Triangle Inequality Enforcement In Loss
+
+    PARAMS
+    ------
+        latent_batch: torch.Tensor
+            Latent points of shape (B, N, 3)
+    """
+    # Unsqueeze tensor for broadcasting
+    A = latent_batch[:, :, None, :]
+    B = latent_batch[:, None, :, :]
+    C = latent_batch[:, :, :, None]
+
+    # calculate distances
+    dist_AC = torch.norm(A - C, dim=-1)
+    dist_AB = torch.norm(A - B, dim=-1)
+    dist_BC = torch.norm(B - C, dim=-1)
+
+    # get loss
+    loss = torch.max(dist_AC - dist_AB - dist_BC, torch.zeros_like(dist_AC))
+    return loss.mean()
+
 def loss_function(
     y_hat_angle: torch.Tensor,
     y_angle: torch.Tensor,
@@ -270,18 +319,19 @@ def loss_function(
     # constrain_loss_torsion = angle_sin2_cos2_enforce(y_hat_angle[:, :y_hat_angle.size(-1)//2])
     # constrain_loss_bond_angle = angle_sin2_cos2_enforce(y_hat_angle[:, y_hat_angle.size(-1)//2:])
     # constrain_loss = constrain_loss_torsion + constrain_loss_bond_angle
-    constrain_loss = torch.tensor(0.0)
+    # constrain_loss = torch.tensor(0.0)
     # constrain_loss = linear_loss_term(enforce_theta, ones.to(device))
 
     # Compute individual linear loss terms
     bond_length_loss = linear_loss_term(bond_lengths_hat, bond_lengths) * 1000
     # bond_length_loss = torch.tensor(0.0)
-    energy_loss = torch.tensor(0.0)
-    # energy_loss = linear_loss_term(energy_hat, energy)
+    # energy_loss = torch.tensor(0.0)
+    energy_loss = linear_loss_term(energy_hat, energy) * 10_000
 
     # extra latent space loss term
     enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100 #* 100_000
     # enforce_latent_rmsd = torch.tensor(0.0)
+    triangle_inequality_term = triangle_inequality(rmsd_latent)
 
     # reconstruction individual weights
     lambda_lin, lambda_ang = 1, 1
@@ -293,15 +343,18 @@ def loss_function(
     lambda_tor, lambda_bond = 1, 1
 
     # angle loss
-    angle_loss = (torsion_loss*lambda_tor + bond_angle_loss*lambda_bond + constrain_loss) * lambda_ang
+    angle_loss = (torsion_loss*lambda_tor + bond_angle_loss*lambda_bond) * lambda_ang
 
     # Combine Loss Terms for reconstruction
     reconstruction_loss = angle_loss + linear_loss
 
+    # Combine Loss Terms for LatentEnforce
+    latent_enforce = enforce_latent_rmsd + triangle_inequality_term
+
     # compute lambda weighting terms for full loss
     lambda_rec, lambda_latent = 1, 1
 
-    return reconstruction_loss*lambda_rec + enforce_latent_rmsd*lambda_latent, angle_loss, linear_loss, enforce_latent_rmsd, constrain_loss
+    return reconstruction_loss*lambda_rec + latent_enforce*lambda_latent, angle_loss, linear_loss, enforce_latent_rmsd, latent_enforce
     # return enforce_latent_rmsd, torch.tensor([0]), torch.tensor([0]), enforce_latent_rmsd
 
     
@@ -330,6 +383,7 @@ def train(
     energy_n: int,
     overfit: bool,
     noise_iterations: int,
+    scale_outputs,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -429,7 +483,7 @@ def train(
     a_loss = list()
     l_loss = list()
     lat_loss = list()
-    constrain_list = list()
+    triangle_list = list()
     best_mean_val_loss = float('inf')
     best_weights_epoch = 0
 
@@ -438,7 +492,9 @@ def train(
     angle_noise_loss  = 0
     linear_noise_loss = 0
     latent_noise_loss = 0
-    constrain_noise_loss = 0
+    triangle_noise_loss = 0
+
+    # print(model)
 
 
     # loop through epochs
@@ -465,14 +521,15 @@ def train(
 
                     # linear terms
                     bond_lengths = y_linear[:, :-energy_n]
-                    energy = y_linear[:, -energy_n]
+                    # energy = y_linear[:, -energy_n:]
+                    energy = scale_outputs.scaled_vals[indices, :]
 
                     args = {"y_hat_angle": out[:, :angle_n*2], # Torsion only we get rid of the *2
                             "y_angle": decomposed_x[:, :angle_n*2], # Torsion only we get rid of the *2
-                            "bond_lengths_hat": out[:, angle_n*2: ], # This currently is because we don't have energy #angle_n*2 + (linear_n-energy_n)],
+                            "bond_lengths_hat": out[:, angle_n*2:-energy_n], # This currently is because we don't have energy #angle_n*2 + (linear_n-energy_n)],
                             "bond_lengths": bond_lengths, 
-                            "energy_hat": None, #out[:, -energy_n],
-                            "energy": None, #energy,
+                            "energy_hat": out[:, -energy_n:], # None,
+                            "energy": energy, # None,
                             "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                             "rmsd_latent": latent_rmsd_mat,
                             "device": device,
@@ -481,14 +538,14 @@ def train(
                             }
 
                     # generate loss and append
-                    loss, angle_loss, linear_loss, latent_loss, constrain_loss = loss_function(**args)
+                    loss, angle_loss, linear_loss, latent_loss, triangle_loss = loss_function(**args)
 
                     # loss track
                     loss_noise += loss
                     angle_noise_loss += angle_loss
                     linear_noise_loss += linear_loss
                     latent_noise_loss += latent_loss
-                    constrain_noise_loss += constrain_loss
+                    triangle_noise_loss += triangle_loss
 
             # # Complete loss
             # loss_all.append(loss.item())
@@ -497,7 +554,7 @@ def train(
             # a_loss.append(angle_loss.item())
             # l_loss.append(linear_loss.item())
             # lat_loss.append(latent_loss.item())
-            # constrain_list.append(constrain_loss.item())
+            # triangle_list.append(triangle_loss.item())
 
             ### Run same set without noise
             out, latent_rmsd_mat, latent_space, decomposed_x = model(x, False)
@@ -527,15 +584,16 @@ def train(
 
             # linear terms
             bond_lengths = y_linear[:, :-energy_n]
-            energy = y_linear[:, -energy_n]
+            # energy = y_linear[:, -energy_n:]
+            energy = scale_outputs.scaled_vals[indices, :]
 
             # args input for loss
             args = {"y_hat_angle": out[:, :angle_n*2], 
                     "y_angle": decomposed_x[:, :angle_n*2], 
-                    "bond_lengths_hat": out[:, angle_n*2: ], # This currently is because we don't have energy #angle_n*2 + (linear_n-energy_n)],
+                    "bond_lengths_hat": out[:, angle_n*2:-energy_n], # This currently is because we don't have energy #angle_n*2 + (linear_n-energy_n)],
                     "bond_lengths": bond_lengths, 
-                    "energy_hat": None, #out[:, -energy_n],
-                    "energy": None, #energy,
+                    "energy_hat": out[:, -energy_n:], # None,
+                    "energy": energy, # None
                     "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                     "rmsd_latent": latent_rmsd_mat,
                     "device": device,
@@ -543,8 +601,11 @@ def train(
                     "angle_size": angle_n,
                     }
 
+            # print(scale_outputs.inverse_scale(energy[:3, :]))
+            # print(scale_outputs.inverse_scale(out[:3, -energy_n:]))
+
             # generate loss and append
-            loss_nonoise, angle_loss_nonoise, linear_loss_nonoise, latent_loss_nonoise, constrain_loss_nonoise = loss_function(**args)
+            loss_nonoise, angle_loss_nonoise, linear_loss_nonoise, latent_loss_nonoise, triangle_loss_nonoise = loss_function(**args)
             if noise_iterations > 0:
                 # Complete loss
                 loss_all.append(((loss_noise + loss_nonoise)/noise_iterations).item())
@@ -553,7 +614,7 @@ def train(
                 a_loss.append(((angle_loss_nonoise + angle_noise_loss)/noise_iterations).item())
                 l_loss.append(((linear_loss_nonoise + linear_noise_loss)/noise_iterations).item())
                 lat_loss.append(((latent_loss_nonoise + latent_noise_loss)/noise_iterations).item())
-                constrain_list.append(((constrain_loss_nonoise + constrain_noise_loss)/noise_iterations).item())
+                triangle_list.append(((triangle_loss_nonoise + triangle_noise_loss)/noise_iterations).item())
                 # backprop weights and clip
             else:
                 # Complete loss
@@ -563,7 +624,7 @@ def train(
                 a_loss.append(angle_loss_nonoise.item())
                 l_loss.append(linear_loss_nonoise.item())
                 lat_loss.append(latent_loss_nonoise.item())
-                constrain_list.append(constrain_loss_nonoise.item())
+                triangle_list.append(triangle_loss_nonoise.item())
 
                 loss = loss_nonoise
             loss.backward() 
@@ -571,6 +632,8 @@ def train(
 
             # optimizer step and scheduler step
             optimizer.step()
+            # print('grad 4_4', model.energy_decoder4[4].weight.grad)
+            # print('weight 4_4', model.energy_decoder4[4].weight)
 
             # scheduler.step(e+n / len(dataset))
             scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
@@ -584,14 +647,14 @@ def train(
             angle_noise_loss  = 0
             linear_noise_loss = 0
             latent_noise_loss = 0
-            constrain_noise_loss = 0
+            triangle_noise_loss = 0
 
         # calc mean loss
         mean_loss = sum(loss_all) / len(loss_all)
         a_mean = sum(a_loss) / len(a_loss)
         l_mean = sum(l_loss) / len(l_loss)
         lat_mean = sum(lat_loss) / len(lat_loss)
-        cons_mean = sum(constrain_list) / len(constrain_list)
+        cons_mean = sum(triangle_list) / len(triangle_list)
 
         # This is only for overfitting values
         # scheduler.step_reduceLR(mean_loss)
@@ -640,16 +703,16 @@ def train(
 
                 # linear terms
                 bond_lengths = y_linear[:, :-energy_n]
-                energy = y_linear[:, -energy_n]
-
+                # energy = y_linear[:, -energy_n:]
+                energy = scale_outputs.scaled_vals[indices, :]
 
                 # args input for loss
                 args = {"y_hat_angle": out[:, :angle_n*2], # Torsion only we get rid of the *2
                         "y_angle": decomposed_x[:, :angle_n*2], # Torsion only we get rid of the *2
-                        "bond_lengths_hat": out[:, angle_n*2: ], # This currently is because we don't have energy #angle_n*2 + (linear_n-energy_n)],
+                        "bond_lengths_hat": out[:, angle_n*2:-energy_n], # This currently is because we don't have energy #angle_n*2 + (linear_n-energy_n)],
                         "bond_lengths": bond_lengths, 
-                        "energy_hat": None, #out[:, -energy_n],
-                        "energy": None, #energy,
+                        "energy_hat": out[:, -energy_n:], # None,
+                        "energy": energy, #None,
                         "rmsd_real": real_rmsd_mat[indices.view(-1, 1), indices].to(device),
                         "rmsd_latent": latent_rmsd_mat,
                         "device": device,
@@ -740,7 +803,7 @@ def train(
                 )
 
         # Print out progress for each epoch
-        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Val Loss: {mean_val_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Constrain Sin/Cos Loss: {cons_mean}")
+        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Val Loss: {mean_val_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Triangle Inequality Loss: {cons_mean}")
         # Visualize Output vs Real values for qualitative check
         if (e+1) % 50 == 0:
             angles = out[:, :angle_n*2]
@@ -760,17 +823,17 @@ def train(
             # sin /cos real
             print(decomposed_x[:3, :5])
             print(decomposed_x[:3, angle_n//2:(angle_n//2)+5])
-            print("Linear Terms")
+            print("Linear Terms Out vs Real")
             # Linear Terms
-            print(out[:3, -1])
-            print(bond_lengths[:3, -1])
+            print(scale_outputs.inverse_scale(out[:3, -energy_n:]))
+            print(scale_outputs.inverse_scale(energy[:3, :]))
 
         # clear loss lists
         loss_all.clear()
         a_loss.clear()
         l_loss.clear()
         lat_loss.clear()
-        constrain_list.clear()
+        triangle_list.clear()
 
         # # add loss_all_track
         # loss_all_track.append(mean_loss)
