@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -151,12 +154,12 @@ class ConformationalInputDecomposition(nn.Module):
         index_in += self.energy_n
 
         # combine all information
-        out = torch.cat((torsion_decompose, bond_angle_decompose), dim=-1)
-        out = torch.cat((out, bond_length), dim=-1)
-        if self.jump_n != 0:
-            out = torch.cat((out, jump), dim=-1)
-        if self.energy_n != 0:
-            out = torch.cat((out, energy), dim=-1)
+        # out = torch.cat((torsion_decompose, bond_angle_decompose), dim=-1)
+        # out = torch.cat((out, bond_length), dim=-1)
+        # if self.jump_n != 0:
+        #     out = torch.cat((out, jump), dim=-1)
+        # if self.energy_n != 0:
+        #     out = torch.cat((out, energy), dim=-1)
 
         return torsion_decompose, bond_angle_decompose, bond_length, energy  #, out
 
@@ -443,6 +446,116 @@ class EncoderBlock64(nn.Module):
         self.encoder_layers = nn.ModuleList(
             [
                 EncoderLayer64(
+                    input_size = self.layer_size[l],
+                    output_size = self.out_size[l],
+                    dropout = dropout,
+                ) for l in range(0, self.num_layers)
+            ]
+        )
+
+    def forward(self, x: torch.Tensor):
+        """ Forward of Encoder Block
+
+        PARAMS
+        ------
+            x: torch.Tensor
+                The DoF input vector of size (B, N) where B is
+                the batch size and N is the number of elements
+        """
+        for i, layer in enumerate(self.encoder_layers):
+            if i+1 != self.num_layers:
+                x = layer(x, False)
+            else:
+                x = layer(x, True)
+        
+        return x
+
+class EnergyLayer64(nn.Module):
+    def __init__(
+        self,
+        input_size: int = 128,
+        output_size: int = 3,
+        layer_num: int = 0,
+        dropout: float = 0.0,
+        ):
+        """ A Basic MLP layer for the autoencoder model
+
+        PARAMS
+        ------
+            input_size: int
+                The size of the input vector from the last layer
+
+            output_size: int
+                The size of the vector at the end of this layer
+
+            layer_num: (int) The specific layer of our Block
+            feature_channel_in: (int) The feature in channel
+
+        """
+        super().__init__()
+        # Save inputs
+        self.input_size = input_size
+        self.output_size = output_size
+
+        # self.linear = nn.utils.parametrizations.spectral_norm(nn.Linear(input_size, output_size, bias=False))
+        self.linear = nn.Linear(input_size, output_size, bias=False)
+        self.gelu = nn.GELU()
+        self.batch_norm = nn.BatchNorm1d(output_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, final_layer:bool = False):
+        """ forward pass of Encoderlayer
+
+        PARAMS
+        ------
+            x: torch.Tensor
+                The DoF input vector of size (B, N) where B is
+                the batch size and N is the number of elements
+        """
+        if final_layer:
+            return self.gelu(self.linear(x))
+        else:
+            # return self.gelu(self.dropout(self.linear(x)))
+            return self.gelu(self.batch_norm(self.dropout(self.linear(x))))
+
+class EnergyBlock64(nn.Module):
+    def __init__(
+        self,
+        num_layers: int = 3,
+        start_size: int = 512,
+        d_model: int = 64,
+        end_size: int = 3,
+        dropout: float = 0.0,
+        ):
+        """ A General Encoder Block 
+
+        PARAMS
+        ------
+            num_layers: int
+                Number of EncoderLayers to include within the model
+
+            start_size: int
+                The beginning last dimension size of the input vector 
+                going into the block
+
+            end_size: int
+                The ending last dimension size of the output vector going
+                out of the block
+        """
+        super().__init__()
+        # Save input parameters
+        self.num_layers = num_layers
+        self.start_size = start_size
+        self.end_size = end_size
+
+        self.layer_size = [start_size] + [d_model]*(num_layers-1)
+        self.out_size = [d_model] * (num_layers-1) + [end_size]
+
+
+        # Make list of encoder layers that make up the encoder block
+        self.encoder_layers = nn.ModuleList(
+            [
+                EnergyLayer64(
                     input_size = self.layer_size[l],
                     output_size = self.out_size[l],
                     dropout = dropout,
@@ -2132,6 +2245,580 @@ class ConvCase3(nn.Module):
 
         return atom_tensor
 
+class ConvCycDecoder4(nn.Module):
+    def __init__(
+        self,
+        channel_in: int,
+        channel_out: int,
+        out_size: int,
+        kernel_size1: int,
+        kernel_size2: int,
+        energy_n: int,
+        ):
+        super().__init__()
+        """Apply Convolution to the cyclic peptides"""
+
+        self.channel_in = channel_in
+
+        # Convolution
+        self.conv1 = nn.ConvTranspose1d(channel_in, channel_in//2, kernel_size=kernel_size1, stride=1, padding=(kernel_size1-1)//2, output_padding=0)
+        self.conv2 = nn.ConvTranspose1d(channel_in//2, channel_out, kernel_size=kernel_size2, stride=2, padding=(kernel_size2-1)//2, output_padding=1)
+
+        # pooling output
+        # self.maxpool = nn.MaxPool1d(2)
+        
+        #activation
+        # self.glu = nn.GLU(dim=1)
+
+        outsize = channel_in*37
+        # outsize = channel_in*36
+        # Convert to 64
+        self.linear = nn.Sequential(
+            nn.Linear(64+energy_n, outsize//4),
+            nn.Tanh(),
+            nn.Linear(outsize//4, outsize//2),
+            nn.Tanh(),
+            nn.Linear(outsize//2, outsize),
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Forward Cyclic Conv"""
+        B, D = x.shape
+        # print("decoder x", x.shape)
+        # Apply convolution
+        x = F.tanh(self.linear(x))
+        # print('linear', x.shape)
+        # reshape x
+        x = x.view(B, self.channel_in, -1)
+        # print('reshape', x.shape)
+        x = F.tanh(self.conv1(x))
+        # print("conv1", x.shape)
+        # print("conv1", x.shape)
+        x = F.tanh(self.conv2(x))
+        # print("conv2", x.shape)
+        # print("conv2", x.shape)
+        # print("linear", x.shape)
+        return x
+
+class ConvCycEncoder4(nn.Module):
+    def __init__(
+        self,
+        channel_in: int,
+        channel_out: int,
+        out_size: int,
+        kernel_size1: int,
+        kernel_size2: int,
+        ):
+        super().__init__()
+        """Apply Convolution to the cyclic peptides"""
+        # Convolution
+        self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=0) # change to not include padding first
+        # self.conv1 = nn.Conv1d(channel_in, channel_out//2, kernel_size=kernel_size1, stride=1, padding=kernel_size1//2)
+        # self.conv2 = nn.Conv1d(channel_out//2, channel_out, kernel_size=kernel_size2, stride=1, padding=kernel_size2//2)
+        self.conv2 = nn.Conv1d(channel_out//2, channel_out, kernel_size=kernel_size2, stride=1, padding=0)
+
+        # pooling output
+        self.maxpool = nn.MaxPool1d(2)
+        
+        #activation
+        # self.glu = nn.GLU(dim=1)
+
+        outsize = channel_out*37
+        # Convert to 64
+        self.linear = nn.Sequential(
+            nn.Linear(outsize, (outsize)//2),
+            nn.Tanh(),
+            nn.Linear(outsize//2, outsize//4),
+            nn.Tanh(),
+            nn.Linear(outsize//4, 64),
+        )
+
+    def forward(self, x: torch.Tensor):
+        """Forward Cyclic Conv"""
+        B, L, D = x.shape
+
+        # padding size extract for cyclic convolution
+        # padding_cyc_size  = self.conv1.kernel_size[0] - 1 + self.conv1.kernel_size[0]//2
+        padding_cyc_size  = self.conv1.kernel_size[0]//2
+        padding_cyc_size2 = self.conv2.kernel_size[0]//2
+
+        # cyclic padding 
+        # (kernel-size left, kernel-size right, 0 top, 0 bottom)
+        x = F.pad(x, (padding_cyc_size, padding_cyc_size, 0, 0), mode="circular")
+
+        # Apply convolution
+        # print("Encoder x after pad", x.shape)
+        x = self.maxpool(F.tanh(self.conv1(x)))
+        # print("conv1", x.shape)
+        x = F.pad(x, (padding_cyc_size2, padding_cyc_size2, 0, 0), mode="circular")
+        # print("Pad x", x.shape)
+        # x = self.maxpool(F.tanh(self.conv2(x)))
+        # print("conv2", x.shape)
+        x = F.tanh(self.conv2(x))
+        # print("conv2 no maxpool", x.shape)
+        x = F.tanh(self.linear(x.view(B, -1)))
+        # print("linear", x.shape)
+        return x
+
+class ConvCase4(nn.Module):
+    def __init__(
+        self,
+        protein_len: int,
+        output_size: int,
+        input_size: int,
+        normalize: bool,
+        decoder_layers: int,
+        encoder_layers: int,
+        latent_space_dim: int,
+        dof_residue_metadata: torch.Tensor,
+        decomposition_n: int = 1,
+        torsion_main_n: int = 0,
+        torsion_side_n: int = 0,
+        bond_angle_main_n: int = 0,
+        bond_angle_side_n: int = 0,
+        bond_length_main_n: int = 0,
+        bond_length_side_n: int = 0,
+        jump_n: int = 0,
+        energy_n: int = 0,
+        dropout: float = 0.1,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        filetype_major: int = 0,
+        filetype_minor: int = 1,
+        reference_pose: int = None,
+        ref_pose_len: int = 128,
+        noise_std: int = 5,
+        cyclic: bool = False,
+        pe_linear: bool = False,
+        convolution_layer: bool = False,
+        ):
+        super().__init__()
+        """Only an Encoder/Decoder Block"""
+        # Grab needed values for forward
+        self.noise_std = noise_std
+        self.dof_residue_metadata = dof_residue_metadata
+        self.device = device
+        self.convolution = convolution_layer
+        self.torsion_main_n = torsion_main_n
+        self.bond_angle_main_n = bond_angle_main_n
+        self.bond_length_main_n = bond_length_main_n
+        self.energy_n = energy_n
+
+        # grab atom Length residue length
+        F = self.dof_residue_metadata[:, 1].max().long()
+        L = self.dof_residue_metadata[:, 0].max().long()
+
+        self.pe = LinearPE(
+            residue_length = L,
+            atom_number = F,
+            out_dim = 1,
+        )
+
+        ##### START Energy Decoder Blocks
+        self.energy_decoder1 = EnergyBlock64(
+            num_layers = 1,
+            start_size = latent_space_dim,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        self.energy_decoder2 = EnergyBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        self.energy_decoder3 = EnergyBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        self.energy_decoder4 = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.BatchNorm1d(128),
+            nn.GELU(),
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
+            nn.GELU(),
+            nn.Linear(256, 380),
+            nn.BatchNorm1d(380),
+            nn.GELU(),
+            # nn.utils.parametrizations.spectral_norm(nn.Linear(64, 128)),
+            # nn.GELU(),
+            # nn.utils.parametrizations.spectral_norm(nn.Linear(128, 256)),
+            # nn.GELU(),
+            # nn.utils.parametrizations.spectral_norm(nn.Linear(256, 380)),
+            # nn.GELU(),
+        )
+        ##### END Energy Decoder Blocks
+
+        in_channel = 5
+        out_channel = 32
+        # Convolution 
+        self.conv_cyc_encoder = ConvCycEncoder4(
+            channel_in = in_channel,
+            channel_out = out_channel,
+            kernel_size1 = 9,
+            kernel_size2 = 18,
+            out_size = 64,
+        )
+        self.conv_cyc_decoder = ConvCycDecoder4(
+            channel_in = out_channel,
+            channel_out = in_channel,
+            kernel_size1 = 18,
+            kernel_size2 = 9,
+            out_size = (8*9)*2,
+            energy_n = 0,
+        )
+
+        self.bond_length_trans = nn.Sequential(
+            nn.Linear(bond_length_main_n, F*8),
+            nn.LeakyReLU(),
+        )
+
+        # self.conv_cyc2d = ConvCycTest2d(
+        #     channel_in = 2,
+        #     channel_out = 1,
+        #     kernel_seq = 5,
+        #     kernel_feats = 3,
+        #     kernel_max = 3,
+        #     out_size = 64//2,
+        # )
+
+        # encoder first set
+        self.encoder_one = EncoderBlock64(
+            num_layers = 1,
+            start_size = torsion_main_n*2,
+            end_size = 64,
+            dropout = dropout,
+        )
+        
+        # encoder block
+        self.encoder = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.encoder_n2 = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.encoder_n3 = EncoderBlock64(
+            num_layers = encoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        # Decreasing encoder block
+        self.encoder_pyramid = nn.Sequential(
+            # layer 1
+            nn.Linear(64, 32),
+            nn.Tanh(),
+            # layer 2
+            nn.Linear(32, 16),
+            nn.Tanh(),
+            # layer 3
+            nn.Linear(16, 8),
+            nn.Tanh(),
+            # layer 4
+            nn.Linear(8, latent_space_dim),
+            nn.Tanh(),
+        )
+
+        ##### DECODER PORTION
+
+        # Decreasing encoder block
+        self.decoder_pyramid = nn.Sequential(
+            # layer 1
+            nn.Linear(latent_space_dim, 8),
+            nn.Tanh(),
+            # layer 2
+            nn.Linear(8, 16),
+            nn.Tanh(),
+            # layer 3
+            nn.Linear(16, 32),
+            nn.Tanh(),
+            # layer 4
+            nn.Linear(32, 64),
+            nn.Tanh(),
+        )
+        # self.decoder_skip = EncoderBlock64(
+        #     num_layers = 1,
+        #     start_size = 
+        #     end_size = 64,
+        #     dropout = dropout,
+        # )
+
+        self.decoder_n = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.decoder_n2 = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+        self.decoder_n3 = EncoderBlock64(
+            num_layers = decoder_layers,
+            start_size = 64,
+            end_size = 64,
+            dropout = dropout,
+        )
+
+        self.head_torsion_angle = nn.Sequential(
+            nn.Linear(380, 380//2),
+            nn.Tanh(),
+            nn.Linear(380//2, 380//4),
+            nn.Tanh(),
+            nn.Linear(380//4, torsion_main_n*2),
+        )
+
+        self.head_bond_length = nn.Sequential(
+            nn.Linear(380, bond_length_main_n),
+        )
+
+        self.head_bond_angle = nn.Sequential(
+            nn.Linear(380, bond_angle_main_n*2),
+        )
+
+        self.head_energy = nn.Sequential(
+            nn.Linear(380, 128),
+            nn.GELU(),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, 16),
+            nn.GELU(),
+            nn.Linear(16, 8),
+            nn.GELU(),
+            nn.Linear(8, energy_n),
+        )
+
+        self.energy_head = nn.Sequential(
+            nn.Linear(3, 32),
+            nn.GELU(),
+            nn.Linear(32, 64),
+            nn.GELU(),
+            nn.Linear(64, 32),
+            nn.GELU(),
+            nn.Linear(32, energy_n),
+        )
+
+        self.input_decompose = ConformationalInputDecomposition(
+            protein_len = protein_len,
+            torsion_main_n = torsion_main_n,
+            torsion_side_n = torsion_side_n,
+            bond_angle_main_n = bond_angle_main_n,
+            bond_angle_side_n = bond_angle_side_n,
+            bond_length_main_n = bond_length_main_n,
+            bond_length_side_n = bond_length_side_n,
+            jump_n = jump_n,
+            energy_n = energy_n,
+            decomposition_n = 1,
+            noise_std = self.noise_std,
+        )
+
+    def forward(self, x: torch.Tensor, noise: bool):
+        """Forward"""
+        # Add noise if we are training and not validating
+        # if self.training and noise:
+        #     noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
+        #     x = x + noise
+        #     x = torch.clamp(x, -180, 180)
+
+        # decompose angles/ return linear terms
+        x, bond_angle, bond_length, energy = self.input_decompose(x, self.training, noise)
+        init_x = torch.cat((x, bond_angle, bond_length, energy), dim=-1)
+        initial_input = init_x.clone().detach()
+
+        # encode energy
+        # energy_encode = self.encode_energy(energy)
+
+        # generate linear pe
+        pe = self.pe()
+
+        ##### ENCODER
+        # If convolution is true then reformat and apply convolution
+        if self.convolution:
+            # Torsion reshape
+            sin_x = self.reformat_convolution2(x[:, :self.torsion_main_n], self.dof_residue_metadata[:self.torsion_main_n,:])
+            cos_x = self.reformat_convolution2(x[:, self.torsion_main_n:], self.dof_residue_metadata[:self.torsion_main_n,:])
+            # Bond Angle Reshape
+            sin_x_bond = self.reformat_convolution2(bond_angle[:, :self.bond_angle_main_n], self.dof_residue_metadata[self.torsion_main_n:self.torsion_main_n + self.bond_angle_main_n, :])
+            cos_x_bond = self.reformat_convolution2(bond_angle[:, self.bond_angle_main_n:], self.dof_residue_metadata[self.torsion_main_n+self.bond_angle_main_n : self.torsion_main_n+self.bond_angle_main_n+self.bond_length_main_n, :])
+            # non-linear transform bond_length to match input dim for convolution
+            bond_length_transform = self.bond_length_trans(bond_length)
+            B, L, D = sin_x_bond.shape
+
+            # Concat together
+            x_combo = torch.cat(
+                (
+                    sin_x.unsqueeze(-1),
+                    cos_x.unsqueeze(-1),
+                    sin_x_bond.unsqueeze(-1),
+                    cos_x_bond.unsqueeze(-1),
+                    bond_length_transform.reshape(B, L, D).unsqueeze(-1),
+                ),
+                dim=-1,
+            )
+            # Add in positional encodings
+            x_combo = torch.add(x_combo, pe.unsqueeze(0))
+            # reshape from (N, L, D, 2) -> (N, 2, D*L)
+            B, L, D, C = x_combo.shape
+            x = self.conv_cyc_encoder(x_combo.reshape(B, C, D*L)) # 1D
+            # x = self.conv_cyc2d(x_combo.permute(0, 3, 1, 2)) # 2D
+        else:
+        # Convert 116 -> 64 for encoder block training
+            x = self.encoder_one(x)
+        skip_one = x.clone()
+
+        # First Encoder block 64 -> 64
+        x = self.encoder(x)
+        skip_n1 = x.clone()
+
+        # Second Encoder Block 64 -> 64 
+        x = self.encoder_n2(torch.add(x, skip_one))
+        skip_n2 = x.clone() 
+
+        # Third Encoder Block 64 -> 64
+        x = self.encoder_n3(torch.add(x, skip_n1))
+
+        # Pyramid Encoder 64 -> 32 -> 16 -> 8 -> 3
+        x = self.encoder_pyramid(torch.add(x, skip_n2))
+        ##### ENCODER END
+
+        # combine energy and encoded info
+        # x = torch.add(x, energy_encode)
+
+        ##### LATENT SPACE
+        # Copy and compute distance for latent space
+        latent_space = x.clone()
+        latent_euclid_dist = self.compute_euclidean_distance(latent_space)
+        ##### LATENT SPACE END
+
+        # compute energy
+        # energy_pred = self.decode_energy(x)
+
+        ##### DECODER
+        energy_x = self.energy_decoder1(x)
+        energy_skip1 = energy_x.clone()
+        # Decoder latent to decoder blocks size 3 -> 64
+        x = self.decoder_pyramid(x)
+        decode_skip1 = x.clone()
+
+        # First Decoder Block 64 -> 64
+        x = self.decoder_n(x)
+        dskip_n1 = x.clone()
+        # compute first block of energy with first decoder block info as well
+        energy_x = self.energy_decoder2(torch.add(energy_x, decode_skip1))
+        energy_skip2 = energy_x.clone()
+
+        # Second Decoder Block 64 -> 64
+        x = self.decoder_n2(torch.add(x, decode_skip1))
+        dskip_n2 = x.clone()
+        # compute second block of energy with second decoder block info as well
+        energy_x = self.energy_decoder3(torch.add(torch.add(energy_x, energy_skip1), dskip_n2))
+        energy_skip3 = energy_x.clone()
+
+        # Third Decoder Block 64 -> 64
+        x = self.decoder_n3(torch.add(x, dskip_n1))
+        dskip_n3 = x.clone()
+        # compute third block of energy with third decoder block and second skip energy
+        energy_x = self.energy_decoder4(torch.add(torch.add(energy_x, energy_skip2), dskip_n3))
+
+        # FINAL decoder layer 64 -> 116 out size
+        if self.convolution:
+            B, D = x.shape
+            x = self.conv_cyc_decoder(x).view(B, -1)
+
+        torsion_angle_pred = self.head_torsion_angle(x)
+        bond_angle_pred = self.head_bond_angle(x)
+        bond_length_pred = self.head_bond_length(x)
+        energy_pred = self.head_energy(energy_x)
+        ##### DECODER END
+
+        out = torch.cat(
+            (
+                torsion_angle_pred,
+                bond_angle_pred,
+                bond_length_pred,
+                energy_pred,
+            ),
+            dim=-1
+        )
+
+        return out, latent_euclid_dist, latent_space, initial_input 
+
+    def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
+        """Compute the latent space RMSD"""
+        # compute pairwise diff
+        differences = xyz_mat.unsqueeze(1) - xyz_mat.unsqueeze(0)
+
+        # squared_distances along last dim
+        distances = torch.sum( torch.pow( differences, 2), dim=-1)
+        return distances
+
+    def reformat_convolution2(self, x: torch.Tensor, format: torch.Tensor):
+        """Format x for cyclic convolution"""
+        # grab shape
+        B, D = x.shape
+        format = format.long()
+        # grab residue and index amount
+        # L = format[:D, 0].max()
+        # F = format[:D, 1].max()
+        L = format[:, 0].max() # since slicing format tensors this should work fine
+        F = format[:, 1].max()
+
+        # generate holding tensor
+        atom_tensor = torch.zeros(B, L, F, dtype=torch.float64, device=self.device)
+
+        # grab indices
+        residue_indices = format[:D, 0] - 1
+        atom_indicies = format[:D, 1] - 1
+
+        # create a gride for batch indices
+        batch_indices = torch.arange(B, device=self.device)[:, None].expand(B, D)
+
+        # advance indexing to fill in atom tensor
+        atom_tensor[batch_indices, residue_indices, atom_indicies] = x
+
+        return atom_tensor
+
+    def reformat_convolution(self, x: torch.Tensor, format: torch.Tensor):
+        """Format x for cyclic convolution"""
+        # grab shape
+        B, D = x.shape
+        # grab residue and index amount
+        L = format[:, 0].max().to(torch.long)
+        F = format[:, 1].max().to(torch.long) - 1
+
+        # input extract
+        cut_points = x[:, [F, -1]]
+        indices = torch.arange(x.size(-1), device=self.device)
+        mask = (indices != F) & (indices != x.size(-1)-1)
+        main_atoms = x[:, indices[mask]]
+
+        # generate holding tensor
+        atom_tensor = torch.zeros(B, L, F, dtype=torch.float64, device=self.device)
+
+        # reshaep main atoms and fill atom tensor
+        atom_tensor[:, :, :-1] = main_atoms.reshape(B, L, -1)
+
+        # fill cutpoints
+        atom_tensor[:,  0, -1] = cut_points[:, 0]
+        atom_tensor[:, -1, -1] = cut_points[:,-1]
+
+        return atom_tensor
 
 class HingeModel(nn.Module):
     def __init__(

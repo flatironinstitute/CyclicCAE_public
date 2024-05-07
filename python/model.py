@@ -20,11 +20,11 @@ import torch.nn as nn
 
 # train 
 from model_functions import train as mse_train
-from model_functions import scale, xavier_init
+from model_functions import scale, xavier_init, ScaleOutputs
 
 # Model 
 from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper, CustomScheduler, subset_dataset, rotate_samples
-from test_case import TestCase1, HingeModel, ConvCase1, ConvCase2, ConvCase3
+from test_case import TestCase1, HingeModel, ConvCase1, ConvCase2, ConvCase3, ConvCase4
 
 def compare_model_state_dicts(state_dict1, state_dict2):
     for key in state_dict1:
@@ -111,6 +111,9 @@ def main():
     # pass to custom dataset class
     dataset = MyDataset(X_scaled)
 
+    # grab scaling values
+    factor_vals_energy = ScaleOutputs(X[:, -PARAMS["energy_n"]:])
+
 
     if args.overfit:
         # Generate train/val split
@@ -132,7 +135,8 @@ def main():
     # model = ConformationalMLPAutoEncoder(
     # model = HingeModel(
     # model = ConvCase1(
-    model = ConvCase3(
+    # model = ConvCase3(
+    model = ConvCase4(
         encoder_layers    = N_ENCODER_LAYERS,
         decoder_layers    = N_DECODER_LAYERS,
         latent_space_dim  = LATENT_SPACE,
@@ -271,6 +275,7 @@ def main():
         energy_n = PARAMS["energy_n"],
         overfit = args.overfit,
         noise_iterations = args.noise_iterations,
+        scale_outputs = factor_vals_energy,
     )
 
     # saved extract latent tensor
