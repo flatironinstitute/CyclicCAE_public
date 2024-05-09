@@ -254,26 +254,27 @@ def loss_terms_reg(term1: torch.float32, term2: torch.float32, threshold:int=10)
     else:
         return 1, ratio
 
-def triangle_inequality(latent_batch: torch.Tensor):
+def triangle_inequality(latent_space: torch.Tensor):
     """Perform Triangle Inequality Enforcement In Loss
 
     PARAMS
     ------
         latent_batch: torch.Tensor
-            Latent points of shape (B, N, 3)
+            Latent points of shape (B, 3)
     """
-    # Unsqueeze tensor for broadcasting
-    A = latent_batch[:, :, None, :]
-    B = latent_batch[:, None, :, :]
-    C = latent_batch[:, :, :, None]
+    # Samples ins Batch
+    B = latent_space.size(0)
 
-    # calculate distances
-    dist_AC = torch.norm(A - C, dim=-1)
-    dist_AB = torch.norm(A - B, dim=-1)
-    dist_BC = torch.norm(B - C, dim=-1)
+    # Calculate distances
+    dists = torch.cdist(latent_space, latent_space, p=2)
+
+    # generate sample numbers
+    samples = torch.arange(B)
+
+    samples = samples.view(-1, 1).repeat(1, B)
 
     # get loss
-    loss = torch.max(dist_AC - dist_AB - dist_BC, torch.zeros_like(dist_AC))
+    loss = torch.max(dists - dists[samples, (samples.T + 1) % B] - dists[(samples + 1) % B, samples.T], torch.zeros_like(dists))
     return loss.mean()
 
 def loss_function(
@@ -331,7 +332,8 @@ def loss_function(
     # extra latent space loss term
     enforce_latent_rmsd = SSE_latent_RMSD_loss_term(rmsd_real, rmsd_latent, device) * 100 #* 100_000
     # enforce_latent_rmsd = torch.tensor(0.0)
-    triangle_inequality_term = triangle_inequality(rmsd_latent)
+    # triangle_inequality_term = triangle_inequality(rmsd_latent) * 100
+    triangle_inequality_term = torch.tensor(0.0)
 
     # reconstruction individual weights
     lambda_lin, lambda_ang = 1, 1
@@ -354,7 +356,7 @@ def loss_function(
     # compute lambda weighting terms for full loss
     lambda_rec, lambda_latent = 1, 1
 
-    return reconstruction_loss*lambda_rec + latent_enforce*lambda_latent, angle_loss, linear_loss, enforce_latent_rmsd, latent_enforce
+    return reconstruction_loss*lambda_rec + latent_enforce*lambda_latent, angle_loss, linear_loss, enforce_latent_rmsd, triangle_inequality_term
     # return enforce_latent_rmsd, torch.tensor([0]), torch.tensor([0]), enforce_latent_rmsd
 
     
@@ -601,9 +603,6 @@ def train(
                     "angle_size": angle_n,
                     }
 
-            # print(scale_outputs.inverse_scale(energy[:3, :]))
-            # print(scale_outputs.inverse_scale(out[:3, -energy_n:]))
-
             # generate loss and append
             loss_nonoise, angle_loss_nonoise, linear_loss_nonoise, latent_loss_nonoise, triangle_loss_nonoise = loss_function(**args)
             if noise_iterations > 0:
@@ -616,6 +615,7 @@ def train(
                 lat_loss.append(((latent_loss_nonoise + latent_noise_loss)/noise_iterations).item())
                 triangle_list.append(((triangle_loss_nonoise + triangle_noise_loss)/noise_iterations).item())
                 # backprop weights and clip
+                loss = (loss_nonoise + loss_noise)/noise_iterations
             else:
                 # Complete loss
                 loss_all.append(loss_nonoise.item())

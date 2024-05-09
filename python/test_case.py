@@ -499,7 +499,7 @@ class EnergyLayer64(nn.Module):
 
         # self.linear = nn.utils.parametrizations.spectral_norm(nn.Linear(input_size, output_size, bias=False))
         self.linear = nn.Linear(input_size, output_size, bias=False)
-        self.gelu = nn.GELU()
+        self.tanh = nn.Tanh()
         self.batch_norm = nn.BatchNorm1d(output_size)
         self.dropout = nn.Dropout(dropout)
 
@@ -513,10 +513,10 @@ class EnergyLayer64(nn.Module):
                 the batch size and N is the number of elements
         """
         if final_layer:
-            return self.gelu(self.linear(x))
+            return self.tanh(self.linear(x))
         else:
             # return self.gelu(self.dropout(self.linear(x)))
-            return self.gelu(self.batch_norm(self.dropout(self.linear(x))))
+            return self.tanh(self.batch_norm(self.dropout(self.linear(x))))
 
 class EnergyBlock64(nn.Module):
     def __init__(
@@ -2438,13 +2438,13 @@ class ConvCase4(nn.Module):
         self.energy_decoder4 = nn.Sequential(
             nn.Linear(64, 128),
             nn.BatchNorm1d(128),
-            nn.GELU(),
+            nn.Tanh(),
             nn.Linear(128, 256),
             nn.BatchNorm1d(256),
-            nn.GELU(),
+            nn.Tanh(),
             nn.Linear(256, 380),
             nn.BatchNorm1d(380),
-            nn.GELU(),
+            nn.Tanh(),
             # nn.utils.parametrizations.spectral_norm(nn.Linear(64, 128)),
             # nn.GELU(),
             # nn.utils.parametrizations.spectral_norm(nn.Linear(128, 256)),
@@ -2592,15 +2592,15 @@ class ConvCase4(nn.Module):
 
         self.head_energy = nn.Sequential(
             nn.Linear(380, 128),
-            nn.GELU(),
+            nn.Tanh(),
             nn.Linear(128, 64),
-            nn.GELU(),
+            nn.Tanh(),
             nn.Linear(64, 32),
-            nn.GELU(),
+            nn.Tanh(),
             nn.Linear(32, 16),
-            nn.GELU(),
+            nn.Tanh(),
             nn.Linear(16, 8),
-            nn.GELU(),
+            nn.Tanh(),
             nn.Linear(8, energy_n),
         )
 

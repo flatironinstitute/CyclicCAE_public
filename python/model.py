@@ -40,25 +40,25 @@ def main():
     """Run training"""
     # Grab passed in values from CLI
     p = argparse.ArgumentParser()
-    p.add_argument("--dataset_tensor", type=str, default="./binary_import/dof_vectors2024-02-20torch_tensor.pt",
+    p.add_argument("--dataset-tensor", type=str, default="./binary_import/dof_vectors2024-02-20torch_tensor.pt",
                    help="Path to .pt dataset file. (defualt: ./binary_import/dof_vectors2024-02-20torch_tensor.pt)")
     p.add_argument("--epochs", type=int, default=1000, help="Number of epochs to train (default: 1000)")
-    p.add_argument("--num_encoder_layers", type=int, default=3,
+    p.add_argument("--num-encoder-layers", type=int, default=3,
                    help="Number of encoder layers in the model (default: 3)")
-    p.add_argument("--num_decoder_layers", type=int, default=3,
+    p.add_argument("--num-decoder-layers", type=int, default=3,
                    help="Number of decoder layers in the model (default: 3)")
-    p.add_argument("--latent_space", type=int, default=3,
+    p.add_argument("--latent-space", type=int, default=3,
                    help="Latent Space R dimension (default: 3)")
-    p.add_argument("--batch_size", type=int, default=32,
+    p.add_argument("--batch-size", type=int, default=32,
                    help="Specify model batch size (default: 32)")
-    p.add_argument("--learning_rate", type=float, default=1e-3, help="Specify the LR (default: 1e-3)")
+    p.add_argument("--learning-rate", type=float, default=1e-3, help="Specify the LR (default: 1e-3)")
     p.add_argument("--output_weights_every_n", type=int, default=1000,
                    help="Output saved model weights every N number of epochs (default: 1000)")
-    p.add_argument("--load_weights", type=str, default=None, 
+    p.add_argument("--load-weights", type=str, default=None, 
                    help="Load in specific weights from known stopping position. (default: None)")
-    p.add_argument("--path_to_output_dir", type=str, default="/mnt/ceph/users/apowers/outputs_old/",
+    p.add_argument("--path-to-output-dir", type=str, default="/mnt/ceph/users/apowers/outputs_old/",
                    help="Specify model output specific directory (default: /mnt/ceph/users/apowers/outputs_old/)")
-    p.add_argument("--plotly_latent_animate", type=int, default=0,
+    p.add_argument("--plotly-latent-animate", type=int, default=0,
                    help="Generate plotly latent 3D matrix. Specify the N epochs to take snapshot \
                    (default: 0)")
     p.add_argument("--angle-decomposition", type=int, default=1, help="Decompose the angle into \
