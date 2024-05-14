@@ -164,7 +164,7 @@ def main():
         # set weights
         model.load_state_dict(weights["model_state_dict"])
         # scheduler.load_state_dict(weights["scheduler_state_dict"])
-        # optimizer.load_state_dict(weights["optimizer_state_dict"])
+        optimizer.load_state_dict(weights["optimizer_state_dict"])
 
         # Check model has been updated
         loaded_state_dict = model.state_dict()
