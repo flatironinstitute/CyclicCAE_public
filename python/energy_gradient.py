@@ -33,6 +33,7 @@ class EnergyPath:
         weight_passed: str,
         lr: float,
         dataset: str,
+        cutoff: float,
         ):
         """GDS for energy minima structure from starting point
 
@@ -50,12 +51,16 @@ class EnergyPath:
                 LR for optimizer
             dataset: str
                 path to the dataset
+            cutoff: float
+                Distance in Latent Space cutoff for gradient direction
+                control
         """
         # Pull up points
         self.steps = steps
         self.minima = minima
         self.outstep = steps
         self.lr = lr
+        self.cutoff = cutoff
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -102,6 +107,7 @@ class EnergyPath:
 
         #### Since right now we are not inputting a pdb to search we will select a 
         #### start point for the beginning of the search
+        self.path = torch.zeros(self.steps)
 
         # Pull out scaled start point
         self.start_point = scaled_X_start_point[-1, :]
@@ -121,6 +127,25 @@ class EnergyPath:
 
         return torch.rad2deg(torch.atan2(sin_pred, cos_pred))
 
+    def euclidean_measure(self, cutoff: float, latent_space: torch.Tensor, original_point: torch.Tensor):
+        """Term to keep energy refinement to a minimum if wanted.
+
+        PARAMS
+        ------
+            cutoff: float
+                The Euclidean distance cutoff you want to enforce to stay within
+
+            latent_space: torch.Tensor
+                Current Latent Space position (N, 3)
+
+            original_point: torch.Tensor
+                Origional Startin position within the Latent Space (N, 3)
+        """
+        # get the distance
+        dist = torch.cdist(original_point, latent_space, p=2)
+
+        return torch.pow(torch.maximum(dist - cutoff, torch.tensor(0)), 2), dist
+
     def energy_steps(self):
         """Model Eval Loop for GDS"""
         # init optimizer
@@ -137,24 +162,56 @@ class EnergyPath:
             optimizer.zero_grad()
 
             # out from model
-            out, _, _, _ = self.model(self.start_point, False)
+            out, _, latent_space, _ = self.model(self.start_point, False)
+            latent_space = latent_space.detach()
+            if step == 1:
+                original_point = latent_space
             # grab the energies (ref2015 score)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
             if energies.size(-1) == 3:
                 qm = energies[:, 0]
                 energy = energies[:, 1]
-                loss = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
-            # loss = torch.pow(self.minima - energy, 2)
-            # print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Loss: {loss.item()}")
-                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Loss: {loss.item()}")
+                loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
+                dist_loss, dist = self.euclidean_measure(
+                    cutoff = self.cutoff, 
+                    latent_space = latent_space,
+                    original_point = original_point,
+                )
+                loss = torch.add(loss_from_min, dist_loss)
+
+                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist_loss.item()}, To Min Loss: {loss_from_min.item()}, Loss: {loss.item()}")
             else:
                 energy = energies[:, -1]
-                loss = torch.mean(torch.pow(0.0 - (energy - self.minima_energy[-1]), 2))
-                print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Loss: {loss.item()}")
+                loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
+                dist_loss, dist = self.euclidean_measure(
+                    cutoff = self.cutoff, 
+                    latent_space = latent_space,
+                    original_point = original_point,
+                )
+                self.path[step] = dist
+                loss = torch.add(loss_from_min, dist_loss)
+                print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist_loss.item()}, To Min Loss: {loss_from_min.item()}, Loss: {loss.item()}")
 
-            # back prop
-            loss.backward()
-            optimizer.step()
+            # Turn the search around to keep it local
+            if dist_loss.item() > 0:
+                print(f"Step {step}: Condition met, adjusting path")
+
+                # Compute the gradient manually
+                grad = torch.autograd.grad(outputs=loss, inputs=self.start_point, create_graph=True)[0]
+
+                noise = torch.randn_like(self.start_point) * 10
+
+                # Adjust the gradient direction to steer the point back within the cutoff distance
+                adjustment = self.start_point / dist * ((dist - self.cutoff) * 2) + noise
+
+                # Update the starting point manually
+                with torch.no_grad():
+                    self.start_point += 1e-2 * (grad + adjustment)
+            else:
+                # back prop
+                loss.backward()
+                optimizer.step()
+
 
             out = out.detach().clone()
             torsion = self.calc_angles(out[:, :116])
@@ -177,6 +234,7 @@ class EnergyPath:
         # file name
         file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
         torch.save(self.dof_traj, file)
+        torch.save(self.path, 'trajpath.pt')
         
 
 if __name__ == "__main__":
@@ -187,12 +245,13 @@ if __name__ == "__main__":
     p.add_argument("--weights-load", type=str, help="Specify Model Weights To Use")
     p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate (default: 1e-3)")
     p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use (default: dof_vectors2024-04-10torch_tensor)")
+    p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search (default: 0.005)")
     args = p.parse_args()
 
 
     # init the start path with X tensor 14 
     energySearch = EnergyPath(steps = args.steps, minima = args.minima, start_point = torch.tensor(args.start_point), weight_passed = args.weights_load, lr=args.lr,
-                              dataset = args.dataset)
+                              dataset = args.dataset, cutoff = args.cutoff)
 
     # Search And Output
     energySearch.energy_steps()
