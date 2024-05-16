@@ -16,6 +16,9 @@ import argparse
 import torch
 import torch.nn as nn
 
+# graphing
+import matplotlib.pyplot as plt
+
 # import model and functions
 from test_case import ConvCase4
 from model_functions import scale, ScaleOutputs
@@ -34,6 +37,7 @@ class EnergyPath:
         lr: float,
         dataset: str,
         cutoff: float,
+        cutoff_true: bool,
         ):
         """GDS for energy minima structure from starting point
 
@@ -61,6 +65,7 @@ class EnergyPath:
         self.outstep = steps
         self.lr = lr
         self.cutoff = cutoff
+        self.cutoff_true = cutoff_true
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -108,6 +113,7 @@ class EnergyPath:
         #### Since right now we are not inputting a pdb to search we will select a 
         #### start point for the beginning of the search
         self.path = torch.zeros(self.steps)
+        self.energy_path = torch.zeros(self.steps)
 
         # Pull out scaled start point
         self.start_point = scaled_X_start_point[-1, :]
@@ -145,17 +151,41 @@ class EnergyPath:
         dist = torch.cdist(original_point, latent_space, p=2)
 
         return torch.pow(torch.maximum(dist - cutoff, torch.tensor(0)), 2), dist
+    
+    def dist_energy_plot(self):
+        """Plot Distance and Energy Path through SGD"""
+        # set up plot
+        fig, ax = plt.subplots(2, 1, figsize=(12, 8))
+
+        # set up first plot
+        ax[0].plot(torch.arange(self.outstep), self.path)
+        ax[0].set_title("Movement In Latent Space Away During SGD")
+        ax[0].set_xlabel("Gradient Step")
+        ax[0].set_ylabel("Distance from initial point (Euclidean Distance)")
+
+        # set up energy plot
+        ax[1].plot(torch.arange(self.outstep), self.energy_path, c="orange")
+        ax[1].set_title("Energy Change During SGD")
+        ax[1].set_xlabel("Gradient Step")
+        ax[1].set_ylabel("Energy Change (REU Pred)")
+
+        # savefig
+        plt.tight_layout()
+        plt.savefig(f"plotstep{self.outstep}-{datetime.date.today()}-energy-dist.png")
 
     def energy_steps(self):
         """Model Eval Loop for GDS"""
         # init optimizer
         optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
+        redo = False
 
         print('Eval Mode:', not self.model.training)
         if self.sample_energy.size(0) == 3:
             print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[1].item()}, Ref2015+Solvent: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
         else:
             print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
+        # add energy path
+        self.energy_path[0] = self.sample_energy[1]
 
         for step in range(1, self.steps):
             # zero grad
@@ -164,53 +194,62 @@ class EnergyPath:
             # out from model
             out, _, latent_space, _ = self.model(self.start_point, False)
             latent_space = latent_space.detach()
-            if step == 1:
+            if step == 1 or redo:
                 original_point = latent_space
+                redo = False
             # grab the energies (ref2015 score)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
             if energies.size(-1) == 3:
                 qm = energies[:, 0]
                 energy = energies[:, 1]
-                loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
-                dist_loss, dist = self.euclidean_measure(
-                    cutoff = self.cutoff, 
-                    latent_space = latent_space,
-                    original_point = original_point,
-                )
-                loss = torch.add(loss_from_min, dist_loss)
+                # loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
+                # dist_loss, dist = self.euclidean_measure(
+                #     cutoff = self.cutoff, 
+                #     latent_space = latent_space,
+                #     original_point = original_point,
+                # )
+                dist = torch.cdist(latent_space, original_point, p=2)
+                loss = torch.add(*energy, 200*dist)
 
-                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist_loss.item()}, To Min Loss: {loss_from_min.item()}, Loss: {loss.item()}")
+                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist.item()}, To Min Loss: {energy.item()}, Loss: {loss.item()}")
             else:
                 energy = energies[:, -1]
-                loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
-                dist_loss, dist = self.euclidean_measure(
-                    cutoff = self.cutoff, 
-                    latent_space = latent_space,
-                    original_point = original_point,
-                )
+                # loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
+                # dist_loss, dist = self.euclidean_measure(
+                #     cutoff = self.cutoff, 
+                #     latent_space = latent_space,
+                #     original_point = original_point,
+                # )
+                dist = torch.cdist(latent_space, original_point, p=2)
+                loss = torch.add(energy, 200*dist)
                 self.path[step] = dist
-                loss = torch.add(loss_from_min, dist_loss)
-                print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist_loss.item()}, To Min Loss: {loss_from_min.item()}, Loss: {loss.item()}")
+                self.energy_path[step] = energy.detach()
+                # loss = torch.add(loss_from_min, dist_loss)
+                print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, To Min Loss: {energy.item()}, Loss: {loss.item()}")
 
             # Turn the search around to keep it local
-            if dist_loss.item() > 0:
-                print(f"Step {step}: Condition met, adjusting path")
+            # if dist_loss.item() > 0:
+            #     print(f"Step {step}: Condition met, adjusting path")
 
                 # Compute the gradient manually
-                grad = torch.autograd.grad(outputs=loss, inputs=self.start_point, create_graph=True)[0]
-
-                noise = torch.randn_like(self.start_point) * 10
-
-                # Adjust the gradient direction to steer the point back within the cutoff distance
-                adjustment = self.start_point / dist * ((dist - self.cutoff) * 2) + noise
+                # grad = torch.autograd.grad(outputs=loss, inputs=self.start_point, create_graph=True)[0]
+                #
+                # noise = torch.randn_like(self.start_point) * 10
+                #
+                # # Adjust the gradient direction to steer the point back within the cutoff distance
+                # adjustment = self.start_point / dist * ((dist - self.cutoff) * 2) + noise
 
                 # Update the starting point manually
-                with torch.no_grad():
-                    self.start_point += 1e-2 * (grad + adjustment)
-            else:
-                # back prop
-                loss.backward()
-                optimizer.step()
+                # with torch.no_grad():
+                #     # self.start_point += 1e-2 * (grad + adjustment)
+                #     self.start_point = torch.cat((self.dof_traj[0, :], torch.zeros(2)), dim=-1) + torch.randn_like(self.start_point) * 2
+                #     self.start_point.requires_grad_()
+                #     optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
+                #     redo = True
+            # else:
+            # back prop
+            loss.backward()
+            optimizer.step()
 
 
             out = out.detach().clone()
@@ -221,20 +260,19 @@ class EnergyPath:
             self.dof_traj[step] = preds
 
             # stop check
-            if energy <= self.minima:
+            if (dist >= self.cutoff) and (self.cutoff_true):
                 self.outstep = step
-                print("Minima {self.minima} found at Step: {step}")
+                print(f"Distance cutoff: {self.cutoff} found at Step: {step}")
+                self.dof_traj = self.dof_traj[:step, :]
                 break
             
-            # reinstantiate the start point
-            # self.start_point = self.start_point.detach().clone().requires_grad_()
 
     def output_GDS(self):
         """Output the GDS trajectory"""
         # file name
         file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
         torch.save(self.dof_traj, file)
-        torch.save(self.path, 'trajpath.pt')
+        torch.save({"distance": self.path, "energy": self.energy_path}, 'trajpath.pt')
         
 
 if __name__ == "__main__":
@@ -245,16 +283,18 @@ if __name__ == "__main__":
     p.add_argument("--weights-load", type=str, help="Specify Model Weights To Use")
     p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate (default: 1e-3)")
     p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use (default: dof_vectors2024-04-10torch_tensor)")
+    p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
     p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search (default: 0.005)")
     args = p.parse_args()
 
 
     # init the start path with X tensor 14 
     energySearch = EnergyPath(steps = args.steps, minima = args.minima, start_point = torch.tensor(args.start_point), weight_passed = args.weights_load, lr=args.lr,
-                              dataset = args.dataset, cutoff = args.cutoff)
+                              dataset = args.dataset, cutoff = args.cutoff, cutoff_true = args.cutoff_true)
 
     # Search And Output
     energySearch.energy_steps()
+    energySearch.dist_energy_plot()
     energySearch.output_GDS()
 
 
