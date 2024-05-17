@@ -7,10 +7,11 @@
 #
 
 
-# Import Packages
+# native Packages
 import os, sys
 import datetime
 import argparse
+import ast
 
 # import torch
 import torch
@@ -38,6 +39,11 @@ class EnergyPath:
         dataset: str,
         cutoff: float,
         cutoff_true: bool,
+        partial_optimization: bool,
+        freeze_residues: list,
+        freeze_torsion: bool,
+        freeze_bond_angle: bool,
+        freeze_bond_length: bool,
         ):
         """GDS for energy minima structure from starting point
 
@@ -58,6 +64,12 @@ class EnergyPath:
             cutoff: float
                 Distance in Latent Space cutoff for gradient direction
                 control
+            partial_optimization: bool
+                Whether partial optimization should be used or not
+            freeze_residues: list,
+                Residues to freeze (zero index)
+            free_torsion, bond_angle, bond_length : bool, bool, bool
+                Specify the DoF to freeze if not specified then all are frozen
         """
         # Pull up points
         self.steps = steps
@@ -66,14 +78,14 @@ class EnergyPath:
         self.lr = lr
         self.cutoff = cutoff
         self.cutoff_true = cutoff_true
+        self.partial_optimization = partial_optimization
+        self.freeze_residues = freeze_residues
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
         PARAMS = dataset["params"]
         X = dataset["x"].double()
         self.energy_n = PARAMS["energy_n"]
-        # if X.size(-1) != 177:
-        #     X = torch.cat((X, ))
 
         self.minima_energy = X[:, -self.energy_n:].min(dim=0).values
 
@@ -120,11 +132,68 @@ class EnergyPath:
         self.start_point = self.start_point.unsqueeze(0)
         # self.start_point = self.start_point.to("cuda" if torch.cuda.is_available() else "cpu")
         self.start_point = self.start_point.to("cpu")
-        self.start_point.requires_grad_()
-        print("Check to see if Tensor requires Grad now: ", self.start_point.requires_grad)
+        # self.start_point.requires_grad_()
 
         # scale energy for conversion importance
         self.energy_scale = ScaleOutputs(X[:, -self.energy_n:])
+
+        if self.partial_optimization:
+            # Set up atoms to start with per residue
+            freeze_one = freeze_residues == 0
+            freeze_eight = freeze_residues == 7
+            atoms_per_residue = torch.ones(freeze_residues.shape) * 7
+            atoms_per_residue[freeze_one] += 1
+            atoms_per_residue[freeze_eight] += 2
+            freeze_mas = freeze_residues > 0
+
+            # generate start locations
+            start_torsion_index = freeze_residues * 7
+            # start_torsion_index[freeze_mas] += 1
+            start_bond_angle_index = start_torsion_index + 58
+            start_bond_length_index = start_bond_angle_index + 58
+
+            # generate end locations
+            end_torsion_index = start_torsion_index + atoms_per_residue
+            end_bond_angle_index = start_bond_angle_index + atoms_per_residue
+            end_bond_length_index = start_bond_length_index + atoms_per_residue
+            print("ATOMS PER RES:", atoms_per_residue)
+            print('Start T', start_torsion_index)
+            print('End T',  end_torsion_index)
+            print("Start BL", start_bond_angle_index)
+            print("End BL", end_bond_angle_index)
+            print("Start BD", start_bond_length_index)
+            print("End BD", end_bond_length_index)
+
+            # index tensors
+            residue_len = freeze_residues.numel()
+            # iter through the residues to build lists
+            for res in range(residue_len):
+                if res == 0:
+                    torsion_index = torch.arange(start_torsion_index[res], end_torsion_index[res])
+                    bond_angle_index = torch.arange(start_bond_angle_index[res], end_bond_angle_index[res])
+                    bond_length_index = torch.arange(start_bond_length_index[res], end_bond_length_index[res])
+                else:
+                    torsion_index = torch.cat((torsion_index, torch.arange(start_torsion_index[res], end_torsion_index[res])))
+                    bond_angle_index = torch.cat((bond_angle_index, torch.arange(start_bond_angle_index[res], end_bond_angle_index[res])))
+                    bond_length_index = torch.cat((bond_length_index, torch.arange(start_bond_length_index[res], end_bond_length_index[res])))
+
+            # combine them
+            self.idx = torch.cat(
+                (
+                    torsion_index,
+                    bond_angle_index,
+                    bond_length_index,
+                )
+            ).to(torch.long)
+
+            if freeze_torsion and freeze_bond_angle:
+                self.idx = self.idx[:torsion_index.numel()+bond_angle_index.numel()]
+            elif freeze_torsion:
+                self.idx = self.idx[:torsion_index.numel()]
+            elif freeze_bond_length:
+                self.idx = self.idx[torsion_index.numel():bond_angle_index.numel()]
+
+
 
     def calc_angles(self, preds: torch.Tensor):
         """Display the Computed Angles"""
@@ -173,13 +242,39 @@ class EnergyPath:
         plt.tight_layout()
         plt.savefig(f"plotstep{self.outstep}-{datetime.date.today()}-energy-dist.png")
 
+    def generate_mask(self, a: torch.Tensor, idx: torch.Tensor):
+        """Grab all values that are not the idx values passed
+
+        PARAMS
+        ------
+            a: torch.Tensor
+                Tensor of all values
+            idx: torch.Tenosr
+                Indexes of values you do not want to keep
+        RETURN
+        ------
+            torch.Tensor
+                a , but the all of the values in idx have been removed from it.
+        """
+        mask = torch.ones(a.numel(), dtype=torch.bool)
+        mask[idx] = False
+        return a[mask.unsqueeze(0)]
+
     def energy_steps(self):
         """Model Eval Loop for GDS"""
         # init optimizer
-        optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
+        # if self.partial_optimization:
+        #     self.start_point = self.generate_mask(self.start_point, self.idx).unsqueeze(0)
+        #     self.start_point.requires_grad_()
+        #     print(self.start_point.shape)
+        #     optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
+        # else:
+        self.start_point.requires_grad_()
+        print("START POINT SHAPE:", self.start_point.shape)
+        # optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
+        optimizer = torch.optim.Adam([self.start_point], lr=self.lr)
         redo = False
 
-        print('Eval Mode:', not self.model.training)
         if self.sample_energy.size(0) == 3:
             print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[1].item()}, Ref2015+Solvent: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
         else:
@@ -197,65 +292,51 @@ class EnergyPath:
             if step == 1 or redo:
                 original_point = latent_space
                 redo = False
+
             # grab the energies (ref2015 score)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
             if energies.size(-1) == 3:
                 qm = energies[:, 0]
                 energy = energies[:, 1]
-                # loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
-                # dist_loss, dist = self.euclidean_measure(
-                #     cutoff = self.cutoff, 
-                #     latent_space = latent_space,
-                #     original_point = original_point,
-                # )
                 dist = torch.cdist(latent_space, original_point, p=2)
                 loss = torch.add(*energy, 200*dist)
 
                 print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist.item()}, To Min Loss: {energy.item()}, Loss: {loss.item()}")
             else:
                 energy = energies[:, -1]
-                # loss_from_min = torch.mean(torch.pow(0.0 - (energies[:, 1] - self.minima_energy[1]), 2))
-                # dist_loss, dist = self.euclidean_measure(
-                #     cutoff = self.cutoff, 
-                #     latent_space = latent_space,
-                #     original_point = original_point,
-                # )
                 dist = torch.cdist(latent_space, original_point, p=2)
                 loss = torch.add(energy, 200*dist)
                 self.path[step] = dist
                 self.energy_path[step] = energy.detach()
-                # loss = torch.add(loss_from_min, dist_loss)
                 print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, To Min Loss: {energy.item()}, Loss: {loss.item()}")
 
-            # Turn the search around to keep it local
-            # if dist_loss.item() > 0:
-            #     print(f"Step {step}: Condition met, adjusting path")
-
-                # Compute the gradient manually
-                # grad = torch.autograd.grad(outputs=loss, inputs=self.start_point, create_graph=True)[0]
-                #
-                # noise = torch.randn_like(self.start_point) * 10
-                #
-                # # Adjust the gradient direction to steer the point back within the cutoff distance
-                # adjustment = self.start_point / dist * ((dist - self.cutoff) * 2) + noise
-
-                # Update the starting point manually
-                # with torch.no_grad():
-                #     # self.start_point += 1e-2 * (grad + adjustment)
-                #     self.start_point = torch.cat((self.dof_traj[0, :], torch.zeros(2)), dim=-1) + torch.randn_like(self.start_point) * 2
-                #     self.start_point.requires_grad_()
-                #     optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
-                #     redo = True
-            # else:
             # back prop
             loss.backward()
+            if self.partial_optimization:
+                with torch.no_grad():
+                    self.start_point.grad[:, self.idx] = 0
+                    # self.start_point -= self.lr * self.start_point.grad
+                    # print("GRAD", self.start_point.grad)
             optimizer.step()
+            
+            # test replace values
+            if self.partial_optimization:
+                with torch.no_grad():
+                    self.start_point[:, self.idx] = self.dof_traj[1, self.idx]
+            #         print(self.idx)
+            #         original_vals = self.dof_traj[0, self.idx]
+            #         self.start_point[:, self.idex] = original_vals
+
 
 
             out = out.detach().clone()
             torsion = self.calc_angles(out[:, :116])
             bond_angle = self.calc_angles(out[:, 116:116*2])
             preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
+            diff = self.start_point[:, :-2].detach() - self.dof_traj[0, :]
+            # print("T",  diff[:, :58])
+            # print("BA", diff[:, 58:116])
+            # print("BL", diff[:, 116:])
 
             self.dof_traj[step] = preds
 
@@ -285,12 +366,31 @@ if __name__ == "__main__":
     p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use (default: dof_vectors2024-04-10torch_tensor)")
     p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
     p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search (default: 0.005)")
+    p.add_argument("--partial-optimization", action="store_true", help="Apply partial optimization to a structure")
+    p.add_argument("--freeze-residues", type=str, help="Used wth partial-optimization. If no sub freeze flags specified all are frozen \
+                        Specify residue in a list (zero index) to freeze (e.g. '[1,2,3]')")
+    p.add_argument("--freeze-torsion", action="store_true", help="Use with partial-optimization")
+    p.add_argument("--freeze-bond-angle", action="store_true", help="Use with partial-optimization")
+    p.add_argument("--freeze-bond-length", action="store_true", help="Use with partial-optimization")
     args = p.parse_args()
 
 
     # init the start path with X tensor 14 
-    energySearch = EnergyPath(steps = args.steps, minima = args.minima, start_point = torch.tensor(args.start_point), weight_passed = args.weights_load, lr=args.lr,
-                              dataset = args.dataset, cutoff = args.cutoff, cutoff_true = args.cutoff_true)
+    energySearch = EnergyPath(
+        steps = args.steps, 
+        minima = args.minima, 
+        start_point = torch.tensor(args.start_point), 
+        weight_passed = args.weights_load, 
+        lr=args.lr,
+        dataset = args.dataset, 
+        cutoff = args.cutoff, 
+        cutoff_true = args.cutoff_true,
+        partial_optimization = args.partial_optimization,
+        freeze_residues = torch.tensor(ast.literal_eval(args.freeze_residues)) if args.partial_optimization else None,
+        freeze_torsion = args.freeze_torsion,
+        freeze_bond_angle = args.freeze_bond_angle,
+        freeze_bond_length = args.freeze_bond_length,
+    )
 
     # Search And Output
     energySearch.energy_steps()
