@@ -28,6 +28,32 @@ from model_functions import scale, ScaleOutputs
 ##### Classes
 #############
 
+class CustomSinCosLoss(nn.Module):
+    def __init__(self, sin_weight=1.0, cos_weight=1.0):
+        super().__init__()
+        self.sin_weight = sin_weight
+        self.cos_weight = cos_weight
+
+    def forward(self, preds, targets):
+        """Custom MSE Loss for sin/cos"""
+        # Grab sin and cos values
+        sin_preds, sin_targets = preds[:, :preds.size(-1)//2], targets[:, :targets.size(-1)//2]
+        cos_preds, cos_targets = preds[:, preds.size(-1)//2:], targets[:, targets.size(-1)//2:]
+
+        # THIS IS CHANGED FOR THE UNIT CIRCLE NORM TRY
+        # sin_targets = targets[:, :targets.size(-1)//2]
+        # cos_targets = targets[:, targets.size(-1)//2:]
+        # sin_preds, cos_preds = preds[:, ::2], preds[:, 1::2]
+
+        # calculate the MSE loss
+        diff_sin = torch.pow( sin_targets - sin_preds, 2)
+        diff_cos = torch.pow( cos_targets - cos_preds, 2)
+
+        # Reweight based on importance
+        loss = torch.mean( diff_sin*self.sin_weight + diff_cos*self.cos_weight )
+
+        return loss
+
 class EnergyPath:
     def __init__(
         self,
@@ -44,6 +70,7 @@ class EnergyPath:
         freeze_torsion: bool,
         freeze_bond_angle: bool,
         freeze_bond_length: bool,
+        lambda_partial: float,
         ):
         """GDS for energy minima structure from starting point
 
@@ -68,18 +95,28 @@ class EnergyPath:
                 Whether partial optimization should be used or not
             freeze_residues: list,
                 Residues to freeze (zero index)
-            free_torsion, bond_angle, bond_length : bool, bool, bool
+            freeze_torsion, bond_angle, bond_length : bool, bool, bool
                 Specify the DoF to freeze if not specified then all are frozen
+            labmda_partial: float,
+                How importantly you want to weight partial freezing
         """
         # Pull up points
         self.steps = steps
         self.minima = minima
         self.outstep = steps
         self.lr = lr
+        self.lambda_2 = lambda_partial
         self.cutoff = cutoff
         self.cutoff_true = cutoff_true
         self.partial_optimization = partial_optimization
         self.freeze_residues = freeze_residues
+        self.freeze_torsion = freeze_torsion
+        self.freeze_bond_angle = freeze_bond_angle
+        self.freeze_bond_length = freeze_bond_length
+        if self.partial_optimization and (torch.sum(torch.tensor([self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_length])).item() == 0):
+            self.freeze_torsion = True
+            self.freeze_bond_angle = True
+            self.freeze_bond_length = True
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -132,7 +169,6 @@ class EnergyPath:
         self.start_point = self.start_point.unsqueeze(0)
         # self.start_point = self.start_point.to("cuda" if torch.cuda.is_available() else "cpu")
         self.start_point = self.start_point.to("cpu")
-        # self.start_point.requires_grad_()
 
         # scale energy for conversion importance
         self.energy_scale = ScaleOutputs(X[:, -self.energy_n:])
@@ -156,13 +192,6 @@ class EnergyPath:
             end_torsion_index = start_torsion_index + atoms_per_residue
             end_bond_angle_index = start_bond_angle_index + atoms_per_residue
             end_bond_length_index = start_bond_length_index + atoms_per_residue
-            print("ATOMS PER RES:", atoms_per_residue)
-            print('Start T', start_torsion_index)
-            print('End T',  end_torsion_index)
-            print("Start BL", start_bond_angle_index)
-            print("End BL", end_bond_angle_index)
-            print("Start BD", start_bond_length_index)
-            print("End BD", end_bond_length_index)
 
             # index tensors
             residue_len = freeze_residues.numel()
@@ -177,6 +206,7 @@ class EnergyPath:
                     bond_angle_index = torch.cat((bond_angle_index, torch.arange(start_bond_angle_index[res], end_bond_angle_index[res])))
                     bond_length_index = torch.cat((bond_length_index, torch.arange(start_bond_length_index[res], end_bond_length_index[res])))
 
+            self.torsion_index = torsion_index.to(torch.long)
             # combine them
             self.idx = torch.cat(
                 (
@@ -193,6 +223,140 @@ class EnergyPath:
             elif freeze_bond_length:
                 self.idx = self.idx[torsion_index.numel():bond_angle_index.numel()]
 
+    def encoder(self, input: torch.Tensor):
+        """Input the DoF Vector and get out the latent space point to optimize
+
+        PARAMS
+        ------
+            input: torch.Tensor
+                DoF Input vector (1, 174) (for glycine 8mer cyclic petpide)
+        
+        RETURNS
+            torch.Tensor
+                Latent Space Tensor (1, 3)
+        """
+        # decompose angles/ return linear terms
+        x, bond_angle, bond_length, energy = self.model.input_decompose(input, self.model.training, False)
+        init_x = torch.cat((x, bond_angle, bond_length, energy), dim=-1)
+        initial_input = init_x.clone().detach()
+
+        # encode energy
+        # energy_encode = self.encode_energy(energy)
+
+        # generate linear pe
+        pe = self.model.pe()
+
+        ##### ENCODER
+        # If convolution is true then reformat and apply convolution
+        if self.model.convolution:
+            # Torsion reshape
+            sin_x = self.model.reformat_convolution2(x[:, :self.model.torsion_main_n], self.model.dof_residue_metadata[:self.model.torsion_main_n,:])
+            cos_x = self.model.reformat_convolution2(x[:, self.model.torsion_main_n:], self.model.dof_residue_metadata[:self.model.torsion_main_n,:])
+            # Bond Angle Reshape
+            sin_x_bond = self.model.reformat_convolution2(bond_angle[:, :self.model.bond_angle_main_n], self.model.dof_residue_metadata[self.model.torsion_main_n:self.model.torsion_main_n + self.model.bond_angle_main_n, :])
+            cos_x_bond = self.model.reformat_convolution2(bond_angle[:, self.model.bond_angle_main_n:], self.model.dof_residue_metadata[self.model.torsion_main_n+self.model.bond_angle_main_n : self.model.torsion_main_n+self.model.bond_angle_main_n+self.model.bond_length_main_n, :])
+            # non-linear transform bond_length to match input dim for convolution
+            bond_length_transform = self.model.bond_length_trans(bond_length)
+            B, L, D = sin_x_bond.shape
+
+            # Concat together
+            x_combo = torch.cat(
+                (
+                    sin_x.unsqueeze(-1),
+                    cos_x.unsqueeze(-1),
+                    sin_x_bond.unsqueeze(-1),
+                    cos_x_bond.unsqueeze(-1),
+                    bond_length_transform.reshape(B, L, D).unsqueeze(-1),
+                ),
+                dim=-1,
+            )
+            # Add in positional encodings
+            x_combo = torch.add(x_combo, pe.unsqueeze(0))
+            # reshape from (N, L, D, 2) -> (N, 2, D*L)
+            B, L, D, C = x_combo.shape
+            x = self.model.conv_cyc_encoder(x_combo.reshape(B, C, D*L)) # 1D
+            # x = self.model.conv_cyc2d(x_combo.permute(0, 3, 1, 2)) # 2D
+        else:
+        # Convert 116 -> 64 for encoder block training
+            x = self.model.encoder_one(x)
+        skip_one = x.clone()
+
+        # First Encoder block 64 -> 64
+        x = self.model.encoder(x)
+        skip_n1 = x.clone()
+
+        # Second Encoder Block 64 -> 64 
+        x = self.model.encoder_n2(torch.add(x, skip_one))
+        skip_n2 = x.clone() 
+
+        # Third Encoder Block 64 -> 64
+        x = self.model.encoder_n3(torch.add(x, skip_n1))
+
+        # Pyramid Encoder 64 -> 32 -> 16 -> 8 -> 3
+        x = self.model.encoder_pyramid(torch.add(x, skip_n2))
+        ##### ENCODER END
+        return x
+
+    def decoder(self, latent_space: torch.Tensor):
+        """Decode straight from the latent space optimization
+
+        PARAMS
+        ------
+            latent_space: torch.Tensor
+                Latnet Space Vector (1, 3)
+        
+        RETURNS
+        -------
+            torch.Tensor: Recomputed DoFs
+        """
+        energy_x = self.model.energy_decoder1(latent_space)
+        energy_skip1 = energy_x.clone()
+        # Decoder latent to decoder blocks size 3 -> 64
+        x = self.model.decoder_pyramid(latent_space)
+        decode_skip1 = x.clone()
+
+        # First Decoder Block 64 -> 64
+        x = self.model.decoder_n(x)
+        dskip_n1 = x.clone()
+        # compute first energy block
+        energy_x = self.model.energy_decoder2(torch.add(energy_x, decode_skip1))
+        energy_skip2 = energy_x.clone()
+
+        # Second Decoder Block 64 -> 64
+        x = self.model.decoder_n2(torch.add(x, decode_skip1))
+        dskip_n2 = x.clone()
+        # compute second block of energies
+        energy_x = self.model.energy_decoder3(torch.add(torch.add(energy_x, energy_skip1), dskip_n2))
+        energy_skip3 = energy_x.clone()
+
+        x = self.model.decoder_n3(torch.add(x, dskip_n1))
+        dskip_n3 = x.clone()
+        # final energy compute
+        energy_x = self.model.energy_decoder4(torch.add(torch.add(energy_x, energy_skip2), dskip_n3))
+
+        # Third Decoder Block 64 -> 64
+        if self.model.convolution:
+            B, D = x.shape
+            x = self.model.conv_cyc_decoder(x).view(B, -1)
+
+        # FINAL decoder layer 64 -> 116 out size
+        torsion_angle_pred = self.model.head_torsion_angle(x)
+        bond_angle_pred = self.model.head_bond_angle(x)
+        bond_length_pred = self.model.head_bond_length(x)
+        energy_pred = self.model.head_energy(energy_x)
+
+        out = torch.cat(
+            (
+                torsion_angle_pred,
+                bond_angle_pred,
+                bond_length_pred,
+                energy_pred,
+            ),
+            dim=-1
+        )
+        ##### DECODER END
+        
+        return out
 
 
     def calc_angles(self, preds: torch.Tensor):
@@ -220,6 +384,9 @@ class EnergyPath:
         dist = torch.cdist(original_point, latent_space, p=2)
 
         return torch.pow(torch.maximum(dist - cutoff, torch.tensor(0)), 2), dist
+
+    def linear_loss(self, real:torch.Tensor, pred: torch.Tensor):
+        return torch.sum( torch.pow( real - pred, 2) )
     
     def dist_energy_plot(self):
         """Plot Distance and Energy Path through SGD"""
@@ -262,18 +429,13 @@ class EnergyPath:
 
     def energy_steps(self):
         """Model Eval Loop for GDS"""
-        # init optimizer
-        # if self.partial_optimization:
-        #     self.start_point = self.generate_mask(self.start_point, self.idx).unsqueeze(0)
-        #     self.start_point.requires_grad_()
-        #     print(self.start_point.shape)
-        #     optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
-        # else:
-        self.start_point.requires_grad_()
-        print("START POINT SHAPE:", self.start_point.shape)
-        # optimizer = torch.optim.SGD([self.start_point], lr=self.lr, momentum=0.9)
-        optimizer = torch.optim.Adam([self.start_point], lr=self.lr)
-        redo = False
+        self.start_latent_point = self.encoder(self.start_point).detach()
+        original_point = self.start_latent_point.clone()
+        self.start_latent_point.requires_grad_()
+        optimizer = torch.optim.SGD([self.start_latent_point], lr=self.lr, momentum=0.9)
+
+        # Loss function weights
+        lambda_1 = (1 - self.lambda_2)#20 if self.lambda_2 <= 2 else 1
 
         if self.sample_energy.size(0) == 3:
             print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[1].item()}, Ref2015+Solvent: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
@@ -287,42 +449,98 @@ class EnergyPath:
             optimizer.zero_grad()
 
             # out from model
-            out, _, latent_space, _ = self.model(self.start_point, False)
-            latent_space = latent_space.detach()
-            if step == 1 or redo:
-                original_point = latent_space
-                redo = False
+            # out, _, latent_space, _ = self.model(self.start_point, False)
+            # get the structure from the latent point
+            out = self.decoder(self.start_latent_point)
+            # torsion = self.calc_angles(out[:, :116])
+            # bond_angle = self.calc_angles(out[:, 116:116*2])
+
+            # Prediction Information
+            torsion = out[:, :116]
+            torsion_sin = torsion[:, :58]
+            torsion_cos = torsion[:, 58:]
+            bond_angle = out[:, 116:116*2]
+            bond_angle_sin = bond_angle[:, :58]
+            bond_angle_cos = bond_angle[:, 58:]
+            bond_length = out[:, 116*2:-3]
+            preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
+
+            # Real Information
+            real_t_sin = torch.sin(self.start_point[:, :58])
+            real_t_cos = torch.cos(self.start_point[:, :58])
+            real_ba_sin = torch.sin(self.start_point[:, 58:116])
+            real_ba_cos = torch.cos(self.start_point[:, 58:116])
+            real_bond_length = self.start_point[:, 116:-self.energy_n]
+            # latent_space = latent_space.detach()
+            # if step == 1 or redo:
+            #     original_point = latent_space
+            #     redo = False
 
             # grab the energies (ref2015 score)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
             if energies.size(-1) == 3:
                 qm = energies[:, 0]
                 energy = energies[:, 1]
-                dist = torch.cdist(latent_space, original_point, p=2)
-                loss = torch.add(*energy, 200*dist)
 
-                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist.item()}, To Min Loss: {energy.item()}, Loss: {loss.item()}")
+                dist = torch.cdist(original_point, self.start_latent_point, p=2)
+                if self.partial_optimization:
+
+                    #### THIS NEEDS TO BE FIXED COMPLETELY
+                    harmonic_penalty_sin_torsion = torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]), torsion_sin[:, self.torsion_index], p=2)
+                    harmonic_penalty_cos_torsion = torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]), torsion_cos[:, self.torsion_index], p=2)
+                    harmonic_penalty_sin_bond_angle = torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index], p=2)
+                    harmonic_penalty_cos_bond_angle = torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index], p=2)
+                    harmonic_penalty_bond_length = torch.cdist(real_bond_length[:, self.torsion_index], bond_length[:, self.torsion_index], p=2)
+                    harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    harmonic_loss /= 5
+
+                else:
+                    harmonic_loss = torch.tensor([0.0])
+
+                loss = lambda_1*energy + dist + self.lambda_2*harmonic_loss
+
+                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
             else:
                 energy = energies[:, -1]
-                dist = torch.cdist(latent_space, original_point, p=2)
-                loss = torch.add(energy, 200*dist)
-                self.path[step] = dist
+
+
+                dist = torch.cdist(original_point, self.start_latent_point, p=2)
+                if self.partial_optimization:
+                    harmonic_penalty_sin_torsion = torch.tensor(0.0) if not self.freeze_torsion else self.linear_loss(torch.sin(real_t_sin[:, self.torsion_index]), torsion_sin[:, self.torsion_index])
+                    harmonic_penalty_cos_torsion = torch.tensor(0.0) if not self.freeze_torsion else self.linear_loss(torch.cos(real_t_cos[:, self.torsion_index]), torsion_cos[:, self.torsion_index])
+                    harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle else self.linear_loss(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index])
+                    harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle else self.linear_loss(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index])
+                    harmonic_penalty_bond_length = torch.tensor(0.0) if not self.freeze_bond_length else self.linear_loss(real_bond_length[:, self.torsion_index], bond_length[:, self.torsion_index])
+                    harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+                else:
+                    harmonic_penalty_sin_torsion = self.linear_loss(torch.sin(real_t_sin), torsion_sin)
+                    harmonic_penalty_cos_torsion = self.linear_loss(torch.cos(real_t_cos), torsion_cos)
+                    harmonic_penalty_sin_bond_angle = self.linear_loss(torch.sin(real_ba_sin),  bond_angle_sin)
+                    harmonic_penalty_cos_bond_angle = self.linear_loss(torch.cos(real_ba_cos),  bond_angle_cos)
+                    harmonic_penalty_bond_length = self.linear_loss(real_bond_length, bond_length)
+                    harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    harmonic_loss /= 5
+                    # harmonic_loss = torch.tensor([0.0])
+
+                loss = lambda_1*energy + dist + self.lambda_2*harmonic_loss
+
+                self.path[step] = dist.detach()
                 self.energy_path[step] = energy.detach()
-                print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, To Min Loss: {energy.item()}, Loss: {loss.item()}")
+                print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
 
             # back prop
             loss.backward()
-            if self.partial_optimization:
-                with torch.no_grad():
-                    self.start_point.grad[:, self.idx] = 0
-                    # self.start_point -= self.lr * self.start_point.grad
-                    # print("GRAD", self.start_point.grad)
+            # if self.partial_optimization:
+            #     with torch.no_grad():
+            #         self.start_point.grad[:, self.idx] = 0
+            #         # print("GRAD", self.start_point.grad)
             optimizer.step()
             
             # test replace values
-            if self.partial_optimization:
-                with torch.no_grad():
-                    self.start_point[:, self.idx] = self.dof_traj[1, self.idx]
+            # if self.partial_optimization:
+                # with torch.no_grad():
+                #     self.start_point[:, self.idx] = self.dof_traj[1, self.idx]
             #         print(self.idx)
             #         original_vals = self.dof_traj[0, self.idx]
             #         self.start_point[:, self.idex] = original_vals
@@ -333,7 +551,7 @@ class EnergyPath:
             torsion = self.calc_angles(out[:, :116])
             bond_angle = self.calc_angles(out[:, 116:116*2])
             preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
-            diff = self.start_point[:, :-2].detach() - self.dof_traj[0, :]
+            # diff = self.start_point[:, :-2].detach() - self.dof_traj[0, :]
             # print("T",  diff[:, :58])
             # print("BA", diff[:, 58:116])
             # print("BL", diff[:, 116:])
@@ -372,6 +590,7 @@ if __name__ == "__main__":
     p.add_argument("--freeze-torsion", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-angle", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-length", action="store_true", help="Use with partial-optimization")
+    p.add_argument("--lambda-partial", type=float, default=0.5, help="Reweight Partial Freezing (Default: 0.5)")
     args = p.parse_args()
 
 
@@ -390,6 +609,7 @@ if __name__ == "__main__":
         freeze_torsion = args.freeze_torsion,
         freeze_bond_angle = args.freeze_bond_angle,
         freeze_bond_length = args.freeze_bond_length,
+        lambda_partial = args.lambda_partial,
     )
 
     # Search And Output
