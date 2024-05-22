@@ -432,7 +432,8 @@ class EnergyPath:
         self.start_latent_point = self.encoder(self.start_point).detach()
         original_point = self.start_latent_point.clone()
         self.start_latent_point.requires_grad_()
-        optimizer = torch.optim.SGD([self.start_latent_point], lr=self.lr, momentum=0.9)
+        # optimizer = torch.optim.SGD([self.start_latent_point], lr=self.lr, momentum=0.9)
+        optimizer = torch.optim.AdamW([self.start_latent_point], lr=self.lr)
 
         # Loss function weights
         lambda_1 = (1 - self.lambda_2)#20 if self.lambda_2 <= 2 else 1
@@ -506,19 +507,19 @@ class EnergyPath:
 
                 dist = torch.cdist(original_point, self.start_latent_point, p=2)
                 if self.partial_optimization:
-                    harmonic_penalty_sin_torsion = torch.tensor(0.0) if not self.freeze_torsion else self.linear_loss(torch.sin(real_t_sin[:, self.torsion_index]), torsion_sin[:, self.torsion_index])
-                    harmonic_penalty_cos_torsion = torch.tensor(0.0) if not self.freeze_torsion else self.linear_loss(torch.cos(real_t_cos[:, self.torsion_index]), torsion_cos[:, self.torsion_index])
-                    harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle else self.linear_loss(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index])
-                    harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle else self.linear_loss(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index])
-                    harmonic_penalty_bond_length = torch.tensor(0.0) if not self.freeze_bond_length else self.linear_loss(real_bond_length[:, self.torsion_index], bond_length[:, self.torsion_index])
+                    harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2)
+                    harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2)
+                    harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2)
+                    harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=1),2)
+                    harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=1),2)
                     harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
                     harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
                 else:
-                    harmonic_penalty_sin_torsion = self.linear_loss(torch.sin(real_t_sin), torsion_sin)
-                    harmonic_penalty_cos_torsion = self.linear_loss(torch.cos(real_t_cos), torsion_cos)
-                    harmonic_penalty_sin_bond_angle = self.linear_loss(torch.sin(real_ba_sin),  bond_angle_sin)
-                    harmonic_penalty_cos_bond_angle = self.linear_loss(torch.cos(real_ba_cos),  bond_angle_cos)
-                    harmonic_penalty_bond_length = self.linear_loss(real_bond_length, bond_length)
+                    harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin[:, self.torsion_index])),   torch.exp(torsion_sin[:, self.torsion_index]), p=2), 2)   
+                    harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos[:, self.torsion_index])),   torch.exp(torsion_cos[:, self.torsion_index]), p=2), 2)   
+                    harmonic_penalty_sin_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.sin(real_ba_sin[:, self.torsion_index])),  torch.exp(bond_angle_sin[:, self.torsion_index]),p=2), 2) 
+                    harmonic_penalty_cos_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.cos(real_ba_cos[:, self.torsion_index])),  torch.exp(bond_angle_cos[:, self.torsion_index]),p=2), 2) 
+                    harmonic_penalty_bond_length     = torch.pow(torch.cdist(torch.exp(real_bond_length[:, self.torsion_index]),        torch.exp(bond_length[:, self.torsion_index]),p=2), 2)    
                     harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
                     harmonic_loss /= 5
                     # harmonic_loss = torch.tensor([0.0])
