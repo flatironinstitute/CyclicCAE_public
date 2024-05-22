@@ -427,6 +427,77 @@ class EnergyPath:
         mask[idx] = False
         return a[mask.unsqueeze(0)]
 
+    def metropolis_hastings(self, B: int, sigma: torch.float):
+        """MCMC Search for energy minima structures
+        PARAMS
+        ------
+            B: int,
+                Batch Size. Amount of attempts to try in parallel
+            sigma: torch.float
+                Amount of noise for normal distribution
+
+        RETURNS
+        -------
+            latent_trajectories: torch.tensor
+                Shape (B, T, 3) Where B is the number of Trajectories,
+                T is the time step, and 3 is the xyz coordinates for that
+                step
+            lowest_predicted: torch.Tensor
+                The lowest energy DoF Vector sample trajectory (B_i) out of the search
+        """
+        # Latent Trajectories
+        latent_trajectories = torch.zeros((B, self.steps, 3), dtype=torch.double)
+        # Lowest energy holder for the trajectories. This determines which point to return and decode
+        energies_trajectories = torch.zeros((B, self.steps, 1), dtype=torch.double)
+
+        # get starting point and enable grad
+        self.start_latent_point = self.encoder(self.start_point).detach()
+
+        # Set this as t_0 for all trajectories
+        latent_trajectories[:, 0, :] = self.start_latent_point
+
+        # set initial energy to everything (specific Ref2015 energies)
+        encode_decode_input = self.model(self.start_point, False)[0]
+        energy_out = self.energy_scale.inverse_scale(encode_decode_input[:, -self.energy_n:])
+        energies_trajectories[:, 0, :] = energy_out[:, -1]
+
+        # Perform MCMC for n steps
+        for t in range(1, self.steps):
+            
+            # Generate random walk noise
+            epsilon = torch.normal(0, sigma, size=(B, 3), dtype=torch.double)
+            # Apply noise to previous t-1 point
+            x_t = latent_trajectories[:, t-1, :] + epsilon
+
+            # decode points
+            out = self.decoder(x_t)
+
+            # Grab ref2015 energy from output
+            # energy_t = out[:, -2]
+            energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
+            energy_t = energy_all[:, -2]
+
+            # Get alpha 
+            alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp(energies_trajectories[:, t-1, :].squeeze(-1) - energy_t))
+
+            # accept or not
+            u = torch.ones((B))
+            u.uniform_(0, 1)
+            # generate bool of T/F
+            condition_u = u <= alpha
+            # Place energies or reject
+            energies_trajectories[condition_u, t, :] = energy_t[condition_u].view(-1, 1)
+            energies_trajectories[~condition_u, t, :] = energies_trajectories[~condition_u, t-1, :]
+            # Place steps or reject
+            latent_trajectories[condition_u, t, :] = x_t[condition_u]
+            latent_trajectories[~condition_u, t, :] = latent_trajectories[~condition_u, t-1, :]
+            if t % 500 == 0:
+                print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories[:, :t, :].min().item()} Starting Point Energy: {energies_trajectories[0, 0, :].item()}")
+        # torch.save({"latent_traj": latent_trajectories, "energy_traj": energies_trajectories}, "mcmctest.pt")
+        return latent_trajectories, energies_trajectories
+
+
+
     def energy_steps(self):
         """Model Eval Loop for GDS"""
         self.start_latent_point = self.encoder(self.start_point).detach()
@@ -592,6 +663,9 @@ if __name__ == "__main__":
     p.add_argument("--freeze-bond-angle", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-length", action="store_true", help="Use with partial-optimization")
     p.add_argument("--lambda-partial", type=float, default=0.5, help="Reweight Partial Freezing (Default: 0.5)")
+    p.add_argument("--energy-search", action="store_true", help="Gradient Search on dE/d(latent space)")
+    p.add_argument("--mcmc", action="store_true", help="Markov Chain Monte Carlo Metropolis Hastings Search")
+    p.add_argument("--batch-size", type=int, default=10, help="Used with mcmc. Set number of trajectories (default: 10)")
     args = p.parse_args()
 
 
@@ -614,9 +688,12 @@ if __name__ == "__main__":
     )
 
     # Search And Output
-    energySearch.energy_steps()
-    energySearch.dist_energy_plot()
-    energySearch.output_GDS()
+    if args.energy_search:
+        energySearch.energy_steps()
+        energySearch.dist_energy_plot()
+        energySearch.output_GDS()
+    if args.mcmc:
+        energySearch.metropolis_hastings(args.batch_size, 0.1)
 
 
 
