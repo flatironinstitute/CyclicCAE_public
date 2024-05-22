@@ -459,27 +459,27 @@ class EnergyPath:
         """
         # Latent Trajectories
         # latent_trajectories = torch.zeros((B, self.steps, 3), dtype=torch.double)
-        # latent_trajectories = torch.zeros((B, 3), dtype=torch.double)
+        latent_trajectories = torch.zeros((B, 2, 3), dtype=torch.double)
 
         # Lowest energy holder for the trajectories. This determines which point to return and decode
         # energies_trajectories = torch.zeros((B, self.steps, 1), dtype=torch.double)
-        # energies_trajectories = torch.zeros((B, 1), dtype=torch.double)
+        energies_trajectories = torch.zeros((B, 2, 1), dtype=torch.double)
 
         # minima structures
-        self.minima_structures = torch.zeros((B, self.start_point.size(-1)), dtype=torch.float64)
+        # self.minima_structures = torch.zeros((B, self.start_point.size(-1)-self.energy_n), dtype=torch.float64)
 
         # get starting point and enable grad
         self.start_latent_point = self.encoder(self.start_point).detach()
 
         # Set this as t_0 for all trajectories
         # latent_trajectories[:, 0, :] = self.start_latent_point
-        latent_trajectories = self.start_latent_point.repeat(B, 1)
+        latent_trajectories[:, 0, :] = self.start_latent_point.repeat(B, 1)
 
         # set initial energy to everything (specific Ref2015 energies)
         encode_decode_input = self.model(self.start_point, False)[0]
         energy_out = self.energy_scale.inverse_scale(encode_decode_input[:, -self.energy_n:])
         # energies_trajectories[:, 0, :] = energy_out[:, -1]
-        energies_trajectories = energy_out[:, -1].repeat(B, 1)
+        energies_trajectories[:, 0, :] = energy_out[:, -1].repeat(B, 1)
 
         # updated temperature
         temp_linspace = torch.linspace(1, self.temp, steps=self.warmup) if self.temp != 1 else torch.tensor([1])
@@ -491,7 +491,7 @@ class EnergyPath:
             epsilon = torch.normal(0, sigma, size=(B, 3), dtype=torch.double)
             # Apply noise to previous t-1 point
             # x_t = latent_trajectories[:, t-1, :] + epsilon
-            x_t = latent_trajectories + epsilon
+            x_t = latent_trajectories[:, -1, :] + epsilon
 
             # decode points
             out = self.decoder(x_t)
@@ -503,7 +503,7 @@ class EnergyPath:
             # Get alpha 
             # alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp(energies_trajectories[:, t-1, :].squeeze(-1) - energy_t))
             temp_coeff = temp_linspace[t-1] if t <= self.warmup else 0.01
-            alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp((energies_trajectories.squeeze(-1) - energy_t) / temp_coeff))
+            alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp((energies_trajectories[:, -1, :].squeeze(-1) - energy_t) / temp_coeff))
 
             # accept or not
             if t > self.initial_set:
@@ -514,24 +514,29 @@ class EnergyPath:
                 # Place energies or reject
                 # energies_trajectories[condition_u, t, :] = energy_t[condition_u].view(-1, 1)
                 # energies_trajectories[~condition_u, t, :] = energies_trajectories[~condition_u, t-1, :]
-                energies_trajectories[condition_u, :] = energy_t[condition_u].view(-1, 1)
-                energies_trajectories[~condition_u, :] = energies_trajectories[~condition_u, :]
+                energies_trajectories[condition_u, -1, :] = energy_t[condition_u].view(-1, 1)
+                # energies_trajectories[~condition_u, -1, :] = energies_trajectories[~condition_u, :]
                 # Place steps or reject
                 # latent_trajectories[condition_u, t, :] = x_t[condition_u]
                 # latent_trajectories[~condition_u, t, :] = latent_trajectories[~condition_u, t-1, :]
-                latent_trajectories[condition_u, :] = x_t[condition_u]
-                latent_trajectories[~condition_u, :] = latent_trajectories[~condition_u, :]
+                latent_trajectories[condition_u, -1, :] = x_t[condition_u]
+                # latent_trajectories[~condition_u, -1, :] = latent_trajectories[~condition_u, :]
+                # Now replace values if needed
+                mask = (energies_trajectories[:, -1, :] < energies_trajectories[:, 0, :]).squeeze(-1)
+                energies_trajectories[mask, 0] = energies_trajectories[mask, -1]
+                latent_trajectories[mask, 0, :] = latent_trajectories[mask, -1, :]
             # Accept all movements that are within the initial set range
             else:
-                energies_trajectories[:, :] = energy_t.view(-1, 1)
-                latent_trajectories[:, :] = x_t
+                energies_trajectories[:, -1, :] = energy_t.view(-1, 1)
+                latent_trajectories[:, -1, :] = x_t
+
             if t % 500 == 0:
                 # print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories[:, :t, :].min().item()} Starting Point Energy: {energies_trajectories[0, 0, :].item()}")
                 print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()}")
 
-        print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()} Average Distance: {torch.cdist(latent_trajectories, self.start_latent_point, p=2).mean().item()}")
+        print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()} Average Distance: {torch.cdist(latent_trajectories[:, 0, :], self.start_latent_point, p=2).mean().item()}")
         # Get lowest energy structures
-        out = self.decoder(latent_trajectories)
+        out = self.decoder(latent_trajectories[:, 0, :])
         # Format them correctly
         out = out.detach()
         torsion = self.calc_angles(out[:, :116])
