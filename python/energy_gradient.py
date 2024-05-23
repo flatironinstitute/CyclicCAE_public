@@ -73,7 +73,7 @@ class EnergyPath:
         lambda_partial: float,
         initial_set: int,
         temp: float,
-        warmup: int,
+        rampdown: int,
         ):
         """GDS for energy minima structure from starting point
 
@@ -106,7 +106,7 @@ class EnergyPath:
                 Amount of steps to always accept movement
             temp: float,
                 Temperature for increasing or decreasing noise
-            warmup: int,
+            rampdown: int,
                 Number of steps to go from a low temp to high temp
         """
         # Pull up points
@@ -128,7 +128,7 @@ class EnergyPath:
             self.freeze_bond_length = True
         self.initial_set = initial_set
         self.temp = temp
-        self.warmup = warmup
+        self.rampdown = rampdown
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -465,6 +465,9 @@ class EnergyPath:
         # energies_trajectories = torch.zeros((B, self.steps, 1), dtype=torch.double)
         energies_trajectories = torch.zeros((B, 2, 1), dtype=torch.double)
 
+        # Harmonic Constrain Loss
+        H = torch.zeros((B, 2, 1), dtype=torch.double)
+
         # minima structures
         # self.minima_structures = torch.zeros((B, self.start_point.size(-1)-self.energy_n), dtype=torch.float64)
 
@@ -482,7 +485,16 @@ class EnergyPath:
         energies_trajectories[:, 0, :] = energy_out[:, -1].repeat(B, 1)
 
         # updated temperature
-        temp_linspace = torch.linspace(1, self.temp, steps=self.warmup) if self.temp != 1 else torch.tensor([1])
+        temp_linspace = torch.linspace(1, self.temp, steps=self.rampdown) if self.temp != 1 else torch.tensor([1])
+
+        # if partial then set up these
+        if self.partial_optimization:
+            # Real Information
+            real_t_sin = torch.sin(self.start_point[:, :58])
+            real_t_cos = torch.cos(self.start_point[:, :58])
+            real_ba_sin = torch.sin(self.start_point[:, 58:116])
+            real_ba_cos = torch.cos(self.start_point[:, 58:116])
+            real_bond_length = self.start_point[:, 116:-self.energy_n]
 
         # Perform MCMC for n steps
         for t in range(1, self.steps):
@@ -502,15 +514,41 @@ class EnergyPath:
 
             # Get alpha 
             # alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp(energies_trajectories[:, t-1, :].squeeze(-1) - energy_t))
-            temp_coeff = temp_linspace[t-1] if t <= self.warmup else 0.01
-            alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp((energies_trajectories[:, -1, :].squeeze(-1) - energy_t) / temp_coeff))
+            if self.partial_optimization:
+                # Prediction Information
+                torsion = out[:, :116]
+                torsion_sin = torsion[:, :58]
+                torsion_cos = torsion[:, 58:]
+                bond_angle = out[:, 116:116*2]
+                bond_angle_sin = bond_angle[:, :58]
+                bond_angle_cos = bond_angle[:, 58:]
+                bond_length = out[:, 116*2:-3]
+
+                # Harmonic Constraint
+                harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2)
+                harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2)
+                harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2)
+                harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=1),2)
+                harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=1),2)
+                harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+                if t == 1:
+                    H[:, 0, :] = harmonic_loss.unsqueeze(-1)
+                    H[:, 1, :] = harmonic_loss.unsqueeze(-1)
+                    harmonic_change = harmonic_loss.squeeze(0).unsqueeze(-1)
+                else:
+                    harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1)
+
+
+            temp_coeff = temp_linspace[t-1] if t <= self.rampdown else 0.01
+            alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp( -( ( (energies_trajectories[:, -1, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) ) / temp_coeff ) ) )
 
             # accept or not
             if t > self.initial_set:
                 u = torch.ones((B))
                 u.uniform_(0, 1)
                 # generate bool of T/F
-                condition_u = u <= alpha
+                condition_u = u > alpha
                 # Place energies or reject
                 # energies_trajectories[condition_u, t, :] = energy_t[condition_u].view(-1, 1)
                 # energies_trajectories[~condition_u, t, :] = energies_trajectories[~condition_u, t-1, :]
@@ -525,16 +563,18 @@ class EnergyPath:
                 mask = (energies_trajectories[:, -1, :] < energies_trajectories[:, 0, :]).squeeze(-1)
                 energies_trajectories[mask, 0] = energies_trajectories[mask, -1]
                 latent_trajectories[mask, 0, :] = latent_trajectories[mask, -1, :]
+                H[mask, 1, :] = harmonic_loss[0, mask].unsqueeze(-1)
             # Accept all movements that are within the initial set range
             else:
                 energies_trajectories[:, -1, :] = energy_t.view(-1, 1)
                 latent_trajectories[:, -1, :] = x_t
+                H[:, 1, :] = harmonic_loss.unsqueeze(-1)
 
-            if t % 500 == 0:
+            if t % 100 == 0:
                 # print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories[:, :t, :].min().item()} Starting Point Energy: {energies_trajectories[0, 0, :].item()}")
-                print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()}")
+                print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories.min().item()}, Starting Point Energy: {energy_out[0, -1].item()}, Current Lowest Harmonic Constraint: {H[:, -1, :].min().item()}, Start Harmonic Constraint: {H[0, 0, 0].item()}")
 
-        print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()} Average Distance: {torch.cdist(latent_trajectories[:, 0, :], self.start_latent_point, p=2).mean().item()}")
+        print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()} Average Distance: {torch.cdist(latent_trajectories[:, 0, :], self.start_latent_point, p=2).mean().item()}, Lowest Harmonic Constraint: {H[:, -1, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
         # Get lowest energy structures
         out = self.decoder(latent_trajectories[:, 0, :])
         # Format them correctly
@@ -550,6 +590,7 @@ class EnergyPath:
                 "energy_traj": energies_trajectories,
                 "start_energy": energy_out[0, -1],
                 "start_latent": self.start_latent_point,
+                "harmonic_traj": H,
             },
             "mcmctest.pt")
         return latent_trajectories, energies_trajectories
@@ -727,7 +768,7 @@ if __name__ == "__main__":
     p.add_argument("--sigma", type=float, default=0.01, help="Used with mcmc. Set sigma of normal movement to add to latent point (default: 0.01)")
     p.add_argument("--temperature", type=float, default=1, help="Used with mcmc. Set Temperature (default: 1)")
     p.add_argument("--initial-steps", type=int, default=10, help="Used with mcmc. Set initial steps to accept no matter what (default: 10)")
-    p.add_argument("--warmup", type=int, default=100, help="Used with mcmc. Steps to go from temperature to 1 (default: 100)")
+    p.add_argument("--ramp-down", type=int, default=100, help="Used with mcmc. Steps to go from temperature to 1 (default: 100)")
     args = p.parse_args()
 
 
@@ -749,7 +790,7 @@ if __name__ == "__main__":
         lambda_partial = args.lambda_partial,
         initial_set = args.initial_steps,
         temp = args.temperature,
-        warmup = args.warmup,
+        rampdown = args.ramp_down,
     )
 
     # Search And Output
