@@ -25,7 +25,8 @@ import datetime
 # Import loss function
 # from model_functions import sin_cos_loss # this is wrong and needs to be fixed
 from model_utils import ConformationalMLPAutoEncoder
-from test_case import TestCase1, ConvCase1, ConvCase3, ConvCase3_prefixed
+from test_case import TestCase1, ConvCase1, ConvCase3, ConvCase3_prefixed, ConvCase4
+from model_functions import ScaleOutputs
 
 #### Class
 
@@ -91,9 +92,10 @@ class DecodeTrajectories:
         #     **model_params,
         # ).to(self.device)
         # self.model = ConvCase1(
-        self.model = ConvCase3(
+        # self.model = ConvCase3(
         # self.model = ConvCase3_prefixed(
         # self.model = TestCase1(
+        self.model = ConvCase4(
             **model_params,
         ).double().to(self.device)
 
@@ -155,6 +157,8 @@ class DecodeTrajectories:
             #     torch.add(post_latent, post_latent_skip)
             # ))
             ##### DECODER
+            energy_x = self.model.energy_decoder1(self.trajectories)
+            energy_skip1 = energy_x.clone()
             # Decoder latent to decoder blocks size 3 -> 64
             x = self.model.decoder_pyramid(self.trajectories)
             decode_skip1 = x.clone()
@@ -162,12 +166,21 @@ class DecodeTrajectories:
             # First Decoder Block 64 -> 64
             x = self.model.decoder_n(x)
             dskip_n1 = x.clone()
+            # compute first energy block
+            energy_x = self.model.energy_decoder2(torch.add(energy_x, decode_skip1))
+            energy_skip2 = energy_x.clone()
 
             # Second Decoder Block 64 -> 64
             x = self.model.decoder_n2(torch.add(x, decode_skip1))
             dskip_n2 = x.clone()
+            # compute second block of energies
+            energy_x = self.model.energy_decoder3(torch.add(torch.add(energy_x, energy_skip1), dskip_n2))
+            energy_skip3 = energy_x.clone()
 
             x = self.model.decoder_n3(torch.add(x, dskip_n1))
+            dskip_n3 = x.clone()
+            # final energy compute
+            energy_x = self.model.energy_decoder4(torch.add(torch.add(energy_x, energy_skip2), dskip_n3))
 
             # Third Decoder Block 64 -> 64
             if self.model.convolution:
@@ -178,12 +191,14 @@ class DecodeTrajectories:
             torsion_angle_pred = self.model.head_torsion_angle(x)
             bond_angle_pred = self.model.head_bond_angle(x)
             bond_length_pred = self.model.head_bond_length(x)
+            energy_pred = self.model.head_energy(energy_x)
 
             out = torch.cat(
                 (
                     torsion_angle_pred,
                     bond_angle_pred,
                     bond_length_pred,
+                    energy_pred,
                 ),
                 dim=-1
             )
@@ -231,7 +246,7 @@ class DecodeTrajectories:
 
         return torch.rad2deg(torch.atan2(sin_pred, cos_pred))
 
-    def calculate_accuracy(self, model_out: torch.Tensor, angle_out: bool = False, tolerance: float = 5., index_in: int = 0, index_out = 58):
+    def calculate_accuracy(self, model_out: torch.Tensor, angle_out: bool = False, energy: bool = False, tolerance: float = 5., index_in: int = 0, index_out = 58):
         """Calculate the Accuracy between the two vectors for evaluation
 
         PARAMS
@@ -258,10 +273,23 @@ class DecodeTrajectories:
             model_out_angles = model_out
 
         # check exact equal measurement
-        abs_diff = torch.abs(model_out_angles - self.y[:, index_in:index_out])
+        if energy:
+            low_indicies = self.y[:, index_in:] <= 0
+            low_abs_diff = torch.abs(model_out_angles[low_indicies] - self.y[:, index_in:][low_indicies])
+            mask_high = self.y[:, index_in:] > 0
+            high_abs_diff = torch.abs(model_out_angles[mask_high] - self.y[:, index_in:][mask_high])
+            abs_diff = torch.abs(model_out_angles - self.y[:, index_in:index_out])
+        else:
+            abs_diff = torch.abs(model_out_angles - self.y[:, index_in:index_out])
 
         # check how many fall in the range
         correct_predictions = abs_diff <= tolerance
+
+        if energy:
+            low_correct = low_abs_diff <= tolerance
+            high_correct = high_abs_diff <= tolerance
+            print("PRED ACCURACY ENERGY BELOW <= 0:", low_correct.float().mean().item())
+            print("PRED ACCURACY ENERGY ABOVE > 0:", high_correct.float().mean().item())
 
         # Return accuracy mean
         return correct_predictions.float().mean().item()
@@ -296,6 +324,7 @@ if __name__ == "__main__":
     p.add_argument("--cyclic", action="store_true", help="Cyclic PE Encodings")
     p.add_argument("--convolution", action="store_true", help="Apply convolution")
     p.add_argument("--full-data", action="store_true", help="Encode/Decode The Full Dataset")
+    p.add_argument("--latent-dim", type=int, default=3, help="Specify Model Latent Dim if Needed (default: 3)")
     args = p.parse_args()
 
     # load in real data
@@ -317,7 +346,7 @@ if __name__ == "__main__":
 
     # Explicit model params, but will change the trajectories tensor to include it in the future
     # model_params = {"decoder_layers": 1, "encoder_layers": 6, "latent_space_dim": 3, "decomposition_n": 2}
-    model_params = {"encoder_layers": 3, "decoder_layers": 3, "latent_space_dim": 3, "decomposition_n": 1,
+    model_params = {"encoder_layers": 3, "decoder_layers": 3, "latent_space_dim": args.latent_dim, "decomposition_n": 1,
                     "cyclic": args.cyclic, 'convolution_layer': args.convolution}
     model_params.update(real_data["params"])
 
@@ -337,26 +366,28 @@ if __name__ == "__main__":
         full_data = args.full_data,
     )
 
+    # Scaling for Outputs
+    scaleout = ScaleOutputs(real_data["x"][:, -3:])
+
     if args.encode_decode:
         predictions, _, _, true_y = decode_class.decode
     else:
         predictions = decode_class.decode
-    # print(predictions.shape)
     
     # print(predictions[2].max(dim=0))
     # print(predictions[2].min(dim=0))
     angles = predictions[:, :116*2]
-    torsion_angles = display_angles(angles[:, :angles.size(-1)//2])
-    bond_angles = display_angles(angles[:, angles.size(-1)//2:])
-    bond_length = predictions[:, 116*2:]
+    torsion_angles = display_angles(angles[:, :angles.size(-1)//2].cpu())
+    bond_angles = display_angles(angles[:, angles.size(-1)//2:].cpu())
+    bond_length = predictions[:, 116*2: (116*2 + 58)].cpu()
+    # energies = predictions[:, 116*2 + 58:].cpu() #scaleout.inverse_scale(predictions[:, (116*2 + 58):].cpu())
+    energies = scaleout.inverse_scale(predictions[:, (116*2 + 58):].cpu())
+    print("Energies Preview:")
+    print(energies[:3, :])
     angles_out = torch.cat((torsion_angles, bond_angles), dim=-1)
     # angles_out = display_angles(angles)
 
-    print("ANGLES OUT")
-    print(angles_out[:4, 58:78])
-    print(angles_out[-4:, 58:78])
-    print("ANGLES OUT")
-
+    # out = torch.cat((angles_out, bond_length, energies), dim=-1)
     out = torch.cat((angles_out, bond_length), dim=-1)
 
     # print(angles_out[:10, :5])
@@ -383,8 +414,12 @@ if __name__ == "__main__":
         print("Mean Accuracy w/ {} tolerance:".format(args.tolerance), accuracy)
         print()# add spacing for easier reading
         print("***Bond Length Accuracy for {} Samples***".format(args.random_indicies_num))
-        accuracy = decode_class.calculate_accuracy(predictions[:, 116*2:].cpu(), tolerance=0.1, index_in=116, index_out=116+58, angle_out=False)
+        accuracy = decode_class.calculate_accuracy(predictions[:, 116*2: (116*2 + 58)].cpu(), tolerance=0.1, index_in=116, index_out=116+58, angle_out=False)
         print("Mean Accuracy w/ {} tolerance:".format(0.01), accuracy)
+        print()# add spacing for easier reading
+        print("***Energy Ref2015 & Ref2015+fa_sal Accuracy for {} Samples***".format(args.random_indicies_num))
+        accuracy = decode_class.calculate_accuracy(energies[:, -2:], tolerance=2, index_in=116+58+1, energy=True, index_out=116+58+2, angle_out=False)
+        print("Mean Accuracy w/ {} tolerance:".format(2), accuracy)
         print()# add spacing for easier reading
 
     if args.calculate_error:

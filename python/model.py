@@ -113,6 +113,8 @@ def main():
 
     # grab scaling values
     factor_vals_energy = ScaleOutputs(X[:, -PARAMS["energy_n"]:])
+    energy_scaled = torch.subtract(X[:, -PARAMS["energy_n"]:], X[:, -PARAMS["energy_n"]:].min(dim=0).values)
+    z = torch.pow(torch.sum(energy_scaled / 0.63, dim=0), 2) # 2
 
 
     if args.overfit:
@@ -276,6 +278,8 @@ def main():
         overfit = args.overfit,
         noise_iterations = args.noise_iterations,
         scale_outputs = factor_vals_energy,
+        min_vals = factor_vals_energy.min.to("cuda"),
+        z = z.to("cuda"),
     )
 
     # saved extract latent tensor

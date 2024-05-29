@@ -2344,13 +2344,14 @@ class ConvCycEncoder4(nn.Module):
 
         # cyclic padding 
         # (kernel-size left, kernel-size right, 0 top, 0 bottom)
-        x = F.pad(x, (padding_cyc_size, padding_cyc_size, 0, 0), mode="circular")
+        # x = F.pad(x, (padding_cyc_size, padding_cyc_size, 0, 0), mode="circular")
+        x = F.pad(x, (padding_cyc_size, padding_cyc_size), mode="circular")
 
         # Apply convolution
         # print("Encoder x after pad", x.shape)
         x = self.maxpool(F.tanh(self.conv1(x)))
         # print("conv1", x.shape)
-        x = F.pad(x, (padding_cyc_size2, padding_cyc_size2, 0, 0), mode="circular")
+        x = F.pad(x, (padding_cyc_size2, padding_cyc_size2), mode="circular")
         # print("Pad x", x.shape)
         # x = self.maxpool(F.tanh(self.conv2(x)))
         # print("conv2", x.shape)
@@ -2411,6 +2412,7 @@ class ConvCase4(nn.Module):
             residue_length = L,
             atom_number = F,
             out_dim = 1,
+            device = device,
         )
 
         ##### START Energy Decoder Blocks
@@ -2601,7 +2603,8 @@ class ConvCase4(nn.Module):
             nn.Tanh(),
             nn.Linear(16, 8),
             nn.Tanh(),
-            nn.Linear(8, energy_n),
+            # nn.Linear(8, energy_n),
+            nn.Linear(8, 3),
         )
 
         self.energy_head = nn.Sequential(
@@ -2611,7 +2614,8 @@ class ConvCase4(nn.Module):
             nn.GELU(),
             nn.Linear(64, 32),
             nn.GELU(),
-            nn.Linear(32, energy_n),
+            # nn.Linear(32, energy_n),
+            nn.Linear(32, 3),
         )
 
         self.input_decompose = ConformationalInputDecomposition(
