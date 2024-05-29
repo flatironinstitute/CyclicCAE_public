@@ -64,7 +64,8 @@ class DoFExport:
         bool_values = [1 if x > 0 else 0 for x in values]
 
         reference_pose = self.params["reference_pose"]
-        reference_pose = (reference_pose.decode('latin-1')[2968:]).encode('utf-8')
+        # reference_pose = (reference_pose.decode('latin-1')[2968:]).encode('utf-8')
+        reference_pose = (reference_pose.decode('latin-1')[2966:]).encode('utf-8')
 
         # reference_len = self.params["ref_pose_len"]
 
@@ -126,6 +127,7 @@ class DoFExport:
 
         reference_len = len(reference_pose)
         print(reference_len)
+        print(reference_pose)
 
         packed_skip = struct.pack('Q', reference_len)
 

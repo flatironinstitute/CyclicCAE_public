@@ -156,9 +156,8 @@ class DoFBinaryReader:
         # extract rmsd information if able
         if self.rmsd:
             self.rmsd_tensor = self.rmsd_calc
-
-            
-
+        else:
+            self.rmsd_tensor = None
 
     #################################################################################################################
     #                                        Class Functions
@@ -385,7 +384,8 @@ if __name__ == "__main__":
     # If main then test out class
     p = argparse.ArgumentParser(description="Binary to Pyotrch")
     p.add_argument("--binary-dof", type=str, help="Define DoF .dat file to convert", required=True)
-    p.add_argument("--binary-rmsd", type=str, help="Define RMSD .dat file to convert", required=True)
+    p.add_argument("--binary-rmsd", type=str, help="Define RMSD .dat file to convert", required=False)
+    p.add_argument("--rmsd", action="store_true", help="Compute RMSD")
     args = p.parse_args()
 
     # explicit file
@@ -393,7 +393,7 @@ if __name__ == "__main__":
     # rmsd_file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/rmsd_matrix.dat"
 
     # init class
-    dofclass = DoFBinaryReader(args.binary_dof, args.binary_rmsd, True, True)
+    dofclass = DoFBinaryReader(args.binary_dof, args.binary_rmsd, True, args.rmsd)
 
     # check out tensor
     out = dofclass.extract_tensor
