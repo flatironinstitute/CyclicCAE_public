@@ -13,3 +13,9 @@ __pycache__*
 # Structures
 *.pdb
 
+# Rosetta misc
+*.log
+
+# pymol outputs
+*.pse
+
