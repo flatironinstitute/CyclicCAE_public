@@ -76,6 +76,7 @@ class EnergyPath:
         rampdown: int,
         latent_dim: int,
         retain_structure: bool,
+        inpaint_dist: float,
         ):
         """GDS for energy minima structure from starting point
 
@@ -114,6 +115,8 @@ class EnergyPath:
                 Latent Space Dimension Size Needed for init the Model
             retain_structure: bool,
                 While doing MCMC keep structure close to input
+            inpaint_dist: float
+                The pnorm distance that is close enough to accept
         """
         # Pull up points
         self.steps = steps
@@ -137,6 +140,7 @@ class EnergyPath:
         self.rampdown = rampdown
         self.latent_dim = latent_dim
         self.retain_structure = retain_structure
+        self.inpaint_dist = inpaint_dist
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -447,7 +451,122 @@ class EnergyPath:
         mask[idx] = False
         return a[mask.unsqueeze(0)]
 
-    def metropolis_hastings(self, B: int, sigma: torch.float):
+    def inpainting(self, B: int):
+        """given frozen residues search for scaffolds to hold motif residues
+
+        PARAMS
+        ------
+            B: int
+                Batch size. Number of places to search within the latent space
+
+        RETURNS
+        -------
+            scaffolds: torch.Tensor
+                DoF Structures that are close in proximity to the motif residues
+        """
+        no_scaffolds = True
+        run=0
+        scaffolds = 0
+        points = 0
+
+        while no_scaffolds:
+            print(f'Batch Search {run}')
+            # set up tensor of random init values
+            scatter_latent = torch.randn((B, self.latent_dim), dtype=torch.float64)
+            
+            # run the points through the decoder
+            out = self.decoder(scatter_latent)
+
+            # input information
+            real_t_sin = torch.sin(self.start_point[:, :58])
+            real_t_cos = torch.cos(self.start_point[:, :58])
+            real_ba_sin = torch.sin(self.start_point[:, 58:116])
+            real_ba_cos = torch.cos(self.start_point[:, 58:116])
+            real_bond_length = self.start_point[:, 116:-self.energy_n]
+
+            # Prediction Information
+            torsion = out[:, :116]
+            torsion_sin = torsion[:, :58]
+            torsion_cos = torsion[:, 58:]
+            bond_angle = out[:, 116:116*2]
+            bond_angle_sin = bond_angle[:, :58]
+            bond_angle_cos = bond_angle[:, 58:]
+            bond_length = out[:, 116*2:-3]
+
+            # generate tensor of preds
+            preds = torch.cat(
+                (
+                    self.calc_angles(torsion),
+                    self.calc_angles(bond_angle),
+                    bond_length,
+                ), dim=-1
+            )
+
+            # Grab ref2015 energy from output
+            energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
+            energy_ref = energy_all[:, -2]
+
+            # Distance Check
+            harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.norm(torch.sin(real_t_sin[:, self.torsion_index]) - torsion_sin[:, self.torsion_index], dim=-1),2)
+            harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.norm(torch.cos(real_t_cos[:, self.torsion_index]) - torsion_cos[:, self.torsion_index], dim=-1),2)
+            harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.norm(torch.sin(real_ba_sin[:, self.torsion_index]) - bond_angle_sin[:, self.torsion_index], dim=-1),2)
+            harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.norm(torch.cos(real_ba_cos[:, self.torsion_index]) - bond_angle_cos[:, self.torsion_index], dim=-1),2)
+            harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.norm(real_bond_length[:, self.torsion_index] - bond_length[:, self.torsion_index], dim=-1),2)
+            harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+            harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+            # harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=2)
+            # harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=2)
+            # harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=2)
+            # harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=2)
+            # harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=2)
+            # harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+            # harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+
+            # Determine which points are within the latent space cutoff
+            # mask = harmonic_loss.squeeze(0) <= self.inpaint_dist
+            mask = harmonic_loss <= self.inpaint_dist
+
+
+            # add to set of scaffolds
+            if not torch.is_tensor(scaffolds):
+                scaffolds = preds[mask, :-3]
+                points = scatter_latent[mask]
+            else:
+                scaffolds = torch.cat(
+                    (
+                        scaffolds,
+                        preds[mask, :-3],
+                    ), dim=0,
+                )
+                points = torch.cat(
+                    (
+                        points,
+                        scatter_latent[mask],
+                    ), dim=0,
+                )
+
+            # Report run statistics
+            print(f'MASK SUM: {mask.sum().item()}, LOW: {harmonic_loss.min().item():.2f}, MEAN: {harmonic_loss.mean().item():.2f}, CUTOFF: {self.inpaint_dist}, SCAFFOLD NUMBER: {points.size(0)}')
+                
+
+            # If scaffolds found Stop While Loop
+            # no_scaffolds = True if mask.sum().item() == 0 else False
+            run+=1
+            if run > 100 or scaffolds.size(0) > 100:
+                no_scaffolds = False
+
+        # grab passed scaffolds as DoFs for further analysis
+        # scaffolds = preds[mask, :-3]
+
+        # Save outputs
+        if torch.is_tensor(scaffolds):
+            print(f"Found {scaffolds.size(0)} To Proceed With")
+            torch.save({"scaffold": scaffolds, "latent_point": points}, "inpaintStartOutStructures.pt")
+        else:
+            print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
+        return scaffolds, points
+
+    def metropolis_hastings(self, B: int, sigma: torch.float, start_points: torch.Tensor = None):
         """MCMC Search for energy minima structures
         PARAMS
         ------
@@ -455,6 +574,8 @@ class EnergyPath:
                 Batch Size. Amount of attempts to try in parallel
             sigma: torch.float
                 Amount of noise for normal distribution
+            start_points: torch.Tensor
+                Start latent points from inpainting
 
         RETURNS
         -------
@@ -479,12 +600,15 @@ class EnergyPath:
         # minima structures
         # self.minima_structures = torch.zeros((B, self.start_point.size(-1)-self.energy_n), dtype=torch.float64)
 
-        # get starting point and enable grad
-        self.start_latent_point = self.encoder(self.start_point).detach()
+        if start_points == None:
+            # get starting point and enable grad
+            self.start_latent_point = self.encoder(self.start_point).detach()
 
-        # Set this as t_0 for all trajectories
-        # latent_trajectories[:, 0, :] = self.start_latent_point
-        latent_trajectories[:, 0, :] = self.start_latent_point.repeat(B, 1)
+            # Set this as t_0 for all trajectories
+            # latent_trajectories[:, 0, :] = self.start_latent_point
+            latent_trajectories[:, 0, :] = self.start_latent_point.repeat(B, 1)
+        else:
+            latent_trajectories[:, 0, :] = start_points
 
         # set initial energy to everything (specific Ref2015 energies)
         encode_decode_input = self.model(self.start_point, False)[0]
@@ -533,11 +657,17 @@ class EnergyPath:
             harmonic_loss = torch.zeros((1, B), dtype=torch.double)
             if self.partial_optimization:
                 # Harmonic Constraint
-                harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2)
-                harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2)
-                harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2)
-                harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=1),2)
-                harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=1),2)
+                harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.norm(torch.sin(real_t_sin[:, self.torsion_index]) - torsion_sin[:, self.torsion_index], dim=-1),2)
+                harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.norm(torch.cos(real_t_cos[:, self.torsion_index]) - torsion_cos[:, self.torsion_index], dim=-1),2)
+                harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.norm(torch.sin(real_ba_sin[:, self.torsion_index]) - bond_angle_sin[:, self.torsion_index], dim=-1),2)
+                harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.norm(torch.cos(real_ba_cos[:, self.torsion_index]) - bond_angle_cos[:, self.torsion_index], dim=-1),2)
+                harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.norm(real_bond_length[:, self.torsion_index] - bond_length[:, self.torsion_index], dim=-1),2)
+
+                # harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2)
+                # harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2)
+                # harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2)
+                # harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=1),2)
+                # harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=1),2)
                 harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
                 harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
                 if t == 1:
@@ -547,11 +677,16 @@ class EnergyPath:
                 else:
                     harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1)
             if self.retain_structure:
-                harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin)),   torch.exp(torsion_sin), p=2), 2)   
-                harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos)),   torch.exp(torsion_cos), p=2), 2)   
-                harmonic_penalty_sin_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.sin(real_ba_sin)),  torch.exp(bond_angle_sin),p=2), 2) 
-                harmonic_penalty_cos_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.cos(real_ba_cos)),  torch.exp(bond_angle_cos),p=2), 2) 
-                harmonic_penalty_bond_length     = torch.pow(torch.cdist(torch.exp(real_bond_length),        torch.exp(bond_length),p=2), 2)    
+                # harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin)),   torch.exp(torsion_sin), p=2), 2)   
+                # harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos)),   torch.exp(torsion_cos), p=2), 2)   
+                # harmonic_penalty_sin_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.sin(real_ba_sin)),  torch.exp(bond_angle_sin),p=2), 2) 
+                # harmonic_penalty_cos_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.cos(real_ba_cos)),  torch.exp(bond_angle_cos),p=2), 2) 
+                # harmonic_penalty_bond_length     = torch.pow(torch.cdist(torch.exp(real_bond_length),        torch.exp(bond_length),p=2), 2)    
+                harmonic_penalty_sin_torsion     = torch.pow(torch.norm(torch.sin(real_t_sin) - torsion_sin, dim=-1), 2)   
+                harmonic_penalty_cos_torsion     = torch.pow(torch.norm(torch.cos(real_t_cos) - torsion_cos, dim=-1), 2)   
+                harmonic_penalty_sin_bond_angle  = torch.pow(torch.norm(torch.sin(real_ba_sin) - bond_angle_sin, dim=-1), 2) 
+                harmonic_penalty_cos_bond_angle  = torch.pow(torch.norm(torch.cos(real_ba_cos) - bond_angle_cos, dim=-1), 2) 
+                harmonic_penalty_bond_length     = torch.pow(torch.norm(real_bond_length - bond_length, dim=-1), 2)    
                 harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
                 harmonic_loss /= 5
                 if t == 1:
@@ -572,6 +707,8 @@ class EnergyPath:
                     temp_coeff = temp_linspace[temp_t-1] if temp_t <= self.rampdown else 0.01
                 else:
                     temp_coeff = 1
+                # print('energy', energies_trajectories[:, -1, :].shape)
+                # print('harmonic change', harmonic_change.shape)
                 alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp( -( ( (energies_trajectories[:, -1, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) ) / temp_coeff ) ) )
                 u = torch.ones((B))
                 u.uniform_(0, 1)
@@ -591,7 +728,7 @@ class EnergyPath:
                 mask = (energies_trajectories[:, -1, :] < energies_trajectories[:, 0, :]).squeeze(-1)
                 energies_trajectories[mask, 0] = energies_trajectories[mask, -1]
                 latent_trajectories[mask, 0, :] = latent_trajectories[mask, -1, :]
-                H[mask, 1, :] = harmonic_loss[0, mask].unsqueeze(-1)
+                H[mask, 1, :] = harmonic_loss[mask].unsqueeze(-1)
             # Accept all movements that are within the initial set range
             else:
                 energies_trajectories[:, -1, :] = energy_t.view(-1, 1)
@@ -602,7 +739,10 @@ class EnergyPath:
                 # print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories[:, :t, :].min().item()} Starting Point Energy: {energies_trajectories[0, 0, :].item()}")
                 print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories.min().item()}, Starting Point Energy: {energy_out[0, -1].item()}, Current Lowest Harmonic Constraint: {H[:, -1, :].min().item()}, Start Harmonic Constraint: {H[0, 0, 0].item()}")
 
-        print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()} Average Distance: {torch.cdist(latent_trajectories[:, 0, :], self.start_latent_point, p=2).mean().item()}, Lowest Harmonic Constraint: {H[:, -1, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
+        if start_points == None:
+            print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()} Average Distance: {torch.cdist(latent_trajectories[:, 0, :], self.start_latent_point, p=2).mean().item()}, Lowest Harmonic Constraint: {H[:, -1, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
+        else:
+            print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, -1].item()} Average Distance: {torch.cdist(latent_trajectories[:, 0, :], start_points, p=2).mean().item()}, Lowest Harmonic Constraint: {H[:, -1, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
         # Get lowest energy structures
         out = self.decoder(latent_trajectories[:, 0, :])
         # Format them correctly
@@ -612,22 +752,105 @@ class EnergyPath:
         preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
         preds = torch.cat((self.dof_traj[0, :].unsqueeze(0), preds), dim=0)
         torch.save(preds, "mcmcOutStructures.pt")
-        torch.save(
-            {
-                "latent_traj": latent_trajectories, 
-                "energy_traj": energies_trajectories,
-                "start_energy": energy_out[0, -1],
-                "start_latent": self.start_latent_point,
-                "harmonic_traj": H,
-            },
-            "mcmctest.pt")
+        if start_points == None:
+            torch.save(
+                {
+                    "latent_traj": latent_trajectories, 
+                    "energy_traj": energies_trajectories,
+                    "start_energy": energy_out[0, -1],
+                    "start_latent": self.start_latent_point,
+                    "harmonic_traj": H,
+                },
+                "mcmctest.pt")
         return latent_trajectories, energies_trajectories
 
+    def mcmc_step(
+        self, 
+        latent_trajectories: torch.tensor,
+        sigma: float,
+        H: torch.Tensor,
+        ):
+        """Perform a single MCMC step
+
+        PARAMS
+        ------
+            latent_trajectories: torch.Tensor
+                Latent Points to walk along
+            sigma: float
+                Noise to add to the walk
+            H: torch.Tensor
+                Harmonic Constraint Tensor
+        """
+        # Generate random walk noise
+        epsilon = torch.normal(0, sigma, size=(B, self.latent_dim), dtype=torch.double)
+
+        # Apply noise to previous t-1 point
+        x_t = latent_trajectories + epsilon
+
+        # decode points
+        out = self.decoder(x_t)
+
+        # Prediction Information
+        torsion = out[:, :116]
+        torsion_sin = torsion[:, :58]
+        torsion_cos = torsion[:, 58:]
+        bond_angle = out[:, 116:116*2]
+        bond_angle_sin = bond_angle[:, :58]
+        bond_angle_cos = bond_angle[:, 58:]
+        bond_length = out[:, 116*2:-3]
+
+        # Grab ref2015 energy from output
+        energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
+        energy_t = energy_all[:, -2]
+
+        # Harmonic Change for if none of these are true if they are then it will change
+        harmonic_change = torch.zeros((B, 1), dtype=torch.double)
+        harmonic_loss = torch.zeros((1, B), dtype=torch.double)
+
+        if self.partial_optimization:
+            # Harmonic Constraint
+            harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2)
+            harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2)
+            harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2)
+            harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=1),2)
+            harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=1),2)
+            harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+            harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+            if t == 1:
+                H[:, 0, :] = harmonic_loss.unsqueeze(-1)
+                H[:, 1, :] = harmonic_loss.unsqueeze(-1)
+                harmonic_change = harmonic_loss.squeeze(0).unsqueeze(-1)
+            else:
+                harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1)
+        if self.retain_structure:
+            harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin)),   torch.exp(torsion_sin), p=2), 2)   
+            harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos)),   torch.exp(torsion_cos), p=2), 2)   
+            harmonic_penalty_sin_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.sin(real_ba_sin)),  torch.exp(bond_angle_sin),p=2), 2) 
+            harmonic_penalty_cos_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.cos(real_ba_cos)),  torch.exp(bond_angle_cos),p=2), 2) 
+            harmonic_penalty_bond_length     = torch.pow(torch.cdist(torch.exp(real_bond_length),        torch.exp(bond_length),p=2), 2)    
+            harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+            harmonic_loss /= 5
+            if t == 1:
+                H[:, 0, :] = harmonic_loss.unsqueeze(-1)
+                H[:, 1, :] = harmonic_loss.unsqueeze(-1)
+                harmonic_change = harmonic_loss.squeeze(0).unsqueeze(-1)
+            else:
+                harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1)
+
+        return x_t, H, harmonic_change, harmonic_loss, energy_t
 
 
-    def energy_steps(self):
+    def energy_steps(self, start_points: torch.Tensor = None):
         """Model Eval Loop for GDS"""
-        self.start_latent_point = self.encoder(self.start_point).detach()
+        if start_points == None:
+            self.start_latent_point = self.encoder(self.start_point).detach()
+        else:
+            self.start_latent_point = start_points
+            self.path = torch.zeros((start_points.size(0), self.steps))
+            self.energy_path = torch.zeros((start_points.size(0), self.steps))
+            # generate holding tensor and input the beginning traj
+            self.dof_traj = torch.zeros((start_points.size(0), self.steps, self.start_point.size(-1) - self.energy_n), dtype=torch.float64)
+            # self.dof_traj[0, :] = self.start_point[:-self.energy_n]
         original_point = self.start_latent_point.clone()
         self.start_latent_point.requires_grad_()
         # optimizer = torch.optim.SGD([self.start_latent_point], lr=self.lr, momentum=0.9)
@@ -684,36 +907,7 @@ class EnergyPath:
                 dist = torch.cdist(original_point, self.start_latent_point, p=2)
                 if self.partial_optimization:
 
-                    #### THIS NEEDS TO BE FIXED COMPLETELY
-                    harmonic_penalty_sin_torsion = torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]), torsion_sin[:, self.torsion_index], p=2)
-                    harmonic_penalty_cos_torsion = torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]), torsion_cos[:, self.torsion_index], p=2)
-                    harmonic_penalty_sin_bond_angle = torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index], p=2)
-                    harmonic_penalty_cos_bond_angle = torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index], p=2)
-                    harmonic_penalty_bond_length = torch.cdist(real_bond_length[:, self.torsion_index], bond_length[:, self.torsion_index], p=2)
-                    harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
-                    harmonic_loss /= 5
-
-                elif self.retain_structure and (not self.partial_optimization):
-                    harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin)),   torch.exp(torsion_sin), p=2), 2)   
-                    harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos)),   torch.exp(torsion_cos), p=2), 2)   
-                    harmonic_penalty_sin_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.sin(real_ba_sin)),  torch.exp(bond_angle_sin),p=2), 2) 
-                    harmonic_penalty_cos_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.cos(real_ba_cos)),  torch.exp(bond_angle_cos),p=2), 2) 
-                    harmonic_penalty_bond_length     = torch.pow(torch.cdist(torch.exp(real_bond_length),        torch.exp(bond_length),p=2), 2)    
-                    harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
-                    harmonic_loss /= 5
-
-                else:
-                    harmonic_loss = torch.tensor([0.0])
-
-                loss = energy + dist + self.lambda_2*harmonic_loss
-
-                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
-            else:
-                energy = energies[:, -1]
-
-
-                dist = torch.cdist(original_point, self.start_latent_point, p=2)
-                if self.partial_optimization:
+                    # Harmonic Constraint
                     harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2)
                     harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2)
                     harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2)
@@ -722,6 +916,15 @@ class EnergyPath:
                     harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
                     harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
 
+                    #### THIS NEEDS TO BE FIXED COMPLETELY
+                    # harmonic_penalty_sin_torsion = torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]), torsion_sin[:, self.torsion_index], p=2)
+                    # harmonic_penalty_cos_torsion = torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]), torsion_cos[:, self.torsion_index], p=2)
+                    # harmonic_penalty_sin_bond_angle = torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index], p=2)
+                    # harmonic_penalty_cos_bond_angle = torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index], p=2)
+                    # harmonic_penalty_bond_length = torch.cdist(real_bond_length[:, self.torsion_index], bond_length[:, self.torsion_index], p=2)
+                    # harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    # harmonic_loss /= 5
+
                 elif self.retain_structure and (not self.partial_optimization):
                     harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin)),   torch.exp(torsion_sin), p=2), 2)   
                     harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos)),   torch.exp(torsion_cos), p=2), 2)   
@@ -734,11 +937,59 @@ class EnergyPath:
                 else:
                     harmonic_loss = torch.tensor([0.0])
 
-                loss = energy + dist + self.lambda_2*harmonic_loss
+                loss = (energy + dist + self.lambda_2*harmonic_loss).mean()
 
-                self.path[step] = dist.detach()
-                self.energy_path[step] = energy.detach()
-                print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+                print(f"Step: {step}, QM: {energies[:, 0].item()} Ref2015: {energies[:, 1].item()}, Ref2015+Solvent: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+            else:
+                energy = energies[:, -1]
+
+
+                dist = torch.norm(original_point - self.start_latent_point, dim=-1)
+                if self.partial_optimization:
+                    # harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2).squeeze(0)
+                    # harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2).squeeze(0)
+                    # harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2).squeeze(0)
+                    # harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=1),2).squeeze(0)
+                    # harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=1),2).squeeze(0)
+                    # harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    # harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+                    harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.norm(torch.sin(real_t_sin[:, self.torsion_index]) - torsion_sin[:, self.torsion_index], dim=-1),2)
+                    harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.norm(torch.cos(real_t_cos[:, self.torsion_index]) - torsion_cos[:, self.torsion_index], dim=-1),2)
+                    harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.norm(torch.sin(real_ba_sin[:, self.torsion_index]) - bond_angle_sin[:, self.torsion_index], dim=-1),2)
+                    harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.norm(torch.cos(real_ba_cos[:, self.torsion_index]) - bond_angle_cos[:, self.torsion_index], dim=-1),2)
+                    harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.norm(real_bond_length[:, self.torsion_index] - bond_length[:, self.torsion_index], dim=-1),2)
+                    harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+
+                elif self.retain_structure and (not self.partial_optimization):
+                    harmonic_penalty_sin_torsion     = torch.pow(torch.norm(torch.sin(real_t_sin) - torsion_sin, dim=-1), 2)   
+                    harmonic_penalty_cos_torsion     = torch.pow(torch.norm(torch.cos(real_t_cos) - torsion_cos, dim=-1), 2)   
+                    harmonic_penalty_sin_bond_angle  = torch.pow(torch.norm(torch.sin(real_ba_sin) - bond_angle_sin, dim=-1), 2) 
+                    harmonic_penalty_cos_bond_angle  = torch.pow(torch.norm(torch.cos(real_ba_cos) - bond_angle_cos, dim=-1), 2) 
+                    harmonic_penalty_bond_length     = torch.pow(torch.norm(real_bond_length - bond_length, dim=-1), 2)    
+                    harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    harmonic_loss /= 5
+                    # harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin)),   torch.exp(torsion_sin), p=2), 2)   
+                    # harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos)),   torch.exp(torsion_cos), p=2), 2)   
+                    # harmonic_penalty_sin_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.sin(real_ba_sin)),  torch.exp(bond_angle_sin),p=2), 2) 
+                    # harmonic_penalty_cos_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.cos(real_ba_cos)),  torch.exp(bond_angle_cos),p=2), 2) 
+                    # harmonic_penalty_bond_length     = torch.pow(torch.cdist(torch.exp(real_bond_length),        torch.exp(bond_length),p=2), 2)    
+                    # harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+                    # harmonic_loss /= 5
+
+                else:
+                    harmonic_loss = torch.tensor([0.0])
+
+                loss = (energy + dist + self.lambda_2*harmonic_loss).mean()
+
+                if start_points == None:
+                    self.path[step] = dist.detach()
+                    self.energy_path[step] = energy.detach()
+                    print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+                else:
+                    self.path[:, step] = dist.detach()
+                    self.energy_path[:, step] = energy.detach()
+                    print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Loss: {loss.item()}")
 
             # back prop
             loss.backward()
@@ -767,14 +1018,17 @@ class EnergyPath:
             # print("BA", diff[:, 58:116])
             # print("BL", diff[:, 116:])
 
-            self.dof_traj[step] = preds
+            if start_points == None:
+                self.dof_traj[step] = preds
+            else:
+                self.dof_traj[:, step] = preds
 
             # stop check
-            if (dist >= self.cutoff) and (self.cutoff_true):
-                self.outstep = step
-                print(f"Distance cutoff: {self.cutoff} found at Step: {step}")
-                self.dof_traj = self.dof_traj[:step, :]
-                break
+            # if (dist >= self.cutoff) and (self.cutoff_true):
+            #     self.outstep = step
+            #     print(f"Distance cutoff: {self.cutoff} found at Step: {step}")
+            #     self.dof_traj = self.dof_traj[:step, :]
+            #     break
             
 
     def output_GDS(self):
@@ -811,6 +1065,8 @@ if __name__ == "__main__":
     p.add_argument("--initial-steps", type=int, default=10, help="Used with mcmc. Set initial steps to accept no matter what (default: 10)")
     p.add_argument("--ramp-down", type=int, default=100, help="Used with mcmc. Steps to go from temperature to 1 (default: 100)")
     p.add_argument("--retain-structure", action="store_true", help="Used with mcmc. Walks path closer to input structure")
+    p.add_argument("--inpaint", action="store_true", help="Provide Frozen Residues and generate scaffolds")
+    p.add_argument("--inpaint-dist", type=float, default=300.0, help="Cutoff distance (p1norm) to consider a scaffold a success (default: 300.0)")
     args = p.parse_args()
 
 
@@ -835,6 +1091,7 @@ if __name__ == "__main__":
         rampdown = args.ramp_down,
         latent_dim = args.latent_dim,
         retain_structure = args.retain_structure,
+        inpaint_dist = args.inpaint_dist,
     )
 
     # Search And Output
@@ -844,6 +1101,11 @@ if __name__ == "__main__":
         energySearch.output_GDS()
     if args.mcmc:
         energySearch.metropolis_hastings(args.batch_size, args.sigma)
+    if args.inpaint:
+        scaffolds, latent_points = energySearch.inpainting(args.batch_size)
+        latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points)
+        energySearch.energy_steps(latent_traj[:, -1, :])
+
 
 
 
