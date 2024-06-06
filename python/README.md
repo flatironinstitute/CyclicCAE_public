@@ -41,6 +41,15 @@ A simple informative overlay of what each file is and what they do/house.
     Takes binary generated datasets from Rosetta and converts them into DoF `.pt` torch files that
     can be used for training with the ML model.
 
+- `energy_search.py`:
+    Given a tensor dataset generated from `binary_import/BinaryDoFReader.py`, perform either of these
+    operations on a selected peptide:
+    - Inpaint: Keep a given anchor/motif and generate scaffolds to best accomidate that motif.
+    - dE/d(latent_space): Minimize the energy of the peptide. This could be large or small structural changes
+        depending on the learning rate used. However, this is deterministic.
+    - MCMC Metropolis-Hastings: From a given structure explore paths around that point, to generate
+        multiple outputs per given input.
+
 
 ## Folders
 
