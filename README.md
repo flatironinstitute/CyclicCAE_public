@@ -1,4 +1,4 @@
-# Conformational autoencoder
+# Continuous Structural Latent Space for Macrocyclic Peptide Backbone Design
 
 ## Authors
 
