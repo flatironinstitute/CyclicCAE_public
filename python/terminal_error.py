@@ -53,11 +53,9 @@ def torsion_extract(L: int, root: int):
     print("PRE phi, psi, omega", phi_pre, psi_pre, omega_pre)
 
     # generate tensors that will be used 
-    torsion_pre = sorted(psi_pre + phi_pre)#[i for j in zip(psi_pre[::-1], phi_pre[::-1]) for i in j]
-    torsion_post = sorted(psi_post + phi_post)#[i for j in zip(psi_post, phi_post) for i in j]
-    print(torsion_pre)
-    print(torsion_post)
-    psi_end = L - (end_residue_natoms - 5)
+    torsion_pre = sorted(psi_pre + phi_pre) 
+    torsion_post = sorted(psi_post + phi_post)
+    psi_end = (L - end_residue_natoms) + 3
     phi_1 = start_residue_natoms - 1
     torsion_idx = [phi_1] + torsion_pre + torsion_post + [psi_end]
     omega_idx = torch.tensor(omega_pre[::-1] + omega_post)
@@ -172,11 +170,11 @@ def terminal_peptide(
     # CR   = bond_angles[:, 5]
     # COR  = bond_angles[:, 6]
     # NHR  = bond_angles[:, 1]
-    NR   = torch.deg2rad(torch.tensor(121.7)).repeat(bond_angles.size(0))
-    CaR  = torch.deg2rad(torch.tensor(111.2)).repeat(bond_angles.size(0))
-    CR   = torch.deg2rad(torch.tensor(1116.2)).repeat(bond_angles.size(0))
-    COR  = torch.deg2rad(torch.tensor(123.0)).repeat(bond_angles.size(0))
-    NHR  = torch.deg2rad(torch.tensor(1119.2)).repeat(bond_angles.size(0))
+    NR_tag   = torch.deg2rad(torch.tensor(121.7)).repeat(bond_angles.size(0))
+    CaR_tag  = torch.deg2rad(torch.tensor(111.2)).repeat(bond_angles.size(0))
+    CR_tag   = torch.deg2rad(torch.tensor(1116.2)).repeat(bond_angles.size(0))
+    COR_tag  = torch.deg2rad(torch.tensor(123.0)).repeat(bond_angles.size(0))
+    NHR_tag  = torch.deg2rad(torch.tensor(1119.2)).repeat(bond_angles.size(0))
 
     # bond lengths
     NCa = bond_lengths[:, 0]
@@ -195,12 +193,13 @@ def terminal_peptide(
             torch.tensor(torch.pi).unsqueeze(0).repeat(omega.size(0), 1),
         ), dim=-1,
     )
+    # omega = torch.tensor(torch.pi).unsqueeze(0).repeat(bond_angles.size(0), torsion.size(1)//2)
     
 
     # Number of residues within the peptides
     n = torsion.size(1)//2
-    # Init coordinate holding tensor (B, L, 3)
-    coordinates = torch.zeros(torsion.size(0), 7*n, 3)
+    # Init coordinate holding tensor (B, L, 5, 3)
+    coordinates = torch.zeros(torsion.size(0), n, 5, 3)
     # N terminal Atom coordinates (B, 3, 1) For a singular input we would use (3, 1)
     N = torch.zeros(torsion.size(0), 3, 1)
     # Rotation matrix (B, 3, 3)
@@ -210,11 +209,16 @@ def terminal_peptide(
     for i in range(n):
 
         # bond angles
-        NR   = bond_angles[:, 0*i]
-        CaR  = bond_angles[:, 2*i]
-        CR   = bond_angles[:, 5*i]
-        COR  = bond_angles[:, 6*i]
-        NHR  = bond_angles[:, 1*i]
+        # NR   = bond_angles[:, 0*i]
+        # CaR  = bond_angles[:, 2*i]
+        # CR   = bond_angles[:, 5*i]
+        # COR  = bond_angles[:, 6*i]
+        # NHR  = bond_angles[:, 1*i]
+        NR   = NR_tag
+        CaR  = CaR_tag
+        CR   = CR_tag
+        COR  = COR_tag
+        NHR  = NHR_tag
 
         # bond lengths
         NCa = bond_lengths[:, 0*i]
@@ -233,7 +237,7 @@ def terminal_peptide(
         ).T.unsqueeze(-1)
         H = N + torch.matmul(rotation, V_H)
         # Update Rotation Matrix (B, 3, 3)
-        rotation = rotation @ T(NR) @ R(torsion[:, 2*i-1])
+        rotation = rotation @ T(NR) @ R(torsion[:, 2*i])
 
         # Rotate and Translate the Alpha Carbon Atom
         V_Ca = torch.cat(
@@ -245,7 +249,8 @@ def terminal_peptide(
         ).T.unsqueeze(-1)
         Ca = N + torch.matmul(rotation, V_Ca)         
         # Update Rotation Matrix
-        rotation = rotation @ T(CaR) @ R(torsion[:, 2*i])
+        rotation = rotation @ T(CaR) @ R(torsion[:, (2*i)+1])
+
 
         # Rotate and Translate the C' Atom
         V_C = torch.cat(
@@ -280,13 +285,18 @@ def terminal_peptide(
         N = C + torch.matmul(rotation, V_N)
 
         # Update Coordinates
-        coordinates[:, 7*i-5, :] = H.transpose(1, 2).squeeze(1)  #-3
-        coordinates[:, 7*i-4, :] = Ca.transpose(1, 2).squeeze(1) #-4
-        coordinates[:, 7*i-1, :] = C.transpose(1, 2).squeeze(1)  #-1
-        coordinates[:, 7*i, :] = O.transpose(1, 2).squeeze(1)    # 0
+        # coordinates[:, 7*i-5, :] = H.transpose(1, 2).squeeze(1)  #-3
+        # coordinates[:, 7*i-4, :] = Ca.transpose(1, 2).squeeze(1) #-4
+        # coordinates[:, 7*i-1, :] = C.transpose(1, 2).squeeze(1)  #-1
+        # coordinates[:, 7*i, :] = O.transpose(1, 2).squeeze(1)    # 0
+        coordinates[:, i, 4, :] = H.transpose(1, 2).squeeze(1)  #-3
+        coordinates[:, i, 0, :] = Ca.transpose(1, 2).squeeze(1) #-4
+        coordinates[:, i, 1, :] = C.transpose(1, 2).squeeze(1)  #-1
+        coordinates[:, i, 3, :] = O.transpose(1, 2).squeeze(1)    # 0
 
         if i < n:
-            coordinates[:, 7*i+1, :] = N.transpose(1, 2).squeeze(1) #1
+            # coordinates[:, 7*i+1, :] = N.transpose(1, 2).squeeze(1) #1
+            coordinates[:, i, 2, :] = N.transpose(1, 2).squeeze(1) #1
 
     return coordinates
 
@@ -304,7 +314,7 @@ if __name__ == "__main__":
     # pull out values
     torsion = x[:, :params["torsion_main_n"]]
     bond_angles = x[:, params["torsion_main_n"]:params["torsion_main_n"]+params["bond_angle_main_n"]]
-    bond_lengths = x[:, params["torsion_main_n"]+params["bond_angle_main_n"]:]
+    bond_lengths = x[:, params["torsion_main_n"]+params["bond_angle_main_n"]:-params["energy_n"]]
 
     phi_psi, omega_idx = torsion_extract(torsion.size(-1), 4)
     print("TORSION INDEX", phi_psi)
@@ -315,6 +325,8 @@ if __name__ == "__main__":
     torsion = torsion[:, phi_psi]
     torsion[:, 0] = torsion[:, 0] + 180
     torsion[:, -1] = torsion[:, -1] + 180
+    print("TORSION ANGLES", torsion)
+    print("OMEGA ANGLES", omega)
 
 
     # grab right atoms
@@ -323,11 +335,13 @@ if __name__ == "__main__":
     bond_lengths = bond_lengths[:, atom_index]
 
     # compute coordinates
+    print("TORSION", torsion.shape)
     coordinates = terminal_peptide(torsion, omega, bond_angles, bond_lengths)
-    ca_locations = (torch.arange(8) * 7) + 2
+    # ca_locations = (torch.arange(8) * 7) + 2
     # ca_locations = torch.tensor([(2*i) for i in range(8)])
-    print("CA LOCATIONS", ca_locations)
-    ca_coords = coordinates[:, ca_locations, :]
+    # print("CA LOCATIONS", ca_locations)
+    # ca_coords = coordinates[:, ca_locations, :]
+    ca_coords = coordinates[:, :, 0, :]
     print(ca_coords.shape)
 
     terminal_length = torch.norm(ca_coords[:, 0, :] - ca_coords[:, -1, :], dim=-1)
@@ -338,7 +352,7 @@ if __name__ == "__main__":
     fig = plt.figure()
     ax = fig.add_subplot(projection="3d")
 
-    for i in range(1):#ca_coords.size(0)):
+    for i in range(ca_coords.size(0)):
         ax.scatter(ca_coords[i, :, 0], ca_coords[i, :, 1], ca_coords[i, :, 2], label=f"Struct {i}", s=20)
         ax.plot(ca_coords[i, :, 0], ca_coords[i, :, 1], ca_coords[i, :, 2])
     plt.legend()
