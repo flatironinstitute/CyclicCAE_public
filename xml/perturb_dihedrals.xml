@@ -35,7 +35,7 @@
     <SIMPLE_METRICS>
       <TotalEnergyMetric name="score_default" custom_type="default" scoretype="total_score" scorefxn="default" residue_selector="peptide"/>
       <TotalEnergyMetric name="scorefasol" custom_type="fasol" scoretype="total_score" scorefxn="default_fasol" residue_selector="peptide"/>
-      <TotalEnergyMetric name="scoreqm" custom_type="qm" scoretype="gamess_qm_energy" scorefxn="default_qm" residue_selector="peptide"/>
+      <TotalEnergyMetric name="scoreqm" custom_type="qm" scoretype="gamess_qm_energy" scorefxn="default_qm"/>
     </SIMPLE_METRICS>
 
     <FILTERS>
@@ -44,12 +44,12 @@
     <MOVERS>
       <!--Perturb the backbone-torsion angles for the given selector-->
       <Small name="perturb_backbone"
-        residue_selector="peptide"
-        scorefxn="high_hbond"
-        temperature="10"
+        scorefxn="default"
+        temperature="1"
         nmoves="1000"
-        angle_max="15.0"
-        preserve_detailed_balance="0"/>
+        angle_max="4.0"
+        preserve_detailed_balance="1"/>
+      <!-- Preserve is 1, because it will always accept a move then-->
 
       <!-- Make sure that the terminal bond is present-->
       <PeptideCyclizeMover name="cyclize" residue_selector="peptide"/>
