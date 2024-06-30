@@ -10,7 +10,7 @@ import torch.nn as nn
 # xyz coordinates
 from terminal_error import TerminalPeptide
 
-######## Class
+####### Class
 
 class HBondCount:
     def __init__(
@@ -18,7 +18,7 @@ class HBondCount:
         min_hbond: int,
         ):
         """Class is for specifying how many hbonds are within
-        a structure at some t step during inference. WHere t \in [0, N-1]
+        a structure at some t step during inference. WHere t in [0, N-1]
 
         PARAMS
         ------
@@ -46,13 +46,30 @@ class HBondCount:
             Number of internal hydrogen bonds present
         """
         # Compute Distance between all points
-        dists = torch.norm(
-            H_coords.unsqueeze(-2), # (B, N, 1, 3)
-            O_coords.unsqueeze(-2).repeat(1, 1, O_coords.size(1), 1), # (B, N, N, 3)
-            dim=-1)
+        dists = torch.norm(O_coords.unsqueeze(2) - H_coords.unsqueeze(1), dim=-1)
+        mask = torch.ones(dists.size(-2), dists.size(-1))
+        indices = torch.arange(1, dists.size(-1), dtype=torch.long)
+        indices = torch.cat((indices, torch.tensor([0], dtype=torch.long)))
+        batch_indices = torch.arange(dists.size(0))
+        row_indices = torch.arange(dists.size(1))
+        # col_indices = torch.arange(1, dists.size(-2))
+        # print(dists[batch_indices[:, None], row_indices, indices])
+        # print(dists[batch_indices[:, None], row_indices, indices].shape)
+        dists[batch_indices[:, None], row_indices, indices] = torch.tensor([0.0], dtype=dists.dtype)
+        print(dists)
+        print(indices.shape)
+        print(dists.shape)
+
+
+        # print("OFFSET DIAG:", torch.diagonal(dists, offset=1, dim1=1, dim2=2))
 
         # Check where the distances are within the correct spot
-        dists_bool = (dists >= self.min_hbond) & (dists <= self.max_hbond)
+        dists_bool = (dists >= self.min_distance) & (dists <= self.max_distance)
+        # print(dists_bool)
+
+        # a more contained smaller output
+        smaller_dists = dists[dists_bool]
+        # print(smaller_dists)
 
         # Count hbonds per B_i
         hbond_count = dists_bool.sum((1, -1)) # (B)
@@ -93,6 +110,50 @@ class HBondCount:
 
         
 
+if __name__ == "__main__":
+    # Terminal peptide
+    peptide_term_class = TerminalPeptide()
 
+    # Glycine each residue has 7 atoms: N, H, CA, 1HA, 2HA, C, O
+    data = torch.load("./binary_import/dof_vectors2024-05-14torch_tensor.pt")
+    params = data["params"]
+    x = data["x"]
+
+    # pull out values
+    torsion_full = x[:, :params["torsion_main_n"]]
+    bond_angles = x[:, params["torsion_main_n"]:params["torsion_main_n"]+params["bond_angle_main_n"]]
+    bond_lengths = x[:, params["torsion_main_n"]+params["bond_angle_main_n"]:-params["energy_n"]]
+
+    phi_psi, omega_idx = peptide_term_class.torsion_extract(torsion_full.size(-1), 4)
+
+    # index tensors
+    omega = torsion_full[:, omega_idx]
+    torsion = torsion_full[:, phi_psi]
+
+    # generate coordinates given DoF vector
+    coordinates = peptide_term_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths)
+
+    # Extract H and O coordinates
+    h_coords = coordinates[:, :, 4, :]
+    o_coords = coordinates[:, :, 3, :]
+    # Extract out N and C coords
+    n_coords = coordinates[:, :, 2, :]
+    n_roll = torch.roll(n_coords, shifts=-1, dims=1)
+    c_coords = coordinates[:, :, 1, :]
+
+    # Get terminal bond lengths
+    all_bonds = torch.norm(n_roll - c_coords, dim=-1)
+    terminal_length = all_bonds[:, -1]
+
+    # init minimum hbond amount
+    hbond_class = HBondCount(min_hbond=3)
+
+    # measure distances
+    hbond_count_out = hbond_class.measure_internal_distances(h_coords, o_coords)
+    print("HBOND COUNT:", hbond_count_out)
+
+    # Figure out if Backbone passes hbond and terminal bond check
+    out = hbond_class.checkpoint(hbond_count_out, terminal_length)
+    print("OUT:", out)
 
 
