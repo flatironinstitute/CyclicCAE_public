@@ -74,6 +74,7 @@ class EnergyPath:
         retain_structure: bool,
         inpaint_dist: float,
         device: str,
+        scaffold_number: int,
         adam_optim: bool = True,
         sgd_optim: bool = False,
         ):
@@ -118,6 +119,8 @@ class EnergyPath:
                 The pnorm distance that is close enough to accept
             device: str
                 Either CPU or CUDA for GPU access
+            scaffold_number: int
+                Number of scaffold to make; this is a cutoff
             adam_optim: bool
                 Use Adam optimizer for energy search
             sgd_optim: bool
@@ -156,6 +159,7 @@ class EnergyPath:
         # Terminal Bond N-C class
         self.term_bond = TerminalPeptide()
         self.device = device
+        self.scaffold_number = scaffold_number
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -488,11 +492,11 @@ class EnergyPath:
         bond_length: torch.Tensor,
         ):
         """Harmonic Difference"""
-        harmonic_penalty_sin_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_sin[:, self.torsion_index] - torsion_sin[:, self.torsion_index],2, device=self.device).mean(dim=-1, device=self.device)
-        harmonic_penalty_cos_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_cos[:, self.torsion_index] - torsion_cos[:, self.torsion_index],2, device=self.device).mean(dim=-1, device=self.device)
-        harmonic_penalty_sin_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_sin[:, self.torsion_index] - bond_angle_sin[:, self.torsion_index],2, device=self.device).mean(dim=-1, device=self.device)
-        harmonic_penalty_cos_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_cos[:, self.torsion_index] - bond_angle_cos[:, self.torsion_index],2, device=self.device).mean(dim=-1, device=self.device)
-        harmonic_penalty_bond_length = torch.tensor(0.0, device=self.device)    if not self.freeze_bond_length else torch.pow(real_bond_length[:, self.torsion_index] - bond_length[:, self.torsion_index],2, device=self.device).mean(dim=-1, device=self.device)
+        harmonic_penalty_sin_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_sin[:, self.torsion_index] - torsion_sin[:, self.torsion_index],2).mean(dim=-1).to(device=self.device)
+        harmonic_penalty_cos_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_cos[:, self.torsion_index] - torsion_cos[:, self.torsion_index],2).mean(dim=-1).to(device=self.device)
+        harmonic_penalty_sin_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_sin[:, self.torsion_index] - bond_angle_sin[:, self.torsion_index],2).mean(dim=-1).to(device=self.device)
+        harmonic_penalty_cos_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_cos[:, self.torsion_index] - bond_angle_cos[:, self.torsion_index],2).mean(dim=-1).to(device=self.device)
+        harmonic_penalty_bond_length = torch.tensor(0.0, device=self.device)    if not self.freeze_bond_length else torch.pow(real_bond_length[:, self.torsion_index] - bond_length[:, self.torsion_index],2).mean(dim=-1).to(device=self.device)
         harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
         harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
         return harmonic_loss
@@ -518,7 +522,7 @@ class EnergyPath:
         while no_scaffolds:
             # set up tensor of random init values
             scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
-            scatter_latent.uniform_(-0.3784, 0.3822)
+            scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
             
             # run the points through the decoder
             out = self.decoder(scatter_latent)
@@ -593,7 +597,7 @@ class EnergyPath:
 
             # If scaffolds found Stop While Loop
             run+=1
-            if run > 100 or scaffolds.size(0) > 30: # 100
+            if run > 100 or scaffolds.size(0) > self.scaffold_number: # 100
                 no_scaffolds = False
 
         # Save outputs
@@ -649,6 +653,8 @@ class EnergyPath:
             # Set this as t_0 for all trajectories
             latent_trajectories[:, :,  0, :] = self.start_latent_point.unsqueeze(1).repeat(B, F, 1)
             latent_trajectories[:, :, -1, :] = self.start_latent_point.unsqueeze(1).repeat(B, F, 1)
+            # reshape for model input
+            latent_trajectories = latent_trajectories.reshape(B*F, 2, self.latent_dim)
         else:
             F = 30
             latent_trajectories = torch.zeros((B, F, 2, self.latent_dim), dtype=torch.double)
@@ -656,7 +662,7 @@ class EnergyPath:
             H = torch.zeros((B*F, 2, 1), dtype=torch.double)
             latent_trajectories[:, :, 0, :] = start_points.unsqueeze(1).repeat(1, F, 1)
             latent_trajectories[:, :, -1, :] = start_points.unsqueeze(1).repeat(1, F, 1)
-            # reshpae for model input
+            # reshape for model input
             latent_trajectories = latent_trajectories.reshape(B*F, 2, self.latent_dim)
 
 
@@ -707,7 +713,7 @@ class EnergyPath:
 
             # Harmonic Change for if none of these are true if they are then it will change
             harmonic_change = torch.zeros((B, 1), dtype=torch.double)
-            harmonic_loss = torch.zeros((1, B), dtype=torch.double)
+            harmonic_loss = torch.zeros((B), dtype=torch.double)
             if self.partial_optimization:
 
                 harmonic_loss = self.harmonic_diff_inpaint(
@@ -769,7 +775,14 @@ class EnergyPath:
                     temp_coeff = 1
                 # print('energy', energies_trajectories[:, -1, :].shape)
                 # print('harmonic change', harmonic_change.shape)
-                alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp( -( ( (energies_trajectories[:, -1, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) ) / temp_coeff ) ) )
+                term_bond_loss = self.term_bond.terminal_peptide_loss(
+                    dof_inputs = out,
+                    real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                    params = self.PARAMS,
+                    foldtree_root = 4,
+                    device = out.device,
+                )
+                alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp( -( ( (energies_trajectories[:, -1, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) + term_bond_loss.squeeze(-1)) / temp_coeff ) ) )
                 u = torch.ones((B*F))
                 u.uniform_(0, 1)
                 # generate bool of T/F
@@ -812,11 +825,12 @@ class EnergyPath:
             latent_trajectories = torch.gather(latent_trajectories, 1, h_min_expanded).squeeze(1)
             H = torch.gather(H, 1, h_min).squeeze(1)
         else:
-            energy_min = energies_trajectories.min(dim=1).indices
+            energy_min = energies_trajectories.min(dim=1).indices if F != 1 else 0
             latent_trajectories = latent_trajectories[:, energy_min, :, :]
 
         if start_points == None:
-            print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, 0].item()} Average Distance: {torch.norm(latent_trajectories[:, 0, :], self.start_latent_point, dim=-1).mean().item()}, Lowest Harmonic Constraint: {H[:, 0, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
+            # print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, 0].item()} Average Distance: {torch.norm(latent_trajectories[:, 0, :], self.start_latent_point, dim=-1).mean().item()}, Lowest Harmonic Constraint: {H[:, 0, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
+            print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[0, 0].item()}, Lowest Harmonic Constraint: {H[:, 0, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
         else:
             print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()} Starting Point Energy: {energy_out[:, 0].mean().item()} Average Distance: {torch.norm(latent_trajectories[:, 0, :] - start_points, dim=-1).mean().item()}, Lowest Harmonic Constraint: {H[:, 0, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
 
@@ -1057,18 +1071,19 @@ class EnergyPath:
                 else:
                     harmonic_loss = torch.tensor([0.0], device=self.device)
 
-                if step >= int(self.steps*0.8):
-                    # N-C Terminal Peptide Bond Loss
-                    term_bond_loss = self.term_bond.terminal_peptide_loss(
-                        dof_inputs = out,
-                        real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
-                        params = self.PARAMS,
-                        foldtree_root = 4,
-                        device = out.device,
-                    )
-                else: term_bond_loss = torch.tensor([0.0], dtype=torch.float64, device=self.device)
+                # if step >= int(self.steps*0.8):
+                # N-C Terminal Peptide Bond Loss
+                term_bond_loss = self.term_bond.terminal_peptide_loss(
+                    dof_inputs = out,
+                    real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                    params = self.PARAMS,
+                    foldtree_root = 4,
+                    device = out.device,
+                )
+                # else: term_bond_loss = torch.tensor([0.0], dtype=torch.float64, device=self.device)
+                term_bond_coeff = 10 if step >= int(self.steps*0.6) else 1
 
-                loss = (energy + dist + self.lambda_2*harmonic_loss + self.lambda_2*term_bond_loss).mean()
+                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss).mean()
 
                 if start_points == None:
                     self.path[step] = dist.detach()
@@ -1077,13 +1092,11 @@ class EnergyPath:
                 else:
                     self.path[:, step] = dist.detach()
                     self.energy_path[:, step] = energy.detach()
-                    print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()} Loss: {loss.item()}")
+                    print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()} Loss: {loss.item()}")
 
             # back prop
             loss.backward()
             optimizer.step()
-
-
 
             out = out.detach().clone()
             torsion = self.calc_angles(out[:, :116])
@@ -1147,6 +1160,7 @@ if __name__ == "__main__":
     p.add_argument("--retain-structure", action="store_true", help="Used with mcmc. Walks path closer to input structure")
     p.add_argument("--inpaint", action="store_true", help="Provide Frozen Residues and generate scaffolds")
     p.add_argument("--inpaint-dist", type=float, default=300.0, help="Cutoff distance (p1norm) to consider a scaffold a success (default: 300.0)")
+    p.add_argument("--scaffold-num", type=int, default=30, help="Number of Inpainted Scaffolds to generate (Default: 30)")
     p.add_argument("--sgd-optim", action="store_true", help="Use SGD optimizer with momentum 0.9. AdamW is used by default")
     p.add_argument("--gpu", action="store_true", help="Use a GPU for inference")
     args = p.parse_args()
@@ -1176,6 +1190,7 @@ if __name__ == "__main__":
         retain_structure = args.retain_structure,
         inpaint_dist = args.inpaint_dist,
         device = use_device,
+        scaffold_number = args.scaffold_num,
         adam_optim = False if args.sgd_optim else True,
         sgd_optim = args.sgd_optim,
     )

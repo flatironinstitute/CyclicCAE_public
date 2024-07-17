@@ -2761,15 +2761,17 @@ class ConvCase4(nn.Module):
             dim=-1
         )
 
-        return out, latent_euclid_dist, latent_space, initial_input 
+
+        return out, latent_euclid_dist.clone(), latent_space, initial_input 
 
     def compute_euclidean_distance(self, xyz_mat: torch.Tensor):
         """Compute the latent space RMSD"""
         # compute pairwise diff
-        differences = xyz_mat.unsqueeze(1) - xyz_mat.unsqueeze(0)
+        # differences = xyz_mat.unsqueeze(1) - xyz_mat.unsqueeze(0)
+        distances = torch.norm(xyz_mat - xyz_mat.unsqueeze(1), dim=-1)
 
         # squared_distances along last dim
-        distances = torch.sum( torch.pow( differences, 2), dim=-1)
+        # distances = torch.sum( torch.pow( differences, 2), dim=-1)
         return distances
 
     def reformat_convolution2(self, x: torch.Tensor, format: torch.Tensor):

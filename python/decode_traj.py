@@ -278,7 +278,7 @@ class DecodeTrajectories:
             low_abs_diff = torch.abs(model_out_angles[low_indicies] - self.y[:, index_in:][low_indicies])
             mask_high = self.y[:, index_in:] > 0
             high_abs_diff = torch.abs(model_out_angles[mask_high] - self.y[:, index_in:][mask_high])
-            abs_diff = torch.abs(model_out_angles - self.y[:, index_in:index_out])
+            abs_diff = torch.abs(model_out_angles - self.y[:, index_in:])
         else:
             abs_diff = torch.abs(model_out_angles - self.y[:, index_in:index_out])
 
@@ -288,6 +288,7 @@ class DecodeTrajectories:
         if energy:
             low_correct = low_abs_diff <= tolerance
             high_correct = high_abs_diff <= tolerance
+            print("low correct:", low_correct)
             print("PRED ACCURACY ENERGY BELOW <= 0:", low_correct.float().mean().item())
             print("PRED ACCURACY ENERGY ABOVE > 0:", high_correct.float().mean().item())
 

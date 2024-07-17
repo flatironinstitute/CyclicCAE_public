@@ -26,6 +26,9 @@ from model_functions import scale, xavier_init, ScaleOutputs
 from model_utils import ConformationalMLPAutoEncoder, MyDataset, EarlyStopper, CustomScheduler, subset_dataset, rotate_samples
 from test_case import TestCase1, HingeModel, ConvCase1, ConvCase2, ConvCase3, ConvCase4
 
+# model terminal peptide
+from terminal_error import TerminalPeptide
+
 def compare_model_state_dicts(state_dict1, state_dict2):
     for key in state_dict1:
         if key in state_dict2:
@@ -243,6 +246,32 @@ def main():
 
     # scheduler = None
 
+    # pull out values
+    torsion_full = X[:, :PARAMS["torsion_main_n"]]
+    bond_angles = X[:, PARAMS["torsion_main_n"]:PARAMS["torsion_main_n"]+PARAMS["bond_angle_main_n"]]
+    bond_lengths = X[:, PARAMS["torsion_main_n"]+PARAMS["bond_angle_main_n"]:-PARAMS["energy_n"]]
+
+    # init class
+    term_pep_class = TerminalPeptide()
+
+    # index tensors
+    phi_psi, omega_idx = term_pep_class.torsion_extract(torsion_full.size(-1), 4)
+    omega = torsion_full[:, omega_idx]
+    torsion = torsion_full[:, phi_psi]
+
+    # compute coordinates
+    coordinates = term_pep_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths)
+    n_coords = coordinates[:, :, 2, :]
+    c_coords = coordinates[:, :, 1, :]
+    n_roll = torch.roll(n_coords, shifts=-1, dims=1)
+
+    # real terminal length calc
+    bond_length = torch.norm(n_roll - c_coords, dim=-1)
+    real_terminal_length = bond_length[:, -1].view(-1, 1)
+
+    print('MODEL X REAL PEP LENGTH')
+    print(real_terminal_length)
+
     # Model Run specific number classifier for output files
     random_num = random.randint(0, 10000)
 
@@ -280,6 +309,9 @@ def main():
         scale_outputs = factor_vals_energy,
         min_vals = factor_vals_energy.min.to("cuda"),
         z = z.to("cuda"),
+        params = PARAMS,
+        real_terminal_lengths = real_terminal_length,
+        term_class = term_pep_class,
     )
 
     # saved extract latent tensor
