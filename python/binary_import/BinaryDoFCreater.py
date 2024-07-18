@@ -77,6 +77,7 @@ class DoFExport:
         # metadata_size = self.params["torsion_main_n"] if self.torsion_only else metadata.size(0).item()
         if self.torsion_only:
             metadata_size = self.params["torsion_main_n"] 
+            print("MET SIZE:", metadata_size)
             dofid_entries = [self.params["torsion_main_n"]]
         elif self.no_energy:
             metadata_size = self.params["torsion_main_n"] + self.params["torsion_side_n"] + self.params["bond_angle_main_n"] + self.params["bond_angle_side_n"] + self.params["bond_length_main_n"] + self.params["bond_length_side_n"]
@@ -126,8 +127,8 @@ class DoFExport:
         packed_data2 = struct.pack(binary_format2, *data_to_pack2)
 
         reference_len = len(reference_pose)
-        print(reference_len)
-        print(reference_pose)
+        # print(reference_len)
+        # print(reference_pose)
 
         packed_skip = struct.pack('Q', reference_len)
 

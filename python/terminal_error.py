@@ -85,6 +85,70 @@ class TerminalPeptide:
 
         return loss
 
+    def terminal_peptide_lengths(self, dof_inputs: torch.Tensor, params: dict, foldtree_root: int, device: str):
+        """Calculate N-C peptide bond Loss; Currently using Ideal bond length & bond angle
+
+        PARAMS
+        ------
+        dof_inputs: Tensor, (N, M)
+            model reconstructed DoFs. This includes decomposed angles. This needs to be correctd
+        params: dict
+            How many terms there are for each individual DoF (torsion, bond angle, bond length)
+        foldtree_root: int
+            Specify the root of the foldetree that the peptide is using
+
+        RETURNS
+        -------
+        terminal_pred_length : Tensor, (B)
+            Float terminal bond lengths for each sample (B_i)
+        """
+        # Define decomp numbers
+        decomp_torsion = params["torsion_main_n"]*2
+        decomp_bondang = params["bond_angle_main_n"]*2
+
+        # grab out terms of interest
+        torsion_full = dof_inputs[:, :decomp_torsion]
+        bond_angles = dof_inputs[:, decomp_torsion : decomp_torsion + decomp_bondang]
+        bond_length = dof_inputs[:, decomp_torsion + decomp_bondang : -params["energy_n"]]
+
+        # torsion angles
+        torsion_degree = torch.rad2deg( 
+            torch.atan2( 
+                torsion_full[:, :torsion_full.size(-1)//2],
+                torsion_full[:, torsion_full.size(-1)//2:],
+            )
+        )
+        bond_angle_degree = torch.rad2deg( 
+            torch.atan2( 
+                bond_angles[:, :bond_angles.size(-1)//2],
+                bond_angles[:, bond_angles.size(-1)//2:],
+            )
+        )
+
+        # Extract torsion (phi/psi) and omega index
+        phi_psi_idx, omega_idx = self.torsion_extract(torsion_degree.size(-1), foldtree_root)
+        # phi_psi_idx, omega_idx = phi_psi_idx.to(device), omega_idx.to(device)
+
+        # grab actual values
+        torsion = torsion_degree[:, phi_psi_idx]
+        omega = torsion_degree[:, omega_idx]
+
+        # Extract out coordinates
+        coordinates = self.terminal_peptide(torsion, omega, bond_angles, bond_length, foldtree_root, device)
+
+        # Extract out N and C
+        c_coords = coordinates[:, :, 1, :]
+        n_coords = coordinates[:, :, 2, :]
+
+        # roll n coords 1
+        n_roll = torch.roll(n_coords, shifts=-1, dims=1)
+
+        # Calculate the n-c peptide length of shape (B)
+        bond_pred_length = torch.norm(n_roll - c_coords, dim=-1)
+        terminal_pred_length = bond_pred_length[:, -1]
+
+        return terminal_pred_length
+
     def extract_bond_angles(self, dof_length: int, root: int, L: int):
         """Extract bond angle indices
 
@@ -392,107 +456,100 @@ class TerminalPeptide:
 
         # generate backbone coordinates
         for i in range(n):
-            print("RESIDUE:", i)
-            print(bond_angles.shape)
-            print(bond_lengths.shape)
+            # print("RESIDUE:", i)
+            # print(bond_angles.shape)
+            # print(bond_lengths.shape)
 
 
             # update index pos
             # if i == root_idx - 1:
-            if i == 0:
-                # bond angles
-                NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_angles[:, index_pos[0]]
-                CaR  = bond_angles[:, index_pos[1]]
-                CR   = bond_angles[:, index_pos[2]]
-                COR  = bond_angles[:, index_pos[3]] #torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))
-                NHR  = bond_angles[:, index_pos[4]]
-                print("Selected Positions:")
-                print(NR)
-                print(CaR)
-                print(CR)
-                print(COR)
-                print(NHR)
-                print('--------------')
-                print(torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)))
-                print(torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)))
-                print(torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)))
-                print(torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)))
-                print(torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)))
-
-                # Bond Lengths
-                NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-                CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-                CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-                CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-                NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
-                # NCa = bond_lengths[:, index_pos[0]]
-                # CaC = bond_lengths[:, index_pos[1]]
-                # CN  = bond_lengths[:, index_pos[2]]
-                # CO  = bond_lengths[:, index_pos[3]] #torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0))
-                # NH  = bond_lengths[:, index_pos[4]]
-                # print(NCa)
-                # print(CaC)
-                # print(CN)
-                # print(CO) 
-                # print(NH) 
-                print("i == 0", i, index_pos)
-                index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
-            # elif i == root_idx - 2:
-            elif i == n-1:
-                print("i == n-1", i, index_pos)
-                # bond angles
-                NR   = bond_angles[:, index_pos[0]]
-                CaR  = bond_angles[:, index_pos[1]]
-                CR   = bond_angles[:, index_pos[2]]
-                COR  = bond_angles[:, index_pos[3]]
-                NHR  = bond_angles[:, index_pos[4]]
-                # Bond Lengths
-                NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-                CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-                CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-                CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-                NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
-                # NCa = bond_lengths[:, index_pos[0]]
-                # CaC = bond_lengths[:, index_pos[1]]
-                # CN  = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_lengths[:, index_pos[2]]
-                # CO  = bond_lengths[:, index_pos[3]]
-                # NH  = bond_lengths[:, index_pos[4]]
-                index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
-            else:
-                print("Filler", i, index_pos)
-                # bond angles
-                NR   = bond_angles[:, index_pos[0]]
-                CaR  = bond_angles[:, index_pos[1]]
-                CR   = bond_angles[:, index_pos[2]]
-                COR  = bond_angles[:, index_pos[3]]
-                NHR  = bond_angles[:, index_pos[4]]
-                # Bond Lengths
-                NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-                CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-                CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-                CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-                NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
-                # NCa = bond_lengths[:, index_pos[0]]
-                # CaC = bond_lengths[:, index_pos[1]]
-                # CN  = bond_lengths[:, index_pos[2]]
-                # CO  = bond_lengths[:, index_pos[3]]
-                # NH  = bond_lengths[:, index_pos[4]]
-                index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
-                print("ELSE", index_pos)
+            # if i == 0:
+            #     # bond angles
+            #     NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_angles[:, index_pos[0]]
+            #     CaR  = bond_angles[:, index_pos[1]]
+            #     CR   = bond_angles[:, index_pos[2]]
+            #     COR  = bond_angles[:, index_pos[3]] #torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))
+            #     NHR  = bond_angles[:, index_pos[4]]
+            #     print(torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)))
+            #     print(torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)))
+            #     print(torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)))
+            #     print(torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)))
+            #     print(torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)))
+            #
+            #     # Bond Lengths
+            #     NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+            #     CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+            #     CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+            #     CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+            #     NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+            #     # NCa = bond_lengths[:, index_pos[0]]
+            #     # CaC = bond_lengths[:, index_pos[1]]
+            #     # CN  = bond_lengths[:, index_pos[2]]
+            #     # CO  = bond_lengths[:, index_pos[3]] #torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0))
+            #     # NH  = bond_lengths[:, index_pos[4]]
+            #     # print(NCa)
+            #     # print(CaC)
+            #     # print(CN)
+            #     # print(CO) 
+            #     # print(NH) 
+            #     print("i == 0", i, index_pos)
+            #     index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
+            # # elif i == root_idx - 2:
+            # elif i == n-1:
+            #     print("i == n-1", i, index_pos)
+            #     # bond angles
+            #     NR   = bond_angles[:, index_pos[0]]
+            #     CaR  = bond_angles[:, index_pos[1]]
+            #     CR   = bond_angles[:, index_pos[2]]
+            #     COR  = bond_angles[:, index_pos[3]]
+            #     NHR  = bond_angles[:, index_pos[4]]
+            #     # Bond Lengths
+            #     NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+            #     CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+            #     CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+            #     CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+            #     NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+            #     # NCa = bond_lengths[:, index_pos[0]]
+            #     # CaC = bond_lengths[:, index_pos[1]]
+            #     # CN  = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_lengths[:, index_pos[2]]
+            #     # CO  = bond_lengths[:, index_pos[3]]
+            #     # NH  = bond_lengths[:, index_pos[4]]
+            #     index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
+            # else:
+            #     print("Filler", i, index_pos)
+            #     # bond angles
+            #     NR   = bond_angles[:, index_pos[0]]
+            #     CaR  = bond_angles[:, index_pos[1]]
+            #     CR   = bond_angles[:, index_pos[2]]
+            #     COR  = bond_angles[:, index_pos[3]]
+            #     NHR  = bond_angles[:, index_pos[4]]
+            #     # Bond Lengths
+            #     NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+            #     CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+            #     CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+            #     CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+            #     NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+            #     # NCa = bond_lengths[:, index_pos[0]]
+            #     # CaC = bond_lengths[:, index_pos[1]]
+            #     # CN  = bond_lengths[:, index_pos[2]]
+            #     # CO  = bond_lengths[:, index_pos[3]]
+            #     # NH  = bond_lengths[:, index_pos[4]]
+            #     index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
+            #     print("ELSE", index_pos)
 
             # Ideal for tetsing
-            # NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
-            # CaR  = torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
-            # CR   = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
-            # COR  = torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
-            # NHR  = torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
+            NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
+            CaR  = torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
+            CR   = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
+            COR  = torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
+            NHR  = torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
 
             # bond lengths (Ideal for testing)
-            # NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-            # CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-            # CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-            # CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-            # NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+            NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+            CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+            CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+            CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+            NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
 
             # Rotate and Translate the Hydrogen Atom is in shape (B, 3, 3)
             V_H = torch.cat(

@@ -89,7 +89,7 @@ class RamaCheck:
         ax.axvline(x=0, color="black", linewidth=2)
 
         # Set x and y labels and axis
-        ax.set_title(f"GenKIC vs. Model ({B} Samples) Rama")
+        ax.set_title(f"GenKIC vs. Model ({int(B/8)} Samples) Rama")
         ax.set_xlabel("φ")
         ax.set_ylabel("ψ")
         ax.set_ylim(-180, 180)
@@ -120,7 +120,7 @@ class RamaCheck:
         B, _ = torsion_model.shape
 
         # Set up plot
-        fig, ax = plt.subplots(1, 2, figsize=(12,8))
+        fig, ax = plt.subplots(1, 2, figsize=(24, 12))
 
         # plot points
         ax[0].scatter(torsion_genkic[:, 0], torsion_genkic[:, 1], c="blue", alpha=0.5, label="GenKIC")
@@ -132,29 +132,66 @@ class RamaCheck:
         ax[1].axvline(x=0, color="black", linewidth=2)
 
         # Set x and y labels and axis
-        ax[0].set_title("GenKIC Rama")
-        ax[0].set_xlabel("φ")
-        ax[0].set_ylabel("ψ")
+        ax[0].set_title("GenKIC Rama", fontsize=30, weight="bold")
+        ax[0].set_xlabel("φ", fontsize=30)
+        ax[0].set_ylabel("ψ", fontsize=30)
         ax[0].set_ylim(-180, 180)
         ax[0].set_xlim(-180, 180)
 
-        ax[1].set_title(f"Model Rama {B}")
-        ax[1].set_xlabel("φ")
-        ax[1].set_ylabel("ψ")
+        ax[1].set_title(f"Model Rama ({int(B/8)} Samples)", fontsize=30, weight="bold")
+        ax[1].set_xlabel("φ", fontsize=30)
+        ax[1].set_ylabel("ψ", fontsize=30)
         ax[1].set_ylim(-180, 180)
         ax[1].set_xlim(-180, 180)
 
         # Set legened
-        plt.legend()
+        fig.suptitle("GenKIC vs. Model Torsion Angle Comparison", fontsize=40, weight="bold")
         plt.tight_layout()
         plt.savefig(f'{file}.png')
         plt.show()
+
+class TermBondCheck:
+    def __init__(self, params, foldtree_root):
+        self.term_peptide = TerminalPeptide()
+        self.params = params
+        self.foldtree_root = foldtree_root
+
+    def plot_histogram(self, non_termconstraint: torch.Tensor, with_termconstraint: torch.Tensor):
+        """Plot Histogram of model outputs with/without terminal bond constraint outputs
+
+        PARAMS
+        ------
+        non_termconstraint: Tensor (B,M)
+            Non Terminal Bond Constraint lengths
+        with_termconstraint: Tensor (B,M)
+            Terminal Bond Constraint lengths
+        """
+        # generate term lengths
+        non_termconstraint_len = self.term_peptide.terminal_peptide_lengths(non_termconstraint,
+                                                                            params=self.params,
+                                                                            foldtree_root=self.foldtree_root,
+                                                                            device="cpu")
+        with_termconstraint_len = self.term_peptide.terminal_peptide_lengths(with_termconstraint,
+                                                                            params=self.params,
+                                                                            foldtree_root=self.foldtree_root,
+                                                                            device="cpu")
+
+
+        # plot
+        plt.hist(non_termconstraint_len, alpha=0.5, label="No TermBond Constraint")
+        plt.hist(with_termconstraint_len, alpha=0.5, label="TermBond Constraint")
+        plt.legend(loc="upper right")
+        plt.savefig("termbondHistrogram.png")
+        plt.show()
+
 
 # Main
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--genkic-data", help="GenKIC Data")
     p.add_argument("--model-data", help="Model Data")
+    p.add_argument("--terminalbond-data", help="Dataset with Terminal Bond Constraint")
+    p.add_argument("--no-terminalbond-data", help="Dataset without Terminal Bond Constraint")
     args = p.parse_args()
 
     # Terminal Peptide init
@@ -163,6 +200,7 @@ if __name__ == "__main__":
     # Generate data phi_psi selection and pull out torsion
     data = torch.load(args.genkic_data)
     data_model = torch.load(args.model_data)
+    data_model = data_model.detach()
     params = data["params"]
     x = data["x"]
 
@@ -170,14 +208,18 @@ if __name__ == "__main__":
     torsion_full = x[:, :params["torsion_main_n"]]
     torsion_model = data_model[:, :params["torsion_main_n"]]
 
+    phi_psi, _ = peptide_term_class.torsion_extract(torsion_full.size(-1), 4)
+
     genkic_data = torsion_full[:, phi_psi]
     model_data = torsion_model[:, phi_psi]
 
     # Init Class
     graph_rama = RamaCheck()
+    graph_termbond = TermBondCheck(params=params, foldtree_root=4)
 
     # Test Graphs
     # graph_rama.graph_dataset(genkic_data)
     # graph_rama.graph_dataset(model_data, label="model")
     # graph_rama.graph_both(genkic_data, model_data)
     graph_rama.graph_sidebyside(genkic_data, model_data)
+    # graph_termbond.plot_histogram(non_term, with_term)
