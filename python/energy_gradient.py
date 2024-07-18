@@ -931,6 +931,86 @@ class EnergyPath:
 
         return x_t, H, harmonic_change, harmonic_loss, energy_t
 
+    def generate_constraint_termbond(self, B: int):
+        """Use dE/d(Latent Space) to generate constructs with and without termbond constraint
+
+        PARAMS
+        ------
+        B: int
+            Batch Size (number of training examples)
+
+        RETURNS
+        -------
+        with_constraint: Tensor (B, D)
+            DoF Matrix that was generated using the terminal bond constraint
+        without_constraint: Tensor (B, D)
+            DoF Matrix that was generated without the terminal bond constraint
+        """
+        # First inference generating is with term bond constraints
+        term_bond_loop = True
+        # set up tensor of random init values
+        scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
+        scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
+        start_range = 0
+        # Init gradient requirement on the latent points
+        scatter_latent.requires_grad_()
+
+        # Define optimizer you want
+        if self.adam_optim:
+            optimizer = torch.optim.AdamW([scatter_latent], lr=self.lr)
+        elif self.sgd_optim:
+            optimizer = torch.optim.SGD([scatter_latent], lr=self.lr, momentum=0.9)
+
+        while redo:
+            for step in range(start_range, self.steps):
+                # zero grad
+                optimizer.zero_grad()
+
+                # get the structure from the latent point
+                out = self.decoder(scatter_latent)
+
+                # Prediction Information
+                torsion = out[:, :116]
+                torsion_sin = torsion[:, :58]
+                torsion_cos = torsion[:, 58:]
+                bond_angle = out[:, 116:116*2]
+                bond_angle_sin = bond_angle[:, :58]
+                bond_angle_cos = bond_angle[:, 58:]
+                bond_length = out[:, 116*2:-3]
+                preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
+
+                energy = energies[:, -1]
+
+                if term_bond_loop:
+                    # N-C Terminal Peptide Bond Loss
+                    term_bond_loss = self.term_bond.terminal_peptide_loss(
+                        dof_inputs = out,
+                        real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                        params = self.PARAMS,
+                        foldtree_root = 4,
+                        device = out.device,
+                    )
+                else: term_bond_loss = torch.tensor([0.0], dtype=torch.float64, device=self.device)
+                term_bond_coeff = 10 if step >= int(self.steps*0.6) else 1
+
+                loss = (energy + term_bond_coeff*term_bond_loss).mean()
+
+                print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, Loss: {loss.item()}")
+
+            if term_bond_loop:
+                with_constraint = preds
+                term_bond_loop = False
+            else:
+                without_constraint = preds
+                redo = False
+        
+        # Save dataset
+        torch.save(
+            {
+                "with_constraint": with_constraint,
+                "without_constraint": without_constraint,
+            }, "termbond_data.pt"
+        )
 
     def energy_steps(self, start_points: torch.Tensor = None):
         """Model Eval Loop for GDS"""
