@@ -29,19 +29,19 @@ class TerminalPeptide:
         # Define decomp numbers
         decomp_torsion = params["torsion_main_n"]*2
         decomp_bondang = params["bond_angle_main_n"]*2
-        print(decomp_torsion)
-        print(decomp_bondang)
+        # print(decomp_torsion)
+        # print(decomp_bondang)
 
         # grab out terms of interest
         torsion_full = dof_inputs[:, :decomp_torsion]
         bond_angles = dof_inputs[:, decomp_torsion : decomp_torsion + decomp_bondang]
         bond_length = dof_inputs[:, decomp_torsion + decomp_bondang : -params["energy_n"]]
-        print('bond length inputs: ', decomp_torsion + decomp_bondang, ':', -params["energy_n"])
-        
-        print("IN LOSS FUNC")
-        print(dof_inputs.shape)
-        print(bond_length.shape)
-        print(bond_angles.shape)
+        # print('bond length inputs: ', decomp_torsion + decomp_bondang, ':', -params["energy_n"])
+        # 
+        # print("IN LOSS FUNC")
+        # print(dof_inputs.shape)
+        # print(bond_length.shape)
+        # print(bond_angles.shape)
 
         # torsion angles
         torsion_degree = torch.rad2deg( 
@@ -103,8 +103,8 @@ class TerminalPeptide:
             Float terminal bond lengths for each sample (B_i)
         """
         # Define decomp numbers
-        decomp_torsion = params["torsion_main_n"]*2
-        decomp_bondang = params["bond_angle_main_n"]*2
+        decomp_torsion = params["torsion_main_n"]
+        decomp_bondang = params["bond_angle_main_n"]
 
         # grab out terms of interest
         torsion_full = dof_inputs[:, :decomp_torsion]
@@ -112,26 +112,26 @@ class TerminalPeptide:
         bond_length = dof_inputs[:, decomp_torsion + decomp_bondang : -params["energy_n"]]
 
         # torsion angles
-        torsion_degree = torch.rad2deg( 
-            torch.atan2( 
-                torsion_full[:, :torsion_full.size(-1)//2],
-                torsion_full[:, torsion_full.size(-1)//2:],
-            )
-        )
-        bond_angle_degree = torch.rad2deg( 
-            torch.atan2( 
-                bond_angles[:, :bond_angles.size(-1)//2],
-                bond_angles[:, bond_angles.size(-1)//2:],
-            )
-        )
+        # torsion_degree = torch.rad2deg( 
+        #     torch.atan2( 
+        #         torsion_full[:, :torsion_full.size(-1)//2],
+        #         torsion_full[:, torsion_full.size(-1)//2:],
+        #     )
+        # )
+        # bond_angle_degree = torch.rad2deg( 
+        #     torch.atan2( 
+        #         bond_angles[:, :bond_angles.size(-1)//2],
+        #         bond_angles[:, bond_angles.size(-1)//2:],
+        #     )
+        # )
 
         # Extract torsion (phi/psi) and omega index
-        phi_psi_idx, omega_idx = self.torsion_extract(torsion_degree.size(-1), foldtree_root)
+        phi_psi_idx, omega_idx = self.torsion_extract(torsion_full.size(-1), foldtree_root)
         # phi_psi_idx, omega_idx = phi_psi_idx.to(device), omega_idx.to(device)
 
         # grab actual values
-        torsion = torsion_degree[:, phi_psi_idx]
-        omega = torsion_degree[:, omega_idx]
+        torsion = torsion_full[:, phi_psi_idx]
+        omega = torsion_full[:, omega_idx]
 
         # Extract out coordinates
         coordinates = self.terminal_peptide(torsion, omega, bond_angles, bond_length, foldtree_root, device)

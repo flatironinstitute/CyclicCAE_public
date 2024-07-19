@@ -160,6 +160,7 @@ class EnergyPath:
         self.term_bond = TerminalPeptide()
         self.device = device
         self.scaffold_number = scaffold_number
+        self.weight_passed = weight_passed
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -187,19 +188,19 @@ class EnergyPath:
         self.model = ConvCase4(
             encoder_layers    = 3,
             decoder_layers    = 3,
-            latent_space_dim  = latent_dim,
+            latent_space_dim  = self.latent_dim,
             decomposition_n   = 1,
             dropout           = 0.1,
             noise_std         = 3,
             cyclic            = True,
             pe_linear         = False,
             convolution_layer = True,
-            device            = device, #"cpu",
+            device            = self.device, #"cpu",
             **self.PARAMS,
         # ).to("cuda" if torch.cuda.is_available() else "cpu").double()
         ).to(device).double()
         # weights = torch.load(weight_passed, map_location="cuda" if torch.cuda.is_available() else "cpu")
-        weights = torch.load(weight_passed, map_location=device)
+        weights = torch.load(self.weight_passed, map_location=self.device)
         self.model.load_state_dict(weights["model_state_dict"])
         self.model.eval()
 
@@ -948,9 +949,12 @@ class EnergyPath:
         """
         # First inference generating is with term bond constraints
         term_bond_loop = True
+        redo = True
         # set up tensor of random init values
         scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
         scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
+        # store original points
+        original_points = scatter_latent.clone().detach()
         start_range = 0
         # Init gradient requirement on the latent points
         scatter_latent.requires_grad_()
@@ -979,6 +983,8 @@ class EnergyPath:
                 bond_length = out[:, 116*2:-3]
                 preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
 
+                # grab the energies (ref2015 score)
+                energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
                 energy = energies[:, -1]
 
                 if term_bond_loop:
@@ -996,12 +1002,26 @@ class EnergyPath:
                 loss = (energy + term_bond_coeff*term_bond_loss).mean()
 
                 print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, Loss: {loss.item()}")
+                # back prop
+                loss.backward()
+                optimizer.step()
+
+            out = out.detach().clone()
+            torsion = self.calc_angles(out[:, :116])
+            bond_angle = self.calc_angles(out[:, 116:116*2])
+            preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
 
             if term_bond_loop:
-                with_constraint = preds
+                with_constraint = preds.cpu().detach()
                 term_bond_loop = False
+                scatter_latent = original_points.clone().detach().requires_grad_(True)
+                # Define optimizer you want
+                if self.adam_optim:
+                    optimizer = torch.optim.AdamW([scatter_latent], lr=self.lr)
+                elif self.sgd_optim:
+                    optimizer = torch.optim.SGD([scatter_latent], lr=self.lr, momentum=0.9)
             else:
-                without_constraint = preds
+                without_constraint = preds.cpu().detach()
                 redo = False
         
         # Save dataset
@@ -1243,6 +1263,7 @@ if __name__ == "__main__":
     p.add_argument("--scaffold-num", type=int, default=30, help="Number of Inpainted Scaffolds to generate (Default: 30)")
     p.add_argument("--sgd-optim", action="store_true", help="Use SGD optimizer with momentum 0.9. AdamW is used by default")
     p.add_argument("--gpu", action="store_true", help="Use a GPU for inference")
+    p.add_argument("--termbond-test", action="store_true", help="Run Terminal Bond Constraint Generation")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -1280,13 +1301,15 @@ if __name__ == "__main__":
         energySearch.energy_steps()
         energySearch.dist_energy_plot()
         energySearch.output_GDS()
-    if args.mcmc:
+    elif args.mcmc:
         energySearch.metropolis_hastings(args.batch_size, args.sigma)
-    if args.inpaint:
+    elif args.inpaint:
         scaffolds, latent_points = energySearch.inpainting(args.batch_size)
         latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points)
         energySearch.energy_steps(latent_traj[:, 0, :])
         energySearch.output_GDS()
+    elif args.termbond_test:
+        energySearch.generate_constraint_termbond(args.batch_size)
 
 
 
