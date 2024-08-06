@@ -80,10 +80,174 @@ class TerminalPeptide:
         terminal_pred_length = bond_pred_length[:, -1]
         # print("PRED LENGTH:", terminal_pred_length)
 
+        # Extract O and Ca
+        ca_coords = coordinates[:, :, 0, :]
+        o_coords = coordinates[:, :, 3, :]
+        h_coords = coordinates[:, :, 4, :]
+
+        # Calculate terminal angles
+        ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :]) # n_coords possibly wrong
+
+        # calculate dihedrals
+        HNCO  = self.dihedral_calc(h_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :])
+        NCaCO = self.dihedral_calc(n_coords[:, -1, :], ca_coords[:, -1, :], c_coords[:, -1, :], o_coords[:, -1, :])
+
+        # print("OCNH:", torch.rad2deg(OCNH).view(-1))
+        # print("HNCO:", torch.rad2deg(HNCO).view(-1))
+
         # perform regression
         loss = torch.pow(terminal_pred_length.view(-1, 1) - real_term.view(-1, 1).to(device), 2)
 
-        return loss
+        # terminal angle
+        bdh_loss = torch.pow(bdh.view(-1, 1) - (torch.ones(bdh.view(-1, 1).shape) * torch.deg2rad(torch.tensor(122.))).to(device), 2)
+        ahd_loss = torch.pow(ahd.view(-1, 1) - (torch.ones(ahd.view(-1, 1).shape) * torch.deg2rad(torch.tensor(119.))).to(device), 2)
+        OCNH_loss = torch.pow(HNCO.view(-1, 1) - (torch.ones(HNCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
+        NCaCO_loss = torch.pow(NCaCO.view(-1, 1) - (torch.ones(NCaCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
+
+        # Clash penalty
+        clash_penalty = self.clash_constraint(coordinates, 2.0)
+        # print("clash penalty shape:", clash_penalty.shape)
+
+        return loss, bdh_loss, ahd_loss, OCNH_loss, NCaCO_loss, clash_penalty
+    
+    def smooth_cutoff(self, r, r_cut, delta):
+        """Smooth cutoff, so that only replusion is factored. Also differentiable"""
+        return torch.where(r < r_cut - delta, torch.tensor(1.0, device=r.device),
+                           torch.where(r > r_cut, torch.tensor(0.0, device=r.device),
+                                       (1 - ((r - r_cut) / delta)**2)**2))
+
+    def lennard_jones_potential(
+        self,
+        distances: torch.Tensor,
+        epsilon: float =1.0,
+        L: int = 8,
+        r_cut: float = 1.2,
+        delta: float = 0.1,
+        ):
+        """
+        Calculate the Lennard-Jones potential for given distances
+        
+        PARAMS
+        ------
+        distances: Tensor (B, L*A, L*A)
+            pairwise distances between atoms.
+        epsilon: float
+            Depth of the potential well.
+        L: int
+            Residue number
+        
+        RETURNS
+        -------
+        lj_potential: Tensor (B, L*A)
+            Lennard-Jones potential for each pairwise distance.
+        """
+        # Avoid division by zero and extremely small distances
+        sigma_mat = torch.tensor([3.5, 3.5, 3.3, 3.0, 1.0]).repeat(L) # Carbon, Carbon, Nitrogen, Oxygen, Hydrogen
+        sigma_mat = (sigma_mat.unsqueeze(0) + sigma_mat.unsqueeze(1)) / 2
+
+        # Ensure no division by zero
+        r = torch.maximum(distances, torch.tensor(1e-9, device=distances.device))
+        cutoff = self.smooth_cutoff(r, r_cut, delta)
+        
+        # Calculate the Lennard-Jones potential
+        # inv_dist = sigma_mat / distances
+        inv_dist = torch.tensor(1.0, device=distances.device) / distances
+        inv_dist6 = inv_dist.pow(6) # attraction
+        inv_dist12 = inv_dist.pow(12) # repulsion
+        lj_potential = 4 * epsilon * (inv_dist12 - inv_dist6) * cutoff
+        
+        return lj_potential
+
+    def clash_constraint(
+        self,
+        coordinates: torch.Tensor,
+        epsilon: float = 1.0,
+        ):
+        """Penalize Atoms that are too close to each other
+
+        PARAMS
+        ------
+        coordinates: Tensor (B, L, A, 6)
+            Per residue atom coordinates in 6-dimensions
+        epsilon: float
+            Depth of potential well
+        L: int
+            Residue number
+        """
+        # Grab shapes
+        B, L, A, D = coordinates.shape
+
+        # filter inter residue atoms
+        inter_residue_mask = torch.eye(L, dtype=torch.bool).repeat_interleave(A, dim=1).repeat_interleave(A, dim=0)
+        inter_residue_mask = inter_residue_mask.unsqueeze(0).expand(B, -1, -1)
+        # print(inter_residue_mask.shape)
+        # coordinates = coordinates.masked_fill(inter_residue_mask, float('inf'))
+
+        # reshape coordinates within a batch
+        coords_reshape = coordinates.reshape(B, L*A, D)
+
+        # Get distances
+        # (B, L*A, 1, D) - (B, 1, L*A, D) = (B, L*A, L*A, D)
+        distances = coords_reshape.unsqueeze(2) - coords_reshape.unsqueeze(1)
+        dists = torch.norm(distances, dim=-1)
+        # dists = torch.cdist(coords_reshape, coords_reshape, p=2)
+        # dists = torch.norm(coords_reshape - coords_reshape.unsqueeze(1), dim=-1)
+
+        # Mask diagonal entries
+        mask = torch.eye(L*A, device=coordinates.device).bool()
+        dists = dists.masked_fill(mask.unsqueeze(0), float('inf'))
+        # dists = dists.masked_fill(inter_residue_mask, float('inf'))
+
+        # Apply a penalty
+        clash_penalty = torch.triu(self.lennard_jones_potential(dists, epsilon, L), diagonal=1)
+        # print('dists:', dists[0])
+        # print('lj clash:', clash_penalty[0])
+        return clash_penalty
+
+    def dihedral_calc(
+        self,
+        A: torch.Tensor,
+        B: torch.Tensor,
+        C: torch.Tensor,
+        D: torch.Tensor,
+        ):
+        """Generate Dihedral Terminal Angles
+
+        PARAMS
+        ------
+        A: Tensor (B, 3)
+            Oxygen generated coords
+        B: Tensor (B, 3)
+            Carbon generated coords
+        C: Tensor (B, 3)
+            Hydrogen amide generated coords
+        D: Tensor (B, 3)
+            Nitrogen generated coords
+        """
+        # Calculate vetors
+        AB = B - A
+        BC = C - B
+        CD = D - C
+
+        # calc norm vectors
+        norm1 = torch.cross(AB, BC)
+        norm2 = torch.cross(BC, CD)
+
+        # normalize using normal vecotrs
+        norm1 = norm1 / torch.norm(norm1, dim=-1, keepdim=True)
+        norm2 = norm2 / torch.norm(norm2, dim=-1, keepdim=True)
+
+        # calculate the dto product
+        dot_product = torch.einsum('bd,bd->b', norm1, norm2)
+        cos_theta = dot_product.clamp(-1.0, 1.0)
+        angle_rad = torch.acos(cos_theta)
+
+        # Determine the sign of the anlge using the direction of BC
+        m1 = torch.cross(norm1, BC)
+        sign = torch.sign(torch.sum(m1 * norm2, dim=-1))
+        angle_rad = sign * angle_rad
+
+        return angle_rad
 
     def terminal_peptide_lengths(self, dof_inputs: torch.Tensor, params: dict, foldtree_root: int, device: str):
         """Calculate N-C peptide bond Loss; Currently using Ideal bond length & bond angle
@@ -392,6 +556,68 @@ class TerminalPeptide:
         rad_123 = torch.acos(cos_123)
 
         return rad_123
+
+
+    def calc_ahd_bah_angles(
+        self,
+        A_coords: torch.Tensor,
+        H_coords: torch.Tensor,
+        D_coords: torch.Tensor,
+        B_coords: torch.Tensor,
+        ):
+        """Generate polar bond angles for hbond count
+
+        PARAMS
+        ------
+        A_coords: Tensor (B, L, 3)
+            Oxygen generated coords
+        H_coords: Tensor (B, L, 3)
+            Hydrogen amide generated coords
+        D_coords: Tensor (B, L, 3)
+            Nitrogen generated coords
+        B_coords: Tensor (B, L, 3)
+            Carbon generated coords
+        """
+        # First we calculate vectors for both AHD and BAH
+        AH =  A_coords - H_coords # (B, D) # o_coords.unsqueeze(2) - h_coords.unsqueeze(1)
+        HD =  D_coords - H_coords # n_coords.unsqueeze(2) - h_coords.unsqueeze(1)
+        BD =  B_coords - D_coords # c_coords.unsqueeze(2) - o_coords.unsqueeze(1)
+        DH =  H_coords - D_coords # h_coords.unsqueeze(2) - o_coords.unsqueeze(1)
+
+        # Now compute dot products and magnitudes
+        # ah_mag = torch.sqrt(AH[..., 0] * AH[..., 0] + AH[..., 1] * AH[..., 1] * AH[..., 1] + AH[..., 2] * AH[..., 2])
+        # hd_mag = torch.sqrt(HD[..., 0] * HD[..., 0] + HD[..., 1] * HD[..., 1] * HD[..., 1] + HD[..., 2] * HD[..., 2])
+        # print(ah_mag.shape)
+        # print(AH.shape)
+        # ah_norm = AH / ah_mag.unsqueeze(-1)
+        # hd_norm = HD / hd_mag.unsqueeze(-1)
+        # res = ah_norm[..., 0] * hd_norm[..., 0] + ah_norm[..., 1] * hd_norm[..., 1] + ah_norm[..., 2] * hd_norm[...,2]
+        # angle = torch.acos(res)
+        # print("ANGLE TEST")
+        # print(torch.rad2deg(angle))
+
+
+        dot_AHD = torch.einsum('bd,bd->b', AH, HD) #(AH * HD, dim=-1)
+        dot_BDH = torch.einsum('bd,bd->b', BD, DH) #, dim=-1)
+
+        mag_AH = torch.norm(AH, dim=-1)
+        mag_HD = torch.norm(HD, dim=-1)
+        mag_BD = torch.norm(BD, dim=-1)
+        mag_DH = torch.norm(DH, dim=-1)
+
+        # cosine of angles
+        cos_AHD = dot_AHD / (mag_AH * mag_HD)
+        cos_BDH = dot_BDH / (mag_BD * mag_DH)
+
+        # Clamp output, so that it isn't outside of [-1, 1]
+        cos_AHD = torch.clamp(cos_AHD, -1.0, 1.0)
+        cos_BDH = torch.clamp(cos_BDH, -1.0, 1.0)
+
+        # compute radians
+        rad_AHD = torch.acos(cos_AHD)
+        rad_BDH = torch.acos(cos_BDH)
+
+        return rad_AHD, rad_BDH
 
 
     def terminal_peptide(
