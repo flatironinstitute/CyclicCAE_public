@@ -1193,7 +1193,7 @@ class EnergyPath:
 
 
 
-                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + torch.tensor(0.0)*ncaco_loss + torch.tensor(0.0)*clash_penalty).mean()
+                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + ncaco_loss + torch.tensor(0.0)*clash_penalty).mean()
                 # # N-C Terminal Peptide Bond Loss
                 # term_bond_loss, bah_loss, ahd_loss = self.term_bond.terminal_peptide_loss(
                 #     dof_inputs = out,
@@ -1275,7 +1275,7 @@ class EnergyPath:
 
 
 
-                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + torch.tensor(0.0)*ncaco_loss + torch.tensor(0.0)*clash_penalty).mean()
+                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + ncaco_loss + torch.tensor(0.0)*clash_penalty).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + term_bond_coeff*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + 2*bah_loss + 2*ahd_loss + 2*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
 
@@ -1287,7 +1287,8 @@ class EnergyPath:
                 elif start_points == None:
                     self.path[step] = dist.detach()
                     self.energy_path[step] = energy.detach()
-                    print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, Loss: {loss.item()}")
+                    print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, CaCNCa Planar: {ncaco_loss.item()}, LJ Loss: {clash_penalty.item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+                    # print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, Loss: {loss.item()}")
                 else:
                     self.path[:, step] = dist.detach()
                     self.energy_path[:, step] = energy.detach()

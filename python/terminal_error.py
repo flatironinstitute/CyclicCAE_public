@@ -90,7 +90,8 @@ class TerminalPeptide:
 
         # calculate dihedrals
         HNCO  = self.dihedral_calc(h_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :])
-        NCaCO = self.dihedral_calc(n_coords[:, -1, :], ca_coords[:, -1, :], c_coords[:, -1, :], o_coords[:, -1, :])
+        # NCaCO = self.dihedral_calc(n_coords[:, -1, :], ca_coords[:, -1, :], c_coords[:, -1, :], o_coords[:, -1, :])
+        CaCNCa = self.dihedral_calc(ca_coords[:, -1, :], c_coords[:, -1, :], n_coords[:, 0, :], ca_coords[:, 0, :])
 
         # print("OCNH:", torch.rad2deg(OCNH).view(-1))
         # print("HNCO:", torch.rad2deg(HNCO).view(-1))
@@ -102,13 +103,15 @@ class TerminalPeptide:
         bdh_loss = torch.pow(bdh.view(-1, 1) - (torch.ones(bdh.view(-1, 1).shape) * torch.deg2rad(torch.tensor(122.))).to(device), 2)
         ahd_loss = torch.pow(ahd.view(-1, 1) - (torch.ones(ahd.view(-1, 1).shape) * torch.deg2rad(torch.tensor(119.))).to(device), 2)
         OCNH_loss = torch.pow(HNCO.view(-1, 1) - (torch.ones(HNCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
-        NCaCO_loss = torch.pow(NCaCO.view(-1, 1) - (torch.ones(NCaCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
+        # NCaCO_loss = torch.pow(NCaCO.view(-1, 1) - (torch.ones(NCaCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
+        CaCNCa_loss = torch.pow(CaCNCa.view(-1, 1) - (torch.ones(CaCNCa.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
 
         # Clash penalty
         clash_penalty = self.clash_constraint(coordinates, 2.0)
         # print("clash penalty shape:", clash_penalty.shape)
 
-        return loss, bdh_loss, ahd_loss, OCNH_loss, NCaCO_loss, clash_penalty
+        # return loss, bdh_loss, ahd_loss, OCNH_loss, NCaCO_loss, clash_penalty
+        return loss, bdh_loss, ahd_loss, OCNH_loss, CaCNCa_loss, clash_penalty
     
     def smooth_cutoff(self, r, r_cut, delta):
         """Smooth cutoff, so that only replusion is factored. Also differentiable"""
