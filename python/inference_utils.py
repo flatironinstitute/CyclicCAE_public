@@ -6,6 +6,7 @@
 ######## IMPORT 
 import torch
 import torch.nn as nn
+from collections import defaultdict
 
 # xyz coordinates
 from terminal_error import TerminalPeptide
@@ -215,7 +216,175 @@ class HBondCount:
         checkpoint_bool = terminal_bool & hbond_bool
         return checkpoint_bool
 
-        
+def extract_pdb_xyz(input: str):
+    """Extract out Target xyz coordinates
+
+    PARAMS
+    ------
+    input: str
+        The pdb input target file
+
+    RETURNS
+    ------
+    atomdict: Dict
+        [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+        dict that holds every atom and its xyz coordinates
+    """
+    # Load in the file
+    data = open(input, 'r')
+
+    # Init atom dictionary
+    atomdict = defaultdict(list)
+
+    # grab ATOM lines
+    for line in data:
+        # Do if atom in line
+        if "ATOM" in line:
+            # Split the line to be readable
+            line_split = re.sub("\s+", ",", line).strip("\n").split(",")
+            # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+            atomdict[line_split[1]] = [line_split[2], line_split[3], line_split[4], line_split[5], line_split[6], line_split[7], line_split[8]]
+
+    return atomdict
+
+def gen_xyz_tensor(atomdict: dict):
+    """Convert the atomic dictionary to tensors
+
+    PARAMS
+    ------
+    atomdict: Dict
+        [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+        dict that holds every atom and its xyz coordinates
+
+    RETURNS
+    -------
+    full_xyz: Tensor (A+B, 3)
+        All atoms and xyz
+    target: Tensor (A, 3)
+        target protein chain A with atom numbers and xyz
+    peptide: Tensor(B, 3)
+        Peptide protein chain B with atom numbers and xyz
+    """
+    # extract atom number
+    atom_max = max(atomdict.keys().list())
+
+    # generate tensor 
+    full_xzy = torch.zeros(atom_max, 3, dtype=torch.float)
+    split_tensor_idx = list()
+
+    # extract and add to tensor
+    for k in atomdict.keys():
+        # Tensor xyz
+        full_xyz[k, :] = torch.tensor([float(atomdict[k][-3]), float(atomdict[k][-2]), float(atomdict[k][-1])])
+        # Extract B
+        if atomdict[k][2] == 'B':
+            # append list
+            split_tensor_idx.append(k)
+
+    target = full_xyz[:split_tensor_idx[0], :]
+    peptide = full_xyz[split_tensor_idx[0]:, :]
+
+    return full_xyz, target, peptide
+
+def geometric_center(input_tensor: torch.Tesnor):
+    """Take a xyz structure and compute the centroid node
+    geometric center formula: (1/n * sum_i x_i, 1/n * sum_i y_i, 1/n * sum_i z_i)
+
+    PARAMS
+    ------
+    input_tensor: Tensor (A, 3)
+        Some input tensor of shape Atoms by xyz
+
+    RETURNS
+    -------
+    center_xyz: Tensor (3)
+        XYZ point that is the centroid of the structure
+    """
+    return torch.sum(input_tensor, 0) / input_tensor.size(0)
+
+def grab_interface(
+    target_xyz: torch.Tensor,
+    peptide_xyz: torch.Tensor,
+    dist_cutoff: float = 8.0,
+    ):
+    """Grab atom xyz coordinates that are associated with the inferace
+
+    PARAMS
+    ------
+    target: Tensor (A, 3)
+        target protein chain A with atom numbers and xyz
+    peptide: Tensor(B, 3)
+        Peptide protein chain B with atom numbers and xyz
+    dist_cutoff: float (Angstrom)
+        Anything within this distance from the geometric center, is considered
+        the interface
+
+    RETURNS
+    -------
+    interface_xyz: Tensor (N, 3)
+        Target atoms that are involved in the interface; close to the peptide
+    mask: Tensor (A)
+        True/False for if it is an interface or not; referring to target tensor
+    """
+    # generate centroid of peptide
+    pep_geometric_center = geometric_center(peptide)
+
+    # generate difference from point
+    distances = torch.sum((target_xyz - pep_geometric_center).pow(2), dim=-1).sqrt()
+
+    # check if within distance cutoff
+    mask = distances <= dist_cutoff
+
+    return target_xyz[mask, :], mask
+
+def interface_loss(
+    interface_atoms: torch.Tensor,
+    recomputed_xyz: torch.Tensor,
+    d_min: float = 1.4,
+    d_max: float = 10.0,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    sigma: float = 1.0,
+    ):
+    """Compute smooth differentiable distance inference loss metric
+
+    PARAMS
+    ------
+    interface_atoms: Tensor (N, 3)
+        Target atoms that are involved in the interface; close to the peptide
+    recomputed_xyz: Tensor (B, 3)
+        Recomputed Heavy Atoms XYZ that are from the DoFs outputted from the model
+    d_min: float,
+        Minimum distance that an atom in peptide can come distance wise to an interface atom and loss explodes
+    d_max: float,
+        Maximum distance that an atom in peptide can go away from an interface atom loss explodes
+    alpha: float,
+        Scale repulsion loss term
+    beta: float,
+        Scale attraction loss term
+    sigma: float,
+        Controls the steepness of the exponential function growth
+
+    RETURNS
+    -------
+    loss: float
+        Computed loss given interface and recomputed_xyz using a smooth distance cutoff
+    """
+    # get pairwise distances
+    pairwise_distances = torch.cdist(interface_atoms, recomputed_xyz, p=2)
+
+    # repulsion and attract function
+    repulse = torch.exp( - (pairwise_distances - d_min) / sigma)
+    attract = torch.exp((pairwise_distances - d_max) / sigma)
+
+    # repulse loss
+    repulse_loss = torch.where(pairwise_distances < d_min, repulse, torch.zeros_like(repulse_loss))
+    # attract loss
+    attract_loss = torch.where(pairwise_distances > d_max, attract, torch.zeros_like(attract))
+
+    return alpha * repulse_loss + beta * attract_loss
+
+
 
 if __name__ == "__main__":
     # Terminal peptide
