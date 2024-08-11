@@ -1140,6 +1140,8 @@ class EnergyPath:
 
             # grab the energies (ref2015 score)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
+            # print('energy number:', self.energy_n)
+            # print('out shape', out.shape)
             if energies.size(-1) == 3:
                 qm = energies[:, 0]
                 energy = energies[:, 1]
@@ -1193,7 +1195,7 @@ class EnergyPath:
 
 
 
-                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + ncaco_loss + torch.tensor(0.0)*clash_penalty).mean()
+                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + 0*ncaco_loss + torch.tensor(0.0)*clash_penalty).mean()
                 # # N-C Terminal Peptide Bond Loss
                 # term_bond_loss, bah_loss, ahd_loss = self.term_bond.terminal_peptide_loss(
                 #     dof_inputs = out,
@@ -1271,11 +1273,12 @@ class EnergyPath:
 
                 # print(clash_penalty.shape)
                 B_cp, N_cp, _ = clash_penalty.shape
-                clash_penalty = clash_penalty.sum(dim=(-1,-2)) * (1/(N_cp * N_cp))
+                # clash_penalty = clash_penalty.sum(dim=(-1, -2)) * (1/(N_cp * N_cp))
+                clash_penalty = clash_penalty.sum(dim=(-1, -2)) * (1/N_cp)
 
 
 
-                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + ncaco_loss + torch.tensor(0.0)*clash_penalty).mean()
+                loss = (energy + dist + (term_bond_coeff*100)*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + 0*ncaco_loss + 0*clash_penalty).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + term_bond_coeff*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + 2*bah_loss + 2*ahd_loss + 2*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
 
@@ -1385,7 +1388,7 @@ if __name__ == "__main__":
         cutoff = args.cutoff, 
         cutoff_true = args.cutoff_true,
         partial_optimization = args.partial_optimization,
-        freeze_residues = torch.tensor(ast.literal_eval(args.freeze_residues)) if args.partial_optimization else None,
+        freeze_residues = torch.tensor(ast.literal_eval(args.freeze_residues)) - 1 if args.partial_optimization else None,
         freeze_torsion = args.freeze_torsion,
         freeze_bond_angle = args.freeze_bond_angle,
         freeze_bond_length = args.freeze_bond_length,

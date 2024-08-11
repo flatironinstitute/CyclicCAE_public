@@ -91,7 +91,7 @@ class TerminalPeptide:
         # calculate dihedrals
         HNCO  = self.dihedral_calc(h_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :])
         # NCaCO = self.dihedral_calc(n_coords[:, -1, :], ca_coords[:, -1, :], c_coords[:, -1, :], o_coords[:, -1, :])
-        CaCNCa = self.dihedral_calc(ca_coords[:, -1, :], c_coords[:, -1, :], n_coords[:, 0, :], ca_coords[:, 0, :])
+        CaCNCa = self.dihedral_calc(ca_coords[:, -1, :], c_coords[:, -1, :], n_roll[:, 0, :], ca_coords[:, 0, :])
 
         # print("OCNH:", torch.rad2deg(OCNH).view(-1))
         # print("HNCO:", torch.rad2deg(HNCO).view(-1))
@@ -157,7 +157,8 @@ class TerminalPeptide:
         inv_dist = torch.tensor(1.0, device=distances.device) / distances
         inv_dist6 = inv_dist.pow(6) # attraction
         inv_dist12 = inv_dist.pow(12) # repulsion
-        lj_potential = 4 * epsilon * (inv_dist12 - inv_dist6) * cutoff
+        lj_potential = 4 * epsilon * (inv_dist12 - inv_dist6) #* cutoff
+        # lj_potential = 4 * epsilon * inv_dist12 * cutoff
         
         return lj_potential
 
@@ -202,7 +203,8 @@ class TerminalPeptide:
         # dists = dists.masked_fill(inter_residue_mask, float('inf'))
 
         # Apply a penalty
-        clash_penalty = torch.triu(self.lennard_jones_potential(dists, epsilon, L), diagonal=1)
+        # clash_penalty = torch.triu(self.lennard_jones_potential(dists, epsilon, L), diagonal=1)
+        clash_penalty = self.lennard_jones_potential(dists, epsilon, L)
         # print('dists:', dists[0])
         # print('lj clash:', clash_penalty[0])
         return clash_penalty
