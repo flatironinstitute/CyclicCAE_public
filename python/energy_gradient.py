@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from test_case import ConvCase4
 from model_functions import scale, ScaleOutputs
 from terminal_error import TerminalPeptide
+from inference_utils import extract_pdb_xyz, gen_xyz_tensor, geometric_center, grab_interface, interface_loss, kabsch_algorithm
 
 #############
 ##### Classes
@@ -1077,7 +1078,7 @@ class EnergyPath:
             }, f"termbond_original_vs_minimze_data_{B}.pt"
         )
 
-    def energy_steps(self, start_points: torch.Tensor = None, mcmc_minimize: bool = False, minimize_steps: int = 1000):
+    def energy_steps(self, start_points: torch.Tensor = None, mcmc_minimize: bool = False, minimize_steps: int = 1000, interface_dict = None):
         """Model Eval Loop for GDS"""
         if mcmc_minimize:
             self.steps = minimize_steps
@@ -1262,23 +1263,37 @@ class EnergyPath:
                 # term_bond_coeff = 10 if step >= int(self.steps*0.5) else 1
                 #
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss).mean()
-                term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty = self.term_bond.terminal_peptide_loss(
+                term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
                     dof_inputs = out,
                     real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                     params = self.PARAMS,
                     foldtree_root = 4,
                     device = out.device,
                 )
-                term_bond_coeff = 10 if step >= int(self.steps*0.5) else 1
+                term_bond_coeff = 100 if step >= int(self.steps*0.5) else 10
+                # if step >= int(self.steps*0.5) and term_bond_loss >= 0.1:
+                #     term_bond_coeff = 100
 
                 # print(clash_penalty.shape)
                 B_cp, N_cp, _ = clash_penalty.shape
                 # clash_penalty = clash_penalty.sum(dim=(-1, -2)) * (1/(N_cp * N_cp))
                 clash_penalty = clash_penalty.sum(dim=(-1, -2)) * (1/N_cp)
 
+                #########
+                # Interface calculate
+                #########
+
+                # Align points
+                coord_B, coord_L, coord_A, coord_D = coordinates[:, :, :4, :].shape
+                coords = coordinates[:, :, :4, :].reshape(coord_B, coord_L * coord_A, coord_D).squeeze(0)
+                aligned_coordinates = kabsch_algorithm(P = coords, Q = interface_dict["peptide"].double())
+
+                interface_total_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates)
+                clash_penalty = interface_loss(aligned_coordinates, aligned_coordinates, d_min = 1.0, d_max = 10.0)
 
 
-                loss = (energy + dist + (term_bond_coeff*100)*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + 0*ncaco_loss + 0*clash_penalty).mean()
+                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*10*bah_loss + term_bond_coeff*10*ahd_loss + interface_total_loss + 0*clash_penalty).mean()
+                # loss = (energy + dist + (term_bond_coeff*100)*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + 0*ncaco_loss + 0*clash_penalty).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + term_bond_coeff*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + 2*bah_loss + 2*ahd_loss + 2*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
 
@@ -1290,7 +1305,8 @@ class EnergyPath:
                 elif start_points == None:
                     self.path[step] = dist.detach()
                     self.energy_path[step] = energy.detach()
-                    print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, CaCNCa Planar: {ncaco_loss.item()}, LJ Loss: {clash_penalty.item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+                    # print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, CaCNCa Planar: {ncaco_loss.item()}, LJ Loss: {clash_penalty.item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+                    print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, LJ penalty: {clash_penalty.item()}, Interface Loss: {interface_total_loss.item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
                     # print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, Loss: {loss.item()}")
                 else:
                     self.path[:, step] = dist.detach()
@@ -1373,6 +1389,7 @@ if __name__ == "__main__":
     p.add_argument("--minimize-mcmc", action="store_true", help="Minimize after MCMC")
     p.add_argument("--minimize-steps", type=int, default=1000, help="Number of energy minimization steps to take when using --minimize-mcmc (default: 1000)")
     p.add_argument("--mcmc-steps", type=int, default=0, help="MCMC Steps (default: 0)")
+    p.add_argument("--pdb-interface", type=str, default=None, help="Pass a pdb with the Target (Chain A) and Peptide (Chain B)")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -1407,7 +1424,20 @@ if __name__ == "__main__":
 
     # Search And Output
     if args.energy_search:
-        energySearch.energy_steps()
+        if args.pdb_interface != None:
+            atomdict = extract_pdb_xyz(args.pdb_interface)
+            full, target, peptide = gen_xyz_tensor(atomdict)
+            # fig = plt.figure()
+            # ax = fig.add_subplot(projection="3d")
+            # ax.scatter(target[:, 0], target[:, 1], target[:, 2], alpha=0.5, label="Target")
+            # ax.scatter(peptide[:, 0], peptide[:, 1], peptide[:, 2], alpha=0.5, label="peptide")
+            # plt.legend()
+            # plt.show()
+            interface, mask = grab_interface(target, peptide, dist_cutoff = 8.0)
+            interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface}
+            energySearch.energy_steps(interface_dict=interface_dict)
+        else:
+            energySearch.energy_steps()
         energySearch.dist_energy_plot()
         energySearch.output_GDS()
     elif args.mcmc:

@@ -237,6 +237,8 @@ def extract_pdb_xyz(input: str):
 
     # Init atom dictionary
     atomdict = defaultdict(list)
+    index = 0
+
 
     # grab ATOM lines
     for line in data:
@@ -244,9 +246,10 @@ def extract_pdb_xyz(input: str):
         if "ATOM" in line or "HETATM" in line:
             # Split the line to be readable
             line_split = re.sub("\s+", ",", line).strip("\n").split(",")
-            if line_split[1] in ["N", "CA", "C", "O", "H"]:
+            if line_split[2] in ["N", "CA", "C", "O"]:
                 # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                atomdict[int(line_split[1])] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                index += 1
     print(atomdict)
 
     return atomdict
@@ -388,13 +391,15 @@ def interface_loss(
     attract = torch.exp((pairwise_distances - d_max) / sigma)
 
     # repulse loss
-    repulse_loss = torch.where(pairwise_distances < d_min, repulse, torch.zeros_like(repulse_loss))
+    repulse_loss = torch.where(pairwise_distances < d_min, repulse, torch.zeros_like(repulse))
     # attract loss
     attract_loss = torch.where(pairwise_distances > d_max, attract, torch.zeros_like(attract))
 
-    return alpha * repulse_loss + beta * attract_loss
+    loss = alpha * repulse_loss + beta * attract_loss
 
-def kabsch_algorithmm(P: torch.Tensor, Q: torch.Tensor):
+    return loss.sum()
+
+def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     """Perform the kabsch algorithm to find the optimal rotation matrix
     that aligns P to points Q
 
@@ -419,21 +424,22 @@ def kabsch_algorithmm(P: torch.Tensor, Q: torch.Tensor):
     Q_centered = Q - centroid_Q
 
     # Compute the Covariance matrix
-    H = torch.dot(P_centered.T, Q_centered)
+    H = torch.matmul(P_centered.T, Q_centered)
 
     # Compute SVD for optimal rotation
     U, S, Vt = torch.linalg.svd(H)
 
     # Compute Rotation Matrix Now
-    R = torch.dot(Vt.T, U.T)
+    R = torch.matmul(Vt.T, U.T)
 
     # Special Reflection case
     if torch.linalg.det(R) < 0:
-        Vt[-1, :] *= -1
-        R = torch.dot(Vt.T, U.T)
+        Vt_copy = Vt.clone()
+        Vt_copy[-1, :] *= -1
+        R = torch.matmul(Vt_copy.T, U.T)
 
     # Apply Rotation
-    P_aligned = torch.dat(P_centered, R) + centroid_Q
+    P_aligned = torch.matmul(P_centered, R) + centroid_Q
 
     return P_aligned
 

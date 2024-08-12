@@ -86,7 +86,8 @@ class TerminalPeptide:
         h_coords = coordinates[:, :, 4, :]
 
         # Calculate terminal angles
-        ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :]) # n_coords possibly wrong
+        # ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :]) # n_coords possibly wrong
+        ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], ca_coords[:, -1, :]) # n_coords possibly wrong
 
         # calculate dihedrals
         HNCO  = self.dihedral_calc(h_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :])
@@ -100,8 +101,8 @@ class TerminalPeptide:
         loss = torch.pow(terminal_pred_length.view(-1, 1) - real_term.view(-1, 1).to(device), 2)
 
         # terminal angle
-        bdh_loss = torch.pow(bdh.view(-1, 1) - (torch.ones(bdh.view(-1, 1).shape) * torch.deg2rad(torch.tensor(122.))).to(device), 2)
-        ahd_loss = torch.pow(ahd.view(-1, 1) - (torch.ones(ahd.view(-1, 1).shape) * torch.deg2rad(torch.tensor(119.))).to(device), 2)
+        bdh_loss = torch.pow(bdh.view(-1, 1) - (torch.ones(bdh.view(-1, 1).shape) * torch.deg2rad(torch.tensor(116.))).to(device), 2)
+        ahd_loss = torch.pow(ahd.view(-1, 1) - (torch.ones(ahd.view(-1, 1).shape) * torch.deg2rad(torch.tensor(116.))).to(device), 2)
         OCNH_loss = torch.pow(HNCO.view(-1, 1) - (torch.ones(HNCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
         # NCaCO_loss = torch.pow(NCaCO.view(-1, 1) - (torch.ones(NCaCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
         CaCNCa_loss = torch.pow(CaCNCa.view(-1, 1) - (torch.ones(CaCNCa.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
@@ -111,7 +112,7 @@ class TerminalPeptide:
         # print("clash penalty shape:", clash_penalty.shape)
 
         # return loss, bdh_loss, ahd_loss, OCNH_loss, NCaCO_loss, clash_penalty
-        return loss, bdh_loss, ahd_loss, OCNH_loss, CaCNCa_loss, clash_penalty
+        return loss, bdh_loss, ahd_loss, OCNH_loss, CaCNCa_loss, clash_penalty, coordinates
     
     def smooth_cutoff(self, r, r_cut, delta):
         """Smooth cutoff, so that only replusion is factored. Also differentiable"""
@@ -621,6 +622,9 @@ class TerminalPeptide:
         # compute radians
         rad_AHD = torch.acos(cos_AHD)
         rad_BDH = torch.acos(cos_BDH)
+
+        print('AHD:', torch.rad2deg(rad_AHD))
+        print('BDH:', torch.rad2deg(rad_BDH))
 
         return rad_AHD, rad_BDH
 
