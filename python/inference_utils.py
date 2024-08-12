@@ -405,37 +405,42 @@ def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
 
     PARAMS
     ------
-    P: Tensor (N, 3)
+    P: Tensor (B, N, 3)
         Predicted DoF XYZ points
     Q: Tensor (N, 3)
         PDB Peptide Heavy atom XYZ Points
 
     RETURNS
     -------
-    P_aligned: Tensor (N, 3)
+    P_aligned: Tensor (B, N, 3)
         Aligned DoF XYZ points
     """
     # Calc centroids
-    centroid_P = P.mean(dim=0)
-    centroid_Q = Q.mean(dim=0)
+    centroid_P = P.mean(dim=1) # (B, N, 3) -> (B, 3)
+    centroid_Q = Q.mean(dim=0) # (N, 3) -> (3)
 
     # Center the points base don centroid
-    P_centered = P - centroid_P
-    Q_centered = Q - centroid_Q
+    P_centered = P - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N, 3)
+    Q_centered = Q - centroid_Q # (N, 3) - (3) = (N, 3)
+
+    # Adjust Q_centered to match
+    Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0)) # (1, N, 3) -> (B, N, 3)
 
     # Compute the Covariance matrix
-    H = torch.matmul(P_centered.T, Q_centered)
+    H = torch.matmul(P_centered.transpose(-2, -1), Q_centered) # (B, 3, N) x (B, N, 3) = (B, 3, 3)
 
     # Compute SVD for optimal rotation
-    U, S, Vt = torch.linalg.svd(H)
+    U, S, Vt = torch.linalg.svd(H) 
 
     # Compute Rotation Matrix Now
-    R = torch.matmul(Vt.T, U.T)
+    R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
 
     # Special Reflection case
-    if torch.linalg.det(R) < 0:
+    det = torch.linalg.det(R)
+    mask = det < 0
+    if mask.sum() >= 1:
         Vt_copy = Vt.clone()
-        Vt_copy[-1, :] *= -1
+        Vt_copy[mask, -1, :] *= -1
         R = torch.matmul(Vt_copy.T, U.T)
 
     # Apply Rotation
