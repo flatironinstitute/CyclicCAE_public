@@ -244,8 +244,9 @@ def extract_pdb_xyz(input: str):
         if "ATOM" in line or "HETATM" in line:
             # Split the line to be readable
             line_split = re.sub("\s+", ",", line).strip("\n").split(",")
-            # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-            atomdict[int(line_split[1])] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+            if line_split[1] in ["N", "CA", "C", "O", "H"]:
+                # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                atomdict[int(line_split[1])] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
     print(atomdict)
 
     return atomdict
@@ -393,6 +394,48 @@ def interface_loss(
 
     return alpha * repulse_loss + beta * attract_loss
 
+def kabsch_algorithmm(P: torch.Tensor, Q: torch.Tensor):
+    """Perform the kabsch algorithm to find the optimal rotation matrix
+    that aligns P to points Q
+
+    PARAMS
+    ------
+    P: Tensor (N, 3)
+        Predicted DoF XYZ points
+    Q: Tensor (N, 3)
+        PDB Peptide Heavy atom XYZ Points
+
+    RETURNS
+    -------
+    P_aligned: Tensor (N, 3)
+        Aligned DoF XYZ points
+    """
+    # Calc centroids
+    centroid_P = P.mean(dim=0)
+    centroid_Q = Q.mean(dim=0)
+
+    # Center the points base don centroid
+    P_centered = P - centroid_P
+    Q_centered = Q - centroid_Q
+
+    # Compute the Covariance matrix
+    H = torch.dot(P_centered.T, Q_centered)
+
+    # Compute SVD for optimal rotation
+    U, S, Vt = torch.linalg.svd(H)
+
+    # Compute Rotation Matrix Now
+    R = torch.dot(Vt.T, U.T)
+
+    # Special Reflection case
+    if torch.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = torch.dot(Vt.T, U.T)
+
+    # Apply Rotation
+    P_aligned = torch.dat(P_centered, R) + centroid_Q
+
+    return P_aligned
 
 
 if __name__ == "__main__":
