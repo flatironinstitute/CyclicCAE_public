@@ -7,6 +7,8 @@
 import torch
 import torch.nn as nn
 from collections import defaultdict
+import re
+import ast
 
 # xyz coordinates
 from terminal_error import TerminalPeptide
@@ -239,11 +241,12 @@ def extract_pdb_xyz(input: str):
     # grab ATOM lines
     for line in data:
         # Do if atom in line
-        if "ATOM" in line:
+        if "ATOM" in line or "HETATM" in line:
             # Split the line to be readable
             line_split = re.sub("\s+", ",", line).strip("\n").split(",")
             # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-            atomdict[line_split[1]] = [line_split[2], line_split[3], line_split[4], line_split[5], line_split[6], line_split[7], line_split[8]]
+            atomdict[int(line_split[1])] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+    print(atomdict)
 
     return atomdict
 
@@ -266,27 +269,33 @@ def gen_xyz_tensor(atomdict: dict):
         Peptide protein chain B with atom numbers and xyz
     """
     # extract atom number
-    atom_max = max(atomdict.keys().list())
+    atom_max = max([int(x) for x in atomdict.keys()])
 
     # generate tensor 
-    full_xzy = torch.zeros(atom_max, 3, dtype=torch.float)
+    full_xyz = torch.zeros(atom_max, 3, dtype=torch.float)
     split_tensor_idx = list()
 
     # extract and add to tensor
     for k in atomdict.keys():
         # Tensor xyz
-        full_xyz[k, :] = torch.tensor([float(atomdict[k][-3]), float(atomdict[k][-2]), float(atomdict[k][-1])])
+        full_xyz[k-1, :] = torch.tensor(
+            [
+                atomdict[k][-3],
+                atomdict[k][-2],
+                atomdict[k][-1]
+            ]
+        )
         # Extract B
         if atomdict[k][2] == 'B':
             # append list
-            split_tensor_idx.append(k)
+            split_tensor_idx.append(k-1)
 
     target = full_xyz[:split_tensor_idx[0], :]
     peptide = full_xyz[split_tensor_idx[0]:, :]
 
     return full_xyz, target, peptide
 
-def geometric_center(input_tensor: torch.Tesnor):
+def geometric_center(input_tensor: torch.Tensor):
     """Take a xyz structure and compute the centroid node
     geometric center formula: (1/n * sum_i x_i, 1/n * sum_i y_i, 1/n * sum_i z_i)
 
@@ -327,7 +336,7 @@ def grab_interface(
         True/False for if it is an interface or not; referring to target tensor
     """
     # generate centroid of peptide
-    pep_geometric_center = geometric_center(peptide)
+    pep_geometric_center = geometric_center(peptide_xyz)
 
     # generate difference from point
     distances = torch.sum((target_xyz - pep_geometric_center).pow(2), dim=-1).sqrt()
