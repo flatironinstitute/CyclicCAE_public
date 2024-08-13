@@ -623,8 +623,8 @@ class TerminalPeptide:
         rad_AHD = torch.acos(cos_AHD)
         rad_BDH = torch.acos(cos_BDH)
 
-        print('AHD:', torch.rad2deg(rad_AHD))
-        print('BDH:', torch.rad2deg(rad_BDH))
+        # print('AHD:', torch.rad2deg(rad_AHD))
+        # print('BDH:', torch.rad2deg(rad_BDH))
 
         return rad_AHD, rad_BDH
 

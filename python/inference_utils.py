@@ -343,7 +343,8 @@ def grab_interface(
     pep_geometric_center = geometric_center(peptide_xyz)
 
     # generate difference from point
-    distances = torch.sum((target_xyz - pep_geometric_center).pow(2), dim=-1).sqrt()
+    # distances = torch.sum((target_xyz - pep_geometric_center).pow(2), dim=-1).sqrt()
+    distances = torch.cdist(target_xyz, pep_geometric_center.unsqueeze(0), p=2).squeeze(-1)
 
     # check if within distance cutoff
     mask = distances <= dist_cutoff
@@ -365,7 +366,7 @@ def interface_loss(
     ------
     interface_atoms: Tensor (N, 3)
         Target atoms that are involved in the interface; close to the peptide
-    recomputed_xyz: Tensor (B, 3)
+    recomputed_xyz: Tensor (B, Atoms, 3)
         Recomputed Heavy Atoms XYZ that are from the DoFs outputted from the model
     d_min: float,
         Minimum distance that an atom in peptide can come distance wise to an interface atom and loss explodes
@@ -380,11 +381,18 @@ def interface_loss(
 
     RETURNS
     -------
-    loss: float
+    loss: (B) float
         Computed loss given interface and recomputed_xyz using a smooth distance cutoff
     """
     # get pairwise distances
-    pairwise_distances = torch.cdist(interface_atoms, recomputed_xyz, p=2)
+    # pairwise_distances = torch.cdist(interface_atoms, recomputed_xyz, p=2)
+    # print(interface_atoms.shape, recomputed_xyz.shape)
+    interface_atoms_exp = interface_atoms.unsqueeze(0).unsqueeze(0) # (N, 3) -> (1, 1, N, 3)
+    recomputed_xyz_exp = recomputed_xyz.unsqueeze(2) # (B, A, 3) -> (B, A, 1, 3)
+    print('Interface:', interface_atoms_exp.shape)
+    print('recomputed_xyz', recomputed_xyz_exp.shape)
+    pairwise_distances = torch.norm(recomputed_xyz_exp - interface_atoms_exp, dim=-1)
+    print(pairwise_distances.shape)
 
     # repulsion and attract function
     repulse = torch.exp( - (pairwise_distances - d_min) / sigma)
@@ -397,7 +405,7 @@ def interface_loss(
 
     loss = alpha * repulse_loss + beta * attract_loss
 
-    return loss.sum()
+    return loss.mean((-2, -1))
 
 def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     """Perform the kabsch algorithm to find the optimal rotation matrix
@@ -424,7 +432,7 @@ def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     Q_centered = Q - centroid_Q # (N, 3) - (3) = (N, 3)
 
     # Adjust Q_centered to match
-    Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0)) # (1, N, 3) -> (B, N, 3)
+    Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0), 1, 1) # (1, N, 3) -> (B, N, 3)
 
     # Compute the Covariance matrix
     H = torch.matmul(P_centered.transpose(-2, -1), Q_centered) # (B, 3, N) x (B, N, 3) = (B, 3, 3)
@@ -441,7 +449,7 @@ def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     if mask.sum() >= 1:
         Vt_copy = Vt.clone()
         Vt_copy[mask, -1, :] *= -1
-        R = torch.matmul(Vt_copy.T, U.T)
+        R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
 
     # Apply Rotation
     P_aligned = torch.matmul(P_centered, R) + centroid_Q

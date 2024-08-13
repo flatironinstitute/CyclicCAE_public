@@ -785,7 +785,7 @@ class EnergyPath:
                 # print('energy', energies_trajectories[:, -1, :].shape)
                 # print('harmonic change', harmonic_change.shape)
                 # term_bond_loss = self.term_bond.terminal_peptide_loss(
-                term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty = self.term_bond.terminal_peptide_loss(
+                term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, _ = self.term_bond.terminal_peptide_loss(
                     dof_inputs = out,
                     real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                     params = self.PARAMS,
@@ -1288,8 +1288,8 @@ class EnergyPath:
                 coords = coordinates[:, :, :4, :].reshape(coord_B, coord_L * coord_A, coord_D).squeeze(0)
                 aligned_coordinates = kabsch_algorithm(P = coords, Q = interface_dict["peptide"].double())
 
-                interface_total_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates)
-                clash_penalty = interface_loss(aligned_coordinates, aligned_coordinates, d_min = 1.0, d_max = 10.0)
+                interface_total_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates, d_min = 2.0, d_max = 20.0, sigma=0.1)#/ interface_dict["interface_atoms"].size(0)
+                # clash_penalty = interface_loss(aligned_coordinates, aligned_coordinates, d_min = 1.0, d_max = 10.0) #/ aligned_coordinates.size(1)
 
 
                 loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*10*bah_loss + term_bond_coeff*10*ahd_loss + interface_total_loss + 0*clash_penalty).mean()
@@ -1301,7 +1301,7 @@ class EnergyPath:
                 if mcmc_minimize:
                     self.path[:, step] = dist.detach()
                     self.energy_path[:, step] = energy.detach()
-                    print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, HNCO Planar: {ocnh_loss.mean().item()}, LJ Loss: {clash_penalty.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
+                    print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, LJ penalty: {clash_penalty.mean().item()}, Interface Loss: {interface_total_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
                 elif start_points == None:
                     self.path[step] = dist.detach()
                     self.energy_path[step] = energy.detach()
@@ -1311,7 +1311,8 @@ class EnergyPath:
                 else:
                     self.path[:, step] = dist.detach()
                     self.energy_path[:, step] = energy.detach()
-                    print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, HNCO Planar: {ocnh_loss.mean().item()}, LJ Loss: {clash_penalty.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
+                    print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, LJ penalty: {clash_penalty.mean().item()}, Interface Loss: {interface_total_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
+                    # print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, HNCO Planar: {ocnh_loss.mean().item()}, LJ Loss: {clash_penalty.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
                     # print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()} Loss: {loss.item()}")
 
             # back prop
@@ -1427,12 +1428,6 @@ if __name__ == "__main__":
         if args.pdb_interface != None:
             atomdict = extract_pdb_xyz(args.pdb_interface)
             full, target, peptide = gen_xyz_tensor(atomdict)
-            # fig = plt.figure()
-            # ax = fig.add_subplot(projection="3d")
-            # ax.scatter(target[:, 0], target[:, 1], target[:, 2], alpha=0.5, label="Target")
-            # ax.scatter(peptide[:, 0], peptide[:, 1], peptide[:, 2], alpha=0.5, label="peptide")
-            # plt.legend()
-            # plt.show()
             interface, mask = grab_interface(target, peptide, dist_cutoff = 8.0)
             interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface}
             energySearch.energy_steps(interface_dict=interface_dict)
@@ -1446,9 +1441,18 @@ if __name__ == "__main__":
             energySearch.energy_steps(mcmc_minimize=True, minimize_steps=args.minimize_steps)
             energySearch.output_GDS()
     elif args.inpaint:
+        if args.pdb_interface != None:
+            atomdict = extract_pdb_xyz(args.pdb_interface)
+            full, target, peptide = gen_xyz_tensor(atomdict)
+            interface, mask = grab_interface(target, peptide, dist_cutoff = 15.0)
+            print(interface.shape)
+            interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface}
         scaffolds, latent_points = energySearch.inpainting(args.batch_size)
         latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
-        energySearch.energy_steps(latent_traj[:, 0, :])
+        if args.pdb_interface != None:
+            energySearch.energy_steps(latent_traj[:, 0, :], interface_dict = interface_dict)
+        else:
+            energySearch.energy_steps(latent_traj[:, 0, :])
         energySearch.output_GDS()
     elif args.termbond_test:
         energySearch.generate_constraint_termbond(args.batch_size)
