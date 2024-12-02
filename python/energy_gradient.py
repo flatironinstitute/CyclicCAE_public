@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 from test_case import ConvCase4
 from model_functions import scale, ScaleOutputs
 from terminal_error import TerminalPeptide
-from inference_utils import extract_pdb_xyz, gen_xyz_tensor, geometric_center, grab_interface, interface_loss, kabsch_algorithm
+from inference_utils import extract_pdb_xyz, gen_xyz_tensor, geometric_center, grab_interface, interface_loss, kabsch_algorithm, kabsch_rootatom
 
 #############
 ##### Classes
@@ -77,6 +77,7 @@ class EnergyPath:
         inpaint_dist: float,
         device: str,
         scaffold_number: int,
+        mcmc_paths: int = 10,
         adam_optim: bool = True,
         sgd_optim: bool = False,
         ):
@@ -163,6 +164,7 @@ class EnergyPath:
         self.device = device
         self.scaffold_number = scaffold_number
         self.weight_passed = weight_passed
+        self.mcmc_paths = mcmc_paths
 
         # Grab values required for model and other parts
         dataset = torch.load(dataset)
@@ -222,7 +224,8 @@ class EnergyPath:
         self.start_point_scaled = self.start_point_scaled.to(device)
 
         # scale energy for conversion importance
-        self.energy_scale = ScaleOutputs(X[:, -self.energy_n:])
+        score_terms = torch.tensor([2]) if self.energy_n == 1 else torch.arange(self.energy_n)
+        self.energy_scale = ScaleOutputs(X[:, -self.energy_n:], train=False, score_terms=score_terms)
 
         if self.partial_optimization:
             # Set up atoms to start with per residue
@@ -232,6 +235,13 @@ class EnergyPath:
             atoms_per_residue[freeze_one] += 1
             atoms_per_residue[freeze_eight] += 2
             freeze_mas = freeze_residues > 0
+
+            # For kabsch algo
+            residues_clone = self.freeze_residues.clone() + 1
+            residues_clone[0] = residues_clone[0] - 1
+            motif_res = (residues_clone * 4)
+            self.motif = torch.arange(motif_res[0], motif_res[-1]) if len(self.freeze_residues) > 1 else torch.arange(motif_res[0], motif_res[0]+4)
+
 
             # generate start locations
             start_torsion_index = freeze_residues * 7
@@ -504,7 +514,7 @@ class EnergyPath:
         harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
         return harmonic_loss
 
-    def inpainting(self, B: int):
+    def inpainting(self, B: int, random_no_reference: bool = False):
         """given frozen residues search for scaffolds to hold motif residues
 
         PARAMS
@@ -516,6 +526,10 @@ class EnergyPath:
         -------
             scaffolds: torch.Tensor
                 DoF Structures that are close in proximity to the motif residues
+            random_no_reference: bool = False
+                If you want to generate completely random samples you can do, so by setting
+                this to true. Meaning you want need to pass in a reference to randomly sample
+                the latent space
         """
         no_scaffolds = True
         run=0
@@ -526,6 +540,9 @@ class EnergyPath:
             # set up tensor of random init values
             scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
             scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
+
+            if random_no_reference:
+                return None, scatter_latent
             
             # run the points through the decoder
             out = self.decoder(scatter_latent)
@@ -560,7 +577,15 @@ class EnergyPath:
 
             # Grab ref2015 energy from output
             energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
+            ######### REMOVE SECTION LATER
+            if energy_all.size(-1) == 1:
+                energy = torch.zeros(energy_all.size(0), 3)
+                energy[:, -2] = energy_all.squeeze(-1)
+                energy_all = energy
+
             energy_ref = energy_all[:, -2]
+            # energy_ref = energy_all[:, -1]
+            ######### REMOVE SECTION LATER
 
             # Distance Check
             harmonic_loss = self.harmonic_diff_inpaint(
@@ -662,7 +687,8 @@ class EnergyPath:
             # reshape for model input
             latent_trajectories = latent_trajectories.reshape(B*F, 2, self.latent_dim)
         else:
-            F = 30
+            # F = 30
+            F = self.mcmc_paths
             latent_trajectories = torch.zeros((B, F, 2, self.latent_dim), dtype=torch.double)
             energies_trajectories = torch.zeros((B, F, 2, 1), dtype=torch.double)
             H = torch.zeros((B*F, 2, 1), dtype=torch.double)
@@ -716,7 +742,14 @@ class EnergyPath:
 
             # Grab ref2015 energy from output
             energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
+            if energy_all.size(-1) == 1:
+                energy = torch.zeros(energy_all.size(0), 3, dtype=energy_all.dtype)
+                energy[:, -2] = energy_all.squeeze(-1)
+                energy_all = energy
+
+            # energy_ref = energy_all[:, -2]
             energy_t = energy_all[:, -2]
+            # energy_t = energy_all[:, -1]
 
             # Harmonic Change for if none of these are true if they are then it will change
             harmonic_change = torch.zeros((B, 1), dtype=torch.double)
@@ -863,9 +896,6 @@ class EnergyPath:
 
         # generate self
         self.start_latent_point = latent_trajectories[:, 0, :]
-
-        print(latent_trajectories[:, 0, :].shape)
-        print(self.start_latent_point.shape)
 
         # Format them correctly
         out = out.detach()
@@ -1113,7 +1143,10 @@ class EnergyPath:
         else:
             print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
         # add energy path
-        self.energy_path[0] = self.sample_energy[1]
+        if self.sample_energy.size(-1) == 1:
+            self.energy_path[0] = self.sample_energy
+        else:
+            self.energy_path[0] = self.sample_energy[1]
 
         for step in range(start_range, self.steps):
             # zero grad
@@ -1140,10 +1173,21 @@ class EnergyPath:
             real_bond_length = self.start_point[:, 116:] #-self.energy_n]
 
             # grab the energies (ref2015 score)
+            # energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
+            # print("ENRGIES:", energies)
+            # print('OUT ENERGY:', out[:, -self.energy_n].mean())
             # print('energy number:', self.energy_n)
             # print('out shape', out.shape)
             if energies.size(-1) == 3:
+                print("--------------------")
+                print("--------------------")
+                print("--------------------")
+                print("HELLLOOOOO")
+                print("WRONG AREA")
+                print("--------------------")
+                print("--------------------")
+                print("--------------------")
                 qm = energies[:, 0]
                 energy = energies[:, 1]
 
@@ -1283,16 +1327,81 @@ class EnergyPath:
                 # Interface calculate
                 #########
 
-                # Align points
-                coord_B, coord_L, coord_A, coord_D = coordinates[:, :, :4, :].shape
-                coords = coordinates[:, :, :4, :].reshape(coord_B, coord_L * coord_A, coord_D).squeeze(0)
-                aligned_coordinates = kabsch_algorithm(P = coords, Q = interface_dict["peptide"].double())
+                coords_inter = torch.cat(
+                    (
+                        coordinates[:, :, 2, :].unsqueeze(2), # N
+                        coordinates[:, :, 0, :].unsqueeze(2), # CA
+                        coordinates[:, :, 1, :].unsqueeze(2), # C
+                        coordinates[:, :, 3, :].unsqueeze(2), # O
 
-                interface_total_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates, d_min = 2.0, d_max = 20.0, sigma=0.1)#/ interface_dict["interface_atoms"].size(0)
+                    ), dim = 2,
+                )
+
+                # Align points
+                coord_B, coord_L, coord_A, coord_D = coords_inter.shape
+                coords = coords_inter.reshape(coord_B, coord_L * coord_A, coord_D).squeeze(0)
+                if len(coords.shape) == 2:
+                    coords = coords.unsqueeze(0)
+                # if step == start_range:
+                #     previous_coords = interface_dict["peptide"].double()
+                # print("MOTIF:", self.motif)
+                if interface_dict != None:
+                    if step == start_range:
+                        # aligned_coordinates = kabsch_algorithm(P = coords, Q = interface_dict["peptide"].double())
+                        aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"].double(),
+                                                              # motif = torch.arange(12, 16),
+                                                              # motif = torch.tensor(12),
+                                                              motif = self.motif,
+                                                              )
+                    else:
+                        # aligned_coordinates = kabsch_algorithm(P = coords, Q = interface_dict["peptide"].double())
+                        aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"].double(),
+                                                              # motif = torch.arange(12, 16),
+                                                              # motif = torch.tensor(12),
+                                                              motif = self.motif,
+                                                              )
+                    # aligned_coordinates = kabsch_algorithm(P = coords, Q = previous_coords)
+                    # previous_coords = aligned_coordinates.detach().clone()
+
+
+                    interface_total_loss, energy_mask = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates,
+                                                          sigma_peptide = interface_dict["sigma_peptide"],
+                                                          epsilon_peptide = interface_dict["epsilon_peptide"],
+                                                          sigma_interface = interface_dict["sigma_interface"],
+                                                          epsilon_interface = interface_dict["epsilon_interface"])
+                    # Noramlize by batch size
+                    interface_total_loss = interface_total_loss / aligned_coordinates.size(0)
+                else:
+                    interface_total_loss = torch.zeros(1, device=energy.device)
+
+
+                # Clone terms
+                energy_pred = energy.clone()
+                # energy_pred = out[:, -self.energy_n].mean()
+                ahd_loss_term = ahd_loss.clone()
+                bah_loss_term = bah_loss.clone()
+                term_bond_loss_term = term_bond_loss.clone()
+
+                # Set terms to zero if necessary
+                # energy_pred[energy_mask] *= 0.0
+                # print(energy_pred)
+                # ahd_loss_term[energy_mask, :] *= 0.0
+                # bah_loss_term[energy_mask, :] *= 0.0
+                # term_bond_loss_term[energy_mask, :] *= 0.0
+                # clash_penalty = interface_loss(aligned_coordinates, aligned_coordinates, d_min = 1.0, d_max = 10.0) #/ aligned_coordinates.size(1)
+
+                # if step == start_range:
+                #     interface_total_loss, previous_distances = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates, previous_distances = None, alpha = 1.0, beta=2.0, d_min = 2.5, d_max = 9.0, sigma=4) #/ interface_dict["interface_atoms"].size(0)
+                #     # interface_total_loss = interface_total_loss / interface_dict["interface_atoms"].size(0)
+                # else:
+                #     interface_total_loss, previous_distances = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates, previous_distances = previous_distances, alpha = 1.0, beta=2.0, d_min = 2.5, d_max = 9.0, sigma=4) #/ interface_dict["interface_atoms"].size(0)
+                #     # interface_total_loss = interface_total_loss / interface_dict["interface_atoms"].size(0)
+                # print('INTERFACE LOSS SHAPE:', interface_total_loss.shape)
                 # clash_penalty = interface_loss(aligned_coordinates, aligned_coordinates, d_min = 1.0, d_max = 10.0) #/ aligned_coordinates.size(1)
 
 
-                loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*10*bah_loss + term_bond_coeff*10*ahd_loss + interface_total_loss + 0*clash_penalty).mean()
+                # loss = (energy_pred + 0*dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*10*bah_loss_term + term_bond_coeff*10*ahd_loss_term + 10*interface_total_loss + 0*clash_penalty).mean()
+                loss = (energy_pred + 0*dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*10*bah_loss_term + term_bond_coeff*10*ahd_loss_term + interface_total_loss + 0*clash_penalty).mean()
                 # loss = (energy + dist + (term_bond_coeff*100)*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + 0*ncaco_loss + 0*clash_penalty).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + term_bond_coeff*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
                 # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + 2*bah_loss + 2*ahd_loss + 2*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
@@ -1306,7 +1415,8 @@ class EnergyPath:
                     self.path[step] = dist.detach()
                     self.energy_path[step] = energy.detach()
                     # print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, CaCNCa Planar: {ncaco_loss.item()}, LJ Loss: {clash_penalty.item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
-                    print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, LJ penalty: {clash_penalty.item()}, Interface Loss: {interface_total_loss.item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+                    # print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, LJ penalty: {clash_penalty.item()}, Interface Loss: {interface_total_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
+                    print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energy.item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, AHD: {ahd_loss.item()}, BAH: {bah_loss.item()}, LJ penalty: {clash_penalty.item()}, Interface Loss: {interface_total_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.item()}, Loss: {loss.item()}")
                     # print(f"Step: {step}, QM: {energies[:, 0].item()}, Ref2015: {energies[:, -1].item()}, Dist: {dist.item()}, Harmonic Penalty: {harmonic_loss.item()}, Terminal Bond: {term_bond_loss.item()}, Loss: {loss.item()}")
                 else:
                     self.path[:, step] = dist.detach()
@@ -1339,58 +1449,67 @@ class EnergyPath:
             #     break
             
 
-    def output_GDS(self):
+    def output_GDS(self, random_no_reference:bool = False, skip_individual = False):
         """Output the GDS trajectory"""
         # file name
-        if len(self.dof_traj.shape) == 3:
+        if (len(self.dof_traj.shape) == 3) & (not random_no_reference) & (not skip_individual):
             for sample in range(self.dof_traj.size(0)):
                 file = f"finalstep{self.outstep}-{datetime.date.today()}-sample{sample}-trajectories.pt"
                 out = self.dof_traj[sample]
                 torch.save(out, file)
             file = f"finalstep{self.outstep}-{datetime.date.today()}-sampleall-trajectories.pt"
             torch.save(self.dof_traj[:, -1, :], file)
+        elif random_no_reference or skip_individual:
+            file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
+            print(f"FILES SAVED: {file} && trajpath.pt")
+            torch.save(self.dof_traj[:, -1, :], file)
+            torch.save({"distance": self.path, "energy": self.energy_path}, 'trajpath.pt')
         else:
             file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
+            print(f"FILES SAVED: {file} && trajpath.pt")
             torch.save(self.dof_traj, file)
             torch.save({"distance": self.path, "energy": self.energy_path}, 'trajpath.pt')
         
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--steps", type=int, default=1000, help="Search Steps Max (default: 1000)")
-    p.add_argument("--minima", type=float, default=-4.775, help="Minima energy to search for (default: -5.0)")
+    p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument("--steps", type=int, default=1000, help="Search Steps Max")
+    p.add_argument("--minima", type=float, default=-4.775, help="Minima energy to search for")
     p.add_argument("--start-point", type=int, default=14, help="This will be updated to take a pdb in the future")
     p.add_argument("--weights-load", type=str, help="Specify Model Weights To Use")
-    p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate (default: 1e-3)")
-    p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use (default: dof_vectors2024-04-10torch_tensor)")
+    p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate")
+    p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use")
     p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
-    p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search (default: 0.005)")
-    p.add_argument("--latent-dim", type=int, default=3, help="Latent Size of the model (default: 3)")
+    p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search")
+    p.add_argument("--latent-dim", type=int, default=3, help="Latent Size of the model")
     p.add_argument("--partial-optimization", action="store_true", help="Apply partial optimization to a structure")
     p.add_argument("--freeze-residues", type=str, help="Used wth partial-optimization. If no sub freeze flags specified all are frozen \
                         Specify residue in a list (zero index) to freeze (e.g. '[1,2,3]')")
     p.add_argument("--freeze-torsion", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-angle", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-length", action="store_true", help="Use with partial-optimization")
-    p.add_argument("--lambda-partial", type=float, default=1.0, help="Reweight Partial Freezing (Default: 1.0)")
+    p.add_argument("--lambda-partial", type=float, default=1.0, help="Reweight Partial Freezing")
     p.add_argument("--energy-search", action="store_true", help="Gradient Search on dE/d(latent space)")
     p.add_argument("--mcmc", action="store_true", help="Markov Chain Monte Carlo Metropolis Hastings Search")
-    p.add_argument("--batch-size", type=int, default=10, help="Used with mcmc. Set number of trajectories (default: 10)")
-    p.add_argument("--sigma", type=float, default=0.01, help="Used with mcmc. Set sigma of normal movement to add to latent point (default: 0.01)")
-    p.add_argument("--temperature", type=float, default=1, help="Used with mcmc. Set Temperature (default: 1)")
-    p.add_argument("--initial-steps", type=int, default=10, help="Used with mcmc. Set initial steps to accept no matter what (default: 10)")
-    p.add_argument("--ramp-down", type=int, default=100, help="Used with mcmc. Steps to go from temperature to 1 (default: 100)")
+    p.add_argument("--batch-size", type=int, default=10, help="Used with mcmc. Set number of trajectories")
+    p.add_argument("--sigma", type=float, default=0.01, help="Used with mcmc. Set sigma of normal movement to add to latent point")
+    p.add_argument("--temperature", type=float, default=1, help="Used with mcmc. Set Temperature")
+    p.add_argument("--initial-steps", type=int, default=10, help="Used with mcmc. Set initial steps to accept no matter what")
+    p.add_argument("--ramp-down", type=int, default=100, help="Used with mcmc. Steps to go from temperature to 1")
     p.add_argument("--retain-structure", action="store_true", help="Used with mcmc. Walks path closer to input structure")
     p.add_argument("--inpaint", action="store_true", help="Provide Frozen Residues and generate scaffolds")
-    p.add_argument("--inpaint-dist", type=float, default=300.0, help="Cutoff distance (p1norm) to consider a scaffold a success (default: 300.0)")
-    p.add_argument("--scaffold-num", type=int, default=30, help="Number of Inpainted Scaffolds to generate (Default: 30)")
+    p.add_argument("--inpaint-dist", type=float, default=300.0, help="Cutoff distance (p1norm) to consider a scaffold a success")
+    p.add_argument("--scaffold-num", type=int, default=30, help="Number of Inpainted Scaffolds to generate")
     p.add_argument("--sgd-optim", action="store_true", help="Use SGD optimizer with momentum 0.9. AdamW is used by default")
     p.add_argument("--gpu", action="store_true", help="Use a GPU for inference")
     p.add_argument("--termbond-test", action="store_true", help="Run Terminal Bond Constraint Generation")
     p.add_argument("--minimize-mcmc", action="store_true", help="Minimize after MCMC")
-    p.add_argument("--minimize-steps", type=int, default=1000, help="Number of energy minimization steps to take when using --minimize-mcmc (default: 1000)")
-    p.add_argument("--mcmc-steps", type=int, default=0, help="MCMC Steps (default: 0)")
+    p.add_argument("--minimize-steps", type=int, default=1000, help="Number of energy minimization steps to take when using --minimize-mcmc")
+    p.add_argument("--mcmc-steps", type=int, default=0, help="MCMC Steps")
+    p.add_argument("--mcmc-paths", type=int, default=10, help="MCMC Number of Paths when doing inpainting")
     p.add_argument("--pdb-interface", type=str, default=None, help="Pass a pdb with the Target (Chain A) and Peptide (Chain B)")
+    p.add_argument("--random-sample", action="store_true", help="Sample latent space randomly, without a refernce.")
+    p.add_argument("--skip-individual", action="store_true", help="For skipping individual construct trajectory outputting during inpainting")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -1421,15 +1540,19 @@ if __name__ == "__main__":
         scaffold_number = args.scaffold_num,
         adam_optim = False if args.sgd_optim else True,
         sgd_optim = args.sgd_optim,
+        mcmc_paths = args.mcmc_paths,
     )
 
     # Search And Output
     if args.energy_search:
         if args.pdb_interface != None:
             atomdict = extract_pdb_xyz(args.pdb_interface)
-            full, target, peptide = gen_xyz_tensor(atomdict)
-            interface, mask = grab_interface(target, peptide, dist_cutoff = 8.0)
-            interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface}
+            full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
+            interface, mask = grab_interface(target, peptide, dist_cutoff = 10.0)
+            interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface,
+                              "sigma_peptide": sigma_peptide, "epsilon_peptide": epsilon_peptide,
+                              "sigma_interface": sigma_target[mask], "epsilon_interface": epsilon_target[mask]}
+            print("INTERFACE SHAPE TENSOR:", interface.shape)
             energySearch.energy_steps(interface_dict=interface_dict)
         else:
             energySearch.energy_steps()
@@ -1440,20 +1563,28 @@ if __name__ == "__main__":
         if args.minimize_mcmc:
             energySearch.energy_steps(mcmc_minimize=True, minimize_steps=args.minimize_steps)
             energySearch.output_GDS()
-    elif args.inpaint:
+    elif args.inpaint or args.random_sample:
         if args.pdb_interface != None:
             atomdict = extract_pdb_xyz(args.pdb_interface)
-            full, target, peptide = gen_xyz_tensor(atomdict)
-            interface, mask = grab_interface(target, peptide, dist_cutoff = 15.0)
-            print(interface.shape)
-            interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface}
-        scaffolds, latent_points = energySearch.inpainting(args.batch_size)
-        latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
+            full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
+            interface, mask = grab_interface(target, peptide, dist_cutoff = 8.0)
+            torch.save(color_target[mask], "interface_color.pt")
+            torch.save(interface, "interfacetensor.pt")
+            print("INTERFACE SHAPE TENSOR:", interface.shape)
+            interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface,
+                              "sigma_peptide": sigma_peptide, "epsilon_peptide": epsilon_peptide,
+                              "sigma_interface": sigma_target[mask], "epsilon_interface": epsilon_target[mask]}
+        scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample)
+        if not args.random_sample:
+            latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
+
         if args.pdb_interface != None:
             energySearch.energy_steps(latent_traj[:, 0, :], interface_dict = interface_dict)
+        elif args.random_sample:
+            energySearch.energy_steps(latent_points)
         else:
             energySearch.energy_steps(latent_traj[:, 0, :])
-        energySearch.output_GDS()
+        energySearch.output_GDS(args.random_sample, skip_individual = args.skip_individual)
     elif args.termbond_test:
         energySearch.generate_constraint_termbond(args.batch_size)
 

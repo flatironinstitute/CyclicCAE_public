@@ -29,6 +29,8 @@ class ScaleOutputs:
     def __init__(
         self,
         input_tensor: torch.Tensor,
+        train: bool = True,
+        score_terms: list = [0, 1, 2],
         ):
         """Take the predicted value and scale them, but store min/max for inverse scaling
 
@@ -36,12 +38,19 @@ class ScaleOutputs:
         ------
         input_tensor : Tensor
             Input tensors that will be predicted, but not encoded.
+        train: bool
+            If inference then use established training min/max score values
+        score_terms: list
+            Supply to determine which score terms you would like to use [QM, REF2015, REF2015+FaSOL]
         """
         # store input tensor
         self.input_tensor = input_tensor
         # create holding min/max values
-        self.max = torch.max(input_tensor, dim=0).values
-        self.min = torch.min(input_tensor, dim=0).values
+        self.max = torch.max(input_tensor, dim=0).values if train else torch.tensor([0.000, 12.5430, 36.8702], dtype=torch.double)
+        self.min = torch.min(input_tensor, dim=0).values if train else torch.tensor([-5.1624e04, -4.7750e00, 5.4859e-01], dtype=torch.double)
+        # grab appropriate values
+        self.max = self.max[score_terms]
+        self.min = self.min[score_terms]
         # scaled values
         self.scaled_vals = self.scale_values.to("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -100,6 +100,7 @@ class DoFBinaryReader:
 
             # Grab info
             reference_pose = header.decode('latin-1')[104:]
+            print(header.decode('latin-1')[104:])
 
             # Encode info
             test_utf = reference_pose.encode('utf-8')
@@ -146,7 +147,7 @@ class DoFBinaryReader:
 
                     # Visual Update on binary read in process
                     if tensor_sample % 10000 == 0:
-                        print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info["nstructs"]} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
+                        print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info['nstructs']} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
 
                     # increment sample idx and reset data idx
                     tensor_sample += 1
@@ -205,6 +206,7 @@ class DoFBinaryReader:
                     },
                     out_file,
                 )
+        print("DATA TENSOR SHAPE:", self.data_tensor.shape)
         return self.data_tensor
 
     @property

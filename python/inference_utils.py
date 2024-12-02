@@ -9,6 +9,7 @@ import torch.nn as nn
 from collections import defaultdict
 import re
 import ast
+import matplotlib.pyplot as plt
 
 # xyz coordinates
 from terminal_error import TerminalPeptide
@@ -154,8 +155,8 @@ class HBondCount:
         mag_HD = torch.norm(HD, dim=-1)
         mag_BA = torch.norm(BA, dim=-1)
         mag_AH2 = torch.norm(AH2, dim=-1)
-        print("MAG NORM", mag_AH1.shape)
-        print("AH1 shape", AH1.shape)
+        # print("MAG NORM", mag_AH1.shape)
+        # print("AH1 shape", AH1.shape)
 
         # cosine of angles
         cos_AHD = dot_AHD / (mag_AH1 * mag_HD)
@@ -171,17 +172,17 @@ class HBondCount:
         rad_AHD = torch.acos(cos_AHD)
         rad_BAH = torch.acos(cos_BAH)
 
-        print("rad_AHD degree", torch.rad2deg(rad_AHD))
-        print("rad_BAH", rad_BAH)
-        print(torch.deg2rad(torch.tensor(90)))
-        print(torch.deg2rad(torch.tensor(180)))
+        # print("rad_AHD degree", torch.rad2deg(rad_AHD))
+        # print("rad_BAH", rad_BAH)
+        # print(torch.deg2rad(torch.tensor(90)))
+        # print(torch.deg2rad(torch.tensor(180)))
 
         # compute anlge range bool
         AHD_bool = (torch.deg2rad(torch.tensor(90)) <= rad_AHD) & (rad_AHD <= torch.deg2rad(torch.tensor(180)))
         BAH_bool = (torch.deg2rad(torch.tensor(90)) <= rad_BAH) & (rad_BAH <= torch.deg2rad(torch.tensor(180)))
 
-        print('AHD:', AHD_bool)
-        print('BAH:', BAH_bool)
+        # print('AHD:', AHD_bool)
+        # print('BAH:', BAH_bool)
 
         return AHD_bool, BAH_bool
 
@@ -246,11 +247,36 @@ def extract_pdb_xyz(input: str):
         if "ATOM" in line or "HETATM" in line:
             # Split the line to be readable
             line_split = re.sub("\s+", ",", line).strip("\n").split(",")
-            if line_split[2] in ["N", "CA", "C", "O"]:
+            # if line_split[2] in ["N", "CA", "C", "O"]:
+            #     atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+            #     index += 1
+            if (line_split[4] == "A") & (line_split[11] != "H"):
+                # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                if line_split[2] in ["N", "CA", "C", "O"]:
+                    atom_specific = line_split[2]
+                elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
+                    if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
+                        atom_specific = line_split[2][0]
+                    elif line_split[2][0] == "S":
+                        atom_specific = "C"
+                    else:
+                        atom_specific = line_split[11]
+                else: 
+                    atom_specific =  "H"
+                # atom_specific = line_split[2] if line_split[2] in ["N", "CA", "C", "O"] else "C"
+                atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                index += 1
+            elif (line_split[4] == "A") & (line_split[11] == "H"):
+                # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                atom_specific = "H"
+                atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                index += 1
+            elif (line_split[4] == "B") & (line_split[2] in ["N", "CA", "C", "O"]):
                 # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
                 atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
                 index += 1
-    print(atomdict)
+            else:
+                pass
 
     return atomdict
 
@@ -273,31 +299,56 @@ def gen_xyz_tensor(atomdict: dict):
         Peptide protein chain B with atom numbers and xyz
     """
     # extract atom number
-    atom_max = max([int(x) for x in atomdict.keys()])
+    atom_max = max([int(x) for x in atomdict.keys()])+1
+    # Key for epsilon and sigma matrixes
+    epsilon_key = {"CA": 0.062642, "N": 0.161725, "C": 0.141799, "O": 0.142417, "H": 0.901681}#0.901681}
+    sigma_key   = {"CA": 2.011760, "N": 1.802452, "C": 1.916661, "O": 1.540580, "H": 1.540580}#0.005000}
+    color_key   = {"CA": 0, "N": 1, "C": 2, "O": 3, "H": 4}
 
     # generate tensor 
     full_xyz = torch.zeros(atom_max, 3, dtype=torch.float)
+    sigma_mat = torch.zeros(atom_max, dtype=torch.float)
+    epsilon_mat = torch.zeros(atom_max, dtype=torch.float)
+    color_tensor = torch.zeros(atom_max, dtype=torch.long)
+
     split_tensor_idx = list()
 
     # extract and add to tensor
     for k in atomdict.keys():
+
         # Tensor xyz
-        full_xyz[k-1, :] = torch.tensor(
+        full_xyz[k, :] = torch.tensor(
             [
                 atomdict[k][-3],
                 atomdict[k][-2],
                 atomdict[k][-1]
             ]
         )
+        print(atomdict[k])
+        sigma_mat[k] = sigma_key[atomdict[k][0]]
+        epsilon_mat[k] = epsilon_key[atomdict[k][0]]
+        color_tensor[k] = color_key[atomdict[k][0]]
         # Extract B
         if atomdict[k][2] == 'B':
             # append list
-            split_tensor_idx.append(k-1)
+            split_tensor_idx.append(k)
 
+    # target
     target = full_xyz[:split_tensor_idx[0], :]
-    peptide = full_xyz[split_tensor_idx[0]:, :]
+    sigma_target = sigma_mat[:split_tensor_idx[0]]
+    epsilon_target = epsilon_mat[:split_tensor_idx[0]]
+    color_target = color_tensor[:split_tensor_idx[0]]
 
-    return full_xyz, target, peptide
+    # Peptide
+    peptide = full_xyz[split_tensor_idx[0]:, :]
+    sigma_peptide = sigma_mat[split_tensor_idx[0]:]
+    epsilon_peptide = epsilon_mat[split_tensor_idx[0]:]
+
+    print(target.shape)
+    print(color_target.shape)
+    print(peptide.shape)
+
+    return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target
 
 def geometric_center(input_tensor: torch.Tensor):
     """Take a xyz structure and compute the centroid node
@@ -351,14 +402,36 @@ def grab_interface(
 
     return target_xyz[mask, :], mask
 
+
+def harmonic_loss_func(xyz_peptide, xyz_target, cutoff_distance=4.0, d_target=2.5, k=10.0):
+    print(xyz_peptide.shape)
+    print(xyz_target.shape)
+    # Compute all pairwise distances between peptide and target atoms
+    diff = xyz_peptide - xyz_target[:, None, :]
+    distances = torch.norm(diff, dim=2).T  # Shape: (num_peptide_atoms, num_target_atoms)
+    print(distances.min())
+    print(distances)
+    
+    # Mask distances greater than cutoff
+    within_cutoff = distances < cutoff_distance
+    
+    # Find the minimum distance for each peptide atom within the cutoff
+    # min_distances, _ = torch.min(torch.where(within_cutoff, distances, torch.tensor(float('inf'))), dim=-1)
+    min_distances, _ = torch.min(distances, dim=-1)
+    print(min_distances)
+    
+    # Compute the harmonic loss
+    loss = k * torch.sum((min_distances - d_target).pow(2))
+    print(loss)
+    return loss
+
 def interface_loss(
     interface_atoms: torch.Tensor,
     recomputed_xyz: torch.Tensor,
-    d_min: float = 1.4,
-    d_max: float = 10.0,
-    alpha: float = 1.0,
-    beta: float = 1.0,
-    sigma: float = 1.0,
+    sigma_peptide: torch.Tensor,
+    epsilon_peptide: torch.Tensor, 
+    sigma_interface: torch.Tensor,
+    epsilon_interface: torch.Tensor, 
     ):
     """Compute smooth differentiable distance inference loss metric
 
@@ -368,16 +441,14 @@ def interface_loss(
         Target atoms that are involved in the interface; close to the peptide
     recomputed_xyz: Tensor (B, Atoms, 3)
         Recomputed Heavy Atoms XYZ that are from the DoFs outputted from the model
-    d_min: float,
-        Minimum distance that an atom in peptide can come distance wise to an interface atom and loss explodes
-    d_max: float,
-        Maximum distance that an atom in peptide can go away from an interface atom loss explodes
-    alpha: float,
-        Scale repulsion loss term
-    beta: float,
-        Scale attraction loss term
-    sigma: float,
-        Controls the steepness of the exponential function growth
+    sigma_peptide: Tensor (Atoms)
+        Sigma (Atomic Radii) values for leonard jones calculation within the peptide
+    epsilon_peptide: Tensor (Atoms)
+        Epsilon (well depth) values for leonard jones calculation within the peptide
+    sigma_interface: Tensor (N)
+        Sigma (Atomic Radii) values for leonard jones calculation within the interface
+    epsilon_interface: torch.Tensor, 
+        Epsilon (well depth) values for leonard jones calculation within the interface
 
     RETURNS
     -------
@@ -385,27 +456,354 @@ def interface_loss(
         Computed loss given interface and recomputed_xyz using a smooth distance cutoff
     """
     # get pairwise distances
-    # pairwise_distances = torch.cdist(interface_atoms, recomputed_xyz, p=2)
-    # print(interface_atoms.shape, recomputed_xyz.shape)
-    interface_atoms_exp = interface_atoms.unsqueeze(0).unsqueeze(0) # (N, 3) -> (1, 1, N, 3)
-    recomputed_xyz_exp = recomputed_xyz.unsqueeze(2) # (B, A, 3) -> (B, A, 1, 3)
-    print('Interface:', interface_atoms_exp.shape)
-    print('recomputed_xyz', recomputed_xyz_exp.shape)
-    pairwise_distances = torch.norm(recomputed_xyz_exp - interface_atoms_exp, dim=-1)
-    print(pairwise_distances.shape)
+    pairwise_distances = torch.cdist(recomputed_xyz, interface_atoms, p=2)
+    # print("MIN DISTANCE:", pairwise_distances.min(-1)[0].min(-1).values)
+    B, _, _ = pairwise_distances.shape
 
-    # repulsion and attract function
-    repulse = torch.exp( - (pairwise_distances - d_min) / sigma)
-    attract = torch.exp((pairwise_distances - d_max) / sigma)
+    
+    # weight matrix
+    # w_ones = torch.ones_like(pairwise_distances, device=pairwise_distances.device)
+    # W = torch.where(pairwise_distances <= 0.5, torch.tensor(10), w_ones)
 
-    # repulse loss
-    repulse_loss = torch.where(pairwise_distances < d_min, repulse, torch.zeros_like(repulse))
-    # attract loss
-    attract_loss = torch.where(pairwise_distances > d_max, attract, torch.zeros_like(attract))
+    # Sigma & Espilon mats with the shape (Atoms, N)
+    S = torch.add(sigma_peptide.unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
+    E = torch.sqrt(epsilon_peptide.unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
+    S = S.repeat(B, 1, 1)
+    E = E.repeat(B, 1, 1)
 
-    loss = alpha * repulse_loss + beta * attract_loss
+    # Linear Repulse Term
+    m = 20 * E / S * (-(5/3)**12 + (5/3)**6)
+    b = E * (13*(5/3)**12 - 14*(5/3)**6 + 1)
+    linear_term = m*pairwise_distances + b
 
-    return loss.mean((-2, -1))
+    # normal LJ term
+    lj_term = E*((S/pairwise_distances).pow(12) - 2*(S/pairwise_distances).pow(6) + 1)
+
+    # Now conditional settings to compute loss (B, Atoms, N)
+    loss = torch.where(
+        pairwise_distances <= 0.6*S,
+        linear_term,
+        torch.where(
+            pairwise_distances <= S,
+            lj_term,
+            torch.zeros_like(pairwise_distances, device=pairwise_distances.device)
+        )
+    ) #* W
+
+    return loss.sum((-2, -1)), pairwise_distances.min(-1)[0].min(-1).values < 1.0
+    # return repulse.sum(-1), pairwise_distances.clone().detach()
+
+# def interface_loss(
+#     interface_atoms: torch.Tensor,
+#     recomputed_xyz: torch.Tensor,
+#     previous_distances: torch.Tensor = None,
+#     d_min: float = 1.4,
+#     d_max: float = 10.0,
+#     alpha: float = 1.0,
+#     beta: float = 1.0,
+#     sigma: float = 1.0,
+#     ):
+#     """Compute smooth differentiable distance inference loss metric
+#
+#     PARAMS
+#     ------
+#     interface_atoms: Tensor (N, 3)
+#         Target atoms that are involved in the interface; close to the peptide
+#     recomputed_xyz: Tensor (B, Atoms, 3)
+#         Recomputed Heavy Atoms XYZ that are from the DoFs outputted from the model
+#     previous_distances: Tensor (B, Atoms, N)
+#     d_min: float,
+#         Minimum distance that an atom in peptide can come distance wise to an interface atom and loss explodes
+#     d_max: float,
+#         Maximum distance that an atom in peptide can go away from an interface atom loss explodes
+#     alpha: float,
+#         Scale repulsion loss term
+#     beta: float,
+#         Scale attraction loss term
+#     sigma: float,
+#         Controls the steepness of the exponential function growth
+#
+#     RETURNS
+#     -------
+#     loss: (B) float
+#         Computed loss given interface and recomputed_xyz using a smooth distance cutoff
+#     """
+#     # get pairwise distances
+#     pairwise_distances = torch.cdist(recomputed_xyz, interface_atoms, p=2)
+#
+#     print(pairwise_distances)
+#     print("SHAPE:", pairwise_distances.shape)
+#     print('min:', pairwise_distances.min().item())
+#     print('max:', pairwise_distances.max().item())
+#     print('mean:', pairwise_distances.mean().item())
+#
+#     # attract = (1/100) * torch.exp(pairwise_distances / 1.5)
+#     # min_distances, _ = torch.min(pairwise_distances, dim=-1)
+#     # print("MIN DISTANCES:", min_distances)
+#     # print("MIN DISTANCES MIN:", min_distances.min(dim=-1))
+#     repulse = 10 * torch.exp(- pairwise_distances / 2)
+#     print("REPULSE:", repulse)
+#     print("REPULSE MAX:", repulse.max(dim=-1))
+#     print("REPULSE:", repulse.shape)
+#
+#
+#     return repulse.sum((-2, -1)), pairwise_distances.clone().detach()
+    # return repulse.sum(-1), pairwise_distances.clone().detach()
+
+# def interface_loss(
+#     interface_atoms: torch.Tensor,
+#     recomputed_xyz: torch.Tensor,
+#     previous_distances: torch.Tensor = None,
+#     d_min: float = 1.4,
+#     d_max: float = 10.0,
+#     alpha: float = 1.0,
+#     beta: float = 1.0,
+#     sigma: float = 1.0,
+#     ):
+#     """Compute smooth differentiable distance inference loss metric
+#
+#     PARAMS
+#     ------
+#     interface_atoms: Tensor (N, 3)
+#         Target atoms that are involved in the interface; close to the peptide
+#     recomputed_xyz: Tensor (B, Atoms, 3)
+#         Recomputed Heavy Atoms XYZ that are from the DoFs outputted from the model
+#     previous_distances: Tensor (B, Atoms, N)
+#     d_min: float,
+#         Minimum distance that an atom in peptide can come distance wise to an interface atom and loss explodes
+#     d_max: float,
+#         Maximum distance that an atom in peptide can go away from an interface atom loss explodes
+#     alpha: float,
+#         Scale repulsion loss term
+#     beta: float,
+#         Scale attraction loss term
+#     sigma: float,
+#         Controls the steepness of the exponential function growth
+#
+#     RETURNS
+#     -------
+#     loss: (B) float
+#         Computed loss given interface and recomputed_xyz using a smooth distance cutoff
+#     """
+#     # get pairwise distances
+#     pairwise_distances = torch.cdist(recomputed_xyz, interface_atoms, p=2)
+#     # print(interface_atoms.shape, recomputed_xyz.shape)
+#     # interface_atoms_exp = interface_atoms.unsqueeze(0).unsqueeze(0) # (N, 3) -> (1, 1, N, 3)
+#     # recomputed_xyz_exp = recomputed_xyz.unsqueeze(2) # (B, A, 3) -> (B, A, 1, 3)
+#     # print('Interface:', interface_atoms_exp.shape)
+#     # print('recomputed_xyz', recomputed_xyz_exp.shape)
+#     # pairwise_distances = torch.norm(recomputed_xyz_exp - interface_atoms_exp, dim=-1)
+#     print(pairwise_distances)
+#     print(pairwise_distances.shape)
+#     print('min:', pairwise_distances.min().item())
+#     print('max:', pairwise_distances.max().item())
+#     print('mean:', pairwise_distances.mean().item())
+#
+#     # repulsion and attract function
+#     # repulse = torch.exp( - sigma * (pairwise_distances - d_min))
+#     # attract = torch.exp( - sigma * (d_max - pairwise_distances))
+#
+#     # normalizing term
+#     # z = torch.sum(torch.exp( - pairwise_distances / sigma), dim=-1, keepdim=True)
+#     # print('z', z.shape)
+#
+#     # Attraction term
+#     # attract = torch.exp( - pairwise_distances / sigma) #/ pairwise_distances
+#     # repulse = torch.exp( pairwise_distances / sigma) #/ pairwise_distances
+#     # repulse = (1 / pairwise_distances).pow(12)
+#
+#     # print('attract', attract.shape)
+#     # print('repulse', repulse.shape)
+#
+#     attract = 0.5 * torch.exp(pairwise_distances / 4)
+#     repulse = (1/pairwise_distances) * torch.exp(- pairwise_distances / 10)
+#
+#     # repulse loss
+#     # repulse_loss = torch.where(pairwise_distances <= d_min, repulse, torch.zeros_like(repulse))
+#     # repulse_loss = repulse * torch.sigmoid(sigma * (d_min - pairwise_distances))
+#     # attract loss
+#     # attract_loss = torch.where(pairwise_distances >= d_max, attract, torch.zeros_like(attract))
+#     # attract_loss = attract * torch.sigmoid(sigma * (pairwise_distances - d_max))
+#
+#     # loss = (alpha * 0*repulse + (1/z) * attract) #* pairwise_distances.pow(2)
+#     loss = 0*repulse + attract #* pairwise_distances.pow(2)
+#     # loss = alpha * repulse.pow(2) + beta * attract.pow(2)
+#     print(loss.shape)
+#
+#     return loss.sum((-2, -1)), pairwise_distances
+
+def update_move(P: torch.Tensor, Q: torch.Tensor):
+    """Perform the kabsch algorithm to find the optimal rotation matrix
+    that aligns P to points Q
+
+    PARAMS
+    ------
+    P: Tensor (B, N, 3)
+        Predicted DoF XYZ points
+    Q: Tensor (B, N, 3)
+        Previous model output xyz points 
+
+    RETURNS
+    -------
+    P_updated: Tensor (B, N, 3)
+        Updated XYZ points
+    """
+    #  get the centroid and center Q
+    print(Q.shape)
+    centroid_Q = Q.mean(dim=1)
+    print("centroid_Q", centroid_Q.shape)
+    centered_Q = Q - centroid_Q.unsqueeze(1)
+    print("Centered", centered_Q.shape)
+
+    move = P - centered_Q
+
+    return P + move
+
+def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
+    """Perform the kabsch algorithm to find the optimal rotation matrix
+    that aligns P to points Q
+
+    PARAMS
+    ------
+    P: Tensor (B, N, 3)
+        Predicted DoF XYZ points
+    Q: Tensor (N, 3)
+        PDB Peptide Heavy atom XYZ Points
+    motif: Tensor (2)
+        Residues involved in motif
+
+    RETURNS
+    -------
+    P_aligned: Tensor (B, N, 3)
+        Aligned DoF XYZ points
+    """
+    # motif_atoms
+    # Calculate on my own # THIS NEEDS TO BE FIXED
+    motif_mask = torch.arange(motif*4)
+
+    # Grab the residues you need
+    P_motif = P[:, motif_mask, :]
+    Q_motif = Q[:, motif_mask, :]
+
+    # Calc centroids
+    centroid_P = P.mean(dim=1) # (B, N, 3) -> (B, 3)
+    centroid_Q = Q.mean(dim=0) if len(Q.shape) == 2 else Q.mean(dim=1)# (N, 3) -> (3)
+
+    # Center the points base don centroid
+    P_centered = P - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N, 3)
+    Q_centered = Q - centroid_Q if len(Q.shape) == 2 else Q - centroid_Q.unsqueeze(1)# (N, 3) - (3) = (N, 3)
+
+    # (B, N, 3) -> (B, 3) -> (B, N, 3) - (B, 1, 3) = (B, N, 3)
+
+    # Adjust Q_centered to match
+    if len(Q.shape) == 2:
+        Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0), 1, 1) # (1, N, 3) -> (B, N, 3)
+
+    # Compute the Covariance matrix
+    H = torch.matmul(P_centered.transpose(-2, -1), Q_centered) # (B, 3, N) x (B, N, 3) = (B, 3, 3)
+
+    # Compute SVD for optimal rotation
+    U, S, Vt = torch.linalg.svd(H) 
+
+    # Compute Rotation Matrix Now
+    mask = (torch.linalg.det(U) * torch.linalg.det(Vt)) < 0.0
+    # R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
+
+    # Special Reflection case
+    # det = torch.linalg.det(R)
+    # mask = det < 0
+    if mask.sum() >= 1:
+        # Vt_copy = Vt.clone()
+        U_copy = U.clone()
+        U_copy[mask, :, -1] *= -1
+        # Vt_copy[mask, -1, :] *= -1
+        # R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
+        R = torch.matmul(U_copy.transpose(-2, -1), Vt.transpose(-2, -1))
+    else:
+        R = torch.matmul(U.transpose(-2, -1), Vt.transpose(-2, -1))
+
+    # print(torch.matmul(P_centered, R).shape)
+    # Apply Rotation
+    if len(Q.shape) == 2:
+        P_aligned = torch.matmul(P_centered, R) + centroid_Q 
+    else:
+        P_aligned = torch.matmul(P_centered, R) + centroid_Q.unsqueeze(1)
+
+    diff = P_aligned - Q
+    rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+    print("RSMD:", rmsd.mean())
+
+    torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+
+    return P_aligned
+
+def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
+    """Perform the kabsch algorithm to find the optimal rotation matrix
+    that aligns P to points Q
+
+    PARAMS
+    ------
+    P: Tensor (B, N, 3)
+        Predicted DoF XYZ points
+    Q: Tensor (N, 3)
+        PDB Peptide Heavy atom XYZ Points
+    motif: Tensor (A)
+        atom indexs 
+
+    RETURNS
+    -------
+    P_aligned: Tensor (B, N, 3)
+        Aligned DoF XYZ points
+    """
+    # Calc Translation
+    P_point = P[:, motif, :] # N atom of 4th residue root
+    Q_point = Q[motif, :] # Same N atom
+
+    # Compute centroids
+    centroid_P = P_point.mean(dim=1) # (B, 3)
+    centroid_Q = Q_point.mean(dim=0) # (3)
+
+    # Centered Points
+    P_centered = P_point - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N 3)
+    Q_centered = Q_point - centroid_Q.unsqueeze(0) # (N, 3) - (1, 3) = (N, 3)
+
+    # Calculate covariance matrix
+    H = torch.matmul(P_centered.transpose(2, 1), Q_centered.unsqueeze(0)) # (B, 3, N) * (1, N, 3) = (B, N, N)
+
+    # Compute SVD for optimal rotation on the covarinace matrix
+    U, S, Vt = torch.linalg.svd(H) 
+
+    # Compute Rotation Matrix Now
+    R = torch.matmul(Vt.transpose(2, 1), U.transpose(2, 1))
+
+    # Special Reflection case
+    det = torch.linalg.det(R)
+    mask = det < 0.0
+    if mask.sum() >= 1:
+        Vt_copy = Vt.clone()
+        Vt_copy[mask, -1, :] *= -1
+        R = torch.matmul(Vt_copy.transpose(2, 1), U.transpose(2, 1))
+
+    # Translate vector: I want (B, 1, 3) or (B, 3)
+    # (1, 1, 3) - ( (B, 1, 3) * (B, 3, 3) ) =  (1, 1, 3) - (B, 3, 3) =  (B, 3, 3)
+    t = centroid_Q - torch.matmul(centroid_P.unsqueeze(1), R.transpose(2, 1))
+    
+    # Rotate points accordingly
+    # P_aligned = torch.matmul(R, P_centered.transpose(2, 1)).transpose(2, 1) + t.unsqueeze(1)
+    P_aligned = torch.matmul(R, P.transpose(2, 1)).transpose(2, 1) + t
+    print(P_aligned.shape)
+    
+    diff = P_aligned - Q
+    rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+    print("RSMD Whole:", rmsd.mean().item())
+    
+    diff_motif = P_aligned[:, motif, :] - Q[motif, :]
+    rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
+    print("RSMD Motif:", rmsd_motif.mean().item())
+
+    torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+
+    return P_aligned
 
 def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     """Perform the kabsch algorithm to find the optimal rotation matrix
@@ -425,14 +823,20 @@ def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     """
     # Calc centroids
     centroid_P = P.mean(dim=1) # (B, N, 3) -> (B, 3)
-    centroid_Q = Q.mean(dim=0) # (N, 3) -> (3)
+    centroid_Q = Q.mean(dim=0) if len(Q.shape) == 2 else Q.mean(dim=1)# (N, 3) -> (3)
 
     # Center the points base don centroid
     P_centered = P - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N, 3)
-    Q_centered = Q - centroid_Q # (N, 3) - (3) = (N, 3)
+    Q_centered = Q - centroid_Q if len(Q.shape) == 2 else Q - centroid_Q.unsqueeze(1)# (N, 3) - (3) = (N, 3)
+
+    # (B, N, 3) -> (B, 3) -> (B, N, 3) - (B, 1, 3) = (B, N, 3)
+
+    # optimal translation
+    t = centroid_Q - centroid_P # (B, 1, 3) x (B, 1, 3) = (B, 1, 3)
 
     # Adjust Q_centered to match
-    Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0), 1, 1) # (1, N, 3) -> (B, N, 3)
+    if len(Q.shape) == 2:
+        Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0), 1, 1) # (1, N, 3) -> (B, N, 3)
 
     # Compute the Covariance matrix
     H = torch.matmul(P_centered.transpose(-2, -1), Q_centered) # (B, 3, N) x (B, N, 3) = (B, 3, 3)
@@ -441,75 +845,207 @@ def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     U, S, Vt = torch.linalg.svd(H) 
 
     # Compute Rotation Matrix Now
+    # mask = (torch.linalg.det(U) * torch.linalg.det(Vt)) < 0.0
+    # R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
     R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
 
     # Special Reflection case
     det = torch.linalg.det(R)
-    mask = det < 0
+    mask = det < 0.0
     if mask.sum() >= 1:
         Vt_copy = Vt.clone()
+        # U_copy = U.clone()
+        # U_copy[mask, :, -1] *= -1
         Vt_copy[mask, -1, :] *= -1
-        R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
+        R = torch.matmul(Vt_copy.transpose(1, 2), U.transpose(1, 2))
+        # R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
+        # R = torch.matmul(U_copy.transpose(-2, -1), Vt.transpose(-2, -1))
+    # else:
+    #     R = torch.matmul(U.transpose(-2, -1), Vt.transpose(-2, -1))
 
+    # print(torch.matmul(P_centered, R).shape)
     # Apply Rotation
-    P_aligned = torch.matmul(P_centered, R) + centroid_Q
+    # if len(Q.shape) == 2:
+    #     P_aligned = torch.matmul(P_centered, R.transpose(1,2)) - centroid_Q
+    #     # print((R*centroid_P.unsqueeze(1)).shape)
+    #     # translation = centroid_Q.unsqueeze(1) - R*centroid_P.unsqueeze(1)  
+    # else:
+    #     P_aligned = torch.matmul(P_centered, R.transpose(1,2)) - centroid_Q.unsqueeze(1)
+        # translation = centroid_Q.unsqueeze(1) - torch.matmul(R, centroid_P)
+
+    # Now Rotate and translate
+    P_aligned = torch.matmul(R, P_centered.transpose(2, 1)).transpose(2, 1) + t.unsqueeze(1)
+
+    diff = P_aligned - Q
+    rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+    print("RSMD:", rmsd.mean())
+
+    torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
 
     return P_aligned
 
+def kabsch_test():
+    # set seed
+    torch.manual_seed(123)
+
+    P = torch.randn(10, 32, 3)
+
+    alpha = torch.randn(10) * 2 * torch.pi
+    R = torch.stack([torch.tensor([[torch.cos(a), -torch.sin(a), 0],
+                                   [torch.sin(a), torch.cos(a), 0],
+                                   [0, 0, 1]]) for a in alpha], axis=0)
+    print(R)
+    t = torch.randn(10, 3) * 10
+
+    Q = torch.matmul(P, R.transpose(2, 1)) + t[:, None, :]
+
+    R_opt, t_opt, P_aligned = kabsch_algorithm(P, Q)
+
+    l2_t = torch.norm(t - t_opt, dim=1)
+    l2_R = torch.norm(R - R_opt, dim=(1,2))
+    print("L2 t: {}".format(l2_t.mean()))
+    print("L2 R: {}".format(l2_R.mean()))
+    return 0
+
+
+# def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
+#     """Perform the kabsch algorithm to find the optimal rotation matrix
+#     that aligns P to points Q
+#
+#     PARAMS
+#     ------
+#     P: Tensor (B, N, 3)
+#         Predicted DoF XYZ points
+#     Q: Tensor (N, 3)
+#         PDB Peptide Heavy atom XYZ Points
+#
+#     RETURNS
+#     -------
+#     P_aligned: Tensor (B, N, 3)
+#         Aligned DoF XYZ points
+#     """
+#     # Calc centroids
+#     centroid_P = P.mean(dim=1) # (B, N, 3) -> (B, 3)
+#     centroid_Q = Q.mean(dim=0) if len(Q.shape) == 2 else Q.mean(dim=1)# (N, 3) -> (3)
+#
+#     # Center the points base don centroid
+#     P_centered = P - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N, 3)
+#     Q_centered = Q - centroid_Q if len(Q.shape) == 2 else Q - centroid_Q.unsqueeze(1)# (N, 3) - (3) = (N, 3)
+#
+#     # (B, N, 3) -> (B, 3) -> (B, N, 3) - (B, 1, 3) = (B, N, 3)
+#
+#     # Adjust Q_centered to match
+#     if len(Q.shape) == 2:
+#         Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0), 1, 1) # (1, N, 3) -> (B, N, 3)
+#
+#     # Compute the Covariance matrix
+#     H = torch.matmul(P_centered.transpose(-2, -1), Q_centered) # (B, 3, N) x (B, N, 3) = (B, 3, 3)
+#
+#     # Compute SVD for optimal rotation
+#     U, S, Vt = torch.linalg.svd(H) 
+#
+#     # Compute Rotation Matrix Now
+#     # mask = (torch.linalg.det(U) * torch.linalg.det(Vt)) < 0.0
+#     # R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
+#     R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
+#
+#     # Special Reflection case
+#     det = torch.linalg.det(R)
+#     mask = det < 0
+#     if mask.sum() >= 1:
+#         Vt_copy = Vt.clone()
+#         # U_copy = U.clone()
+#         # U_copy[mask, :, -1] *= -1
+#         Vt_copy[mask, -1, :] *= -1
+#         R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
+#         # R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
+#         # R = torch.matmul(U_copy.transpose(-2, -1), Vt.transpose(-2, -1))
+#     # else:
+#     #     R = torch.matmul(U.transpose(-2, -1), Vt.transpose(-2, -1))
+#
+#     # print(torch.matmul(P_centered, R).shape)
+#     # Apply Rotation
+#     if len(Q.shape) == 2:
+#         # P_aligned = torch.matmul(P_centered, R) + centroid_Q 
+#         # print((R*centroid_P.unsqueeze(1)).shape)
+#         translation = centroid_Q.unsqueeze(1) - R*centroid_P.unsqueeze(1)  
+#     else:
+#         # P_aligned = torch.matmul(P_centered, R) + centroid_Q.unsqueeze(1)
+#         translation = centroid_Q.unsqueeze(1) - torch.matmul(R, centroid_P)
+#
+#     # Translate and rotate
+#     print("P",P.shape)
+#     print("R",R.shape)
+#     print("MATMUL R*P.T", torch.matmul(R, P.transpose(-2,-1)).shape)
+#     print("Translation", translation.shape)
+#     P_aligned = torch.matmul(R, P.transpose(-2,-1)) + translation
+#
+#     diff = P_aligned - Q
+#     rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+#     print("RSMD:", rmsd.mean())
+#
+#     torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+#
+#     return P_aligned
+
 
 if __name__ == "__main__":
-    # Terminal peptide
-    peptide_term_class = TerminalPeptide()
+    kabsch_test()
 
-    # Glycine each residue has 7 atoms: N, H, CA, 1HA, 2HA, C, O
-    data = torch.load("./binary_import/dof_vectors2024-05-14torch_tensor.pt")
-    params = data["params"]
-    x = data["x"]
 
-    # pull out values
-    torsion_full = x[:, :params["torsion_main_n"]]
-    bond_angles = x[:, params["torsion_main_n"]:params["torsion_main_n"]+params["bond_angle_main_n"]]
-    bond_lengths = x[:, params["torsion_main_n"]+params["bond_angle_main_n"]:-params["energy_n"]]
 
-    phi_psi, omega_idx = peptide_term_class.torsion_extract(torsion_full.size(-1), 4)
-
-    # index tensors
-    omega = torsion_full[:, omega_idx]
-    torsion = torsion_full[:, phi_psi]
-
-    # generate coordinates given DoF vector
-    coordinates = peptide_term_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths)
-
-    # Extract H and O coordinates
-    h_coords = coordinates[:, :, 4, :]
-    o_coords = coordinates[:, :, 3, :]
-    # Extract out N and C coords
-    n_coords = coordinates[:, :, 2, :]
-    n_roll = torch.roll(n_coords, shifts=-1, dims=1)
-    c_coords = coordinates[:, :, 1, :]
-
-    # Get terminal bond lengths
-    all_bonds = torch.norm(n_roll - c_coords, dim=-1)
-    terminal_length = all_bonds[:, -1]
-
-    # init minimum hbond amount
-    hbond_class = HBondCount(min_hbond=3)
-
-    # test angles
-    ahd, bah = hbond_class.calc_ahd_bah_angles(
-    o_coords,
-    h_coords,
-    n_roll,
-    c_coords
-    )
-    print("ANGLE TEST FUNC DONE")
-
-    # measure distances
-    hbond_count_out = hbond_class.measure_internal_distances(h_coords, o_coords, ahd, bah)
-    print("HBOND COUNT:", hbond_count_out)
-
-    # Figure out if Backbone passes hbond and terminal bond check
-    out = hbond_class.checkpoint(hbond_count_out, terminal_length)
-    print("OUT:", out)
+    # # Terminal peptide
+    # peptide_term_class = TerminalPeptide()
+    #
+    # # Glycine each residue has 7 atoms: N, H, CA, 1HA, 2HA, C, O
+    # data = torch.load("./binary_import/dof_vectors2024-05-14torch_tensor.pt")
+    # params = data["params"]
+    # x = data["x"]
+    #
+    # # pull out values
+    # torsion_full = x[:, :params["torsion_main_n"]]
+    # bond_angles = x[:, params["torsion_main_n"]:params["torsion_main_n"]+params["bond_angle_main_n"]]
+    # bond_lengths = x[:, params["torsion_main_n"]+params["bond_angle_main_n"]:-params["energy_n"]]
+    #
+    # phi_psi, omega_idx = peptide_term_class.torsion_extract(torsion_full.size(-1), 4)
+    #
+    # # index tensors
+    # omega = torsion_full[:, omega_idx]
+    # torsion = torsion_full[:, phi_psi]
+    #
+    # # generate coordinates given DoF vector
+    # coordinates = peptide_term_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths)
+    #
+    # # Extract H and O coordinates
+    # h_coords = coordinates[:, :, 4, :]
+    # o_coords = coordinates[:, :, 3, :]
+    # # Extract out N and C coords
+    # n_coords = coordinates[:, :, 2, :]
+    # n_roll = torch.roll(n_coords, shifts=-1, dims=1)
+    # c_coords = coordinates[:, :, 1, :]
+    #
+    # # Get terminal bond lengths
+    # all_bonds = torch.norm(n_roll - c_coords, dim=-1)
+    # terminal_length = all_bonds[:, -1]
+    #
+    # # init minimum hbond amount
+    # hbond_class = HBondCount(min_hbond=3)
+    #
+    # # test angles
+    # ahd, bah = hbond_class.calc_ahd_bah_angles(
+    # o_coords,
+    # h_coords,
+    # n_roll,
+    # c_coords
+    # )
+    # print("ANGLE TEST FUNC DONE")
+    #
+    # # measure distances
+    # hbond_count_out = hbond_class.measure_internal_distances(h_coords, o_coords, ahd, bah)
+    # print("HBOND COUNT:", hbond_count_out)
+    #
+    # # Figure out if Backbone passes hbond and terminal bond check
+    # out = hbond_class.checkpoint(hbond_count_out, terminal_length)
+    # print("OUT:", out)
 
 

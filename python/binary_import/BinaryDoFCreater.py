@@ -88,6 +88,11 @@ class DoFExport:
 
         binary_format_residue_metadata = '<'+ 'QQB' * metadata_size
 
+        # print(type(self.model_out))
+        # print(self.model_out.keys())
+        self.model_out = self.model_out['x'] if type(self.model_out) == dict else self.model_out
+        # print(type(self.model_out))
+        # print(self.model_out)
         binary_format2 = 'd' * self.model_out.numel()
         
         # Create full value information list
@@ -108,8 +113,8 @@ class DoFExport:
                     ele = metadata[row, i].numpy().astype(np.uint64)
                     data_to_pack_residue_metadata.append(ele)
 
-        # print(data_to_pack_residue_metadata)
-        # print(len(data_to_pack_residue_metadata))
+        print(data_to_pack_residue_metadata)
+        print(len(data_to_pack_residue_metadata))
 
 
         data_to_pack_samplenum = self.model_out.size(0)
@@ -127,8 +132,8 @@ class DoFExport:
         packed_data2 = struct.pack(binary_format2, *data_to_pack2)
 
         reference_len = len(reference_pose)
-        # print(reference_len)
-        # print(reference_pose)
+        print(reference_len)
+        print(reference_pose)
 
         packed_skip = struct.pack('Q', reference_len)
 
