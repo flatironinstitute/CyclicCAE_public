@@ -10,9 +10,10 @@ import os, sys
 import io
 import argparse
 from collections import defaultdict
-from typing import List, Dict
+from typing import List, Dict, Union
 from absl import logging
 import numpy as np
+import numpy.typing as npt
 import openmm
 import openmm.app as openmm_app
 from openmm import unit
@@ -22,7 +23,7 @@ import pdbfixer
 class LocalMinimize:
     def __init__(
         self,
-        rounds: int = 500,
+        rounds: int = 300,
         ff_name: str = "amber14-all.xml",
         max_attempts: int = 3,
         stiffness: float = 10.0,
@@ -94,23 +95,39 @@ class LocalMinimize:
             else: residues = residues_all[0]
             hydrogens_list.extend([a for a in residues[0].atoms() if a.name in ["H3", "H2"]])
             hydrogens_list.extend([a for a in residues[-1].atoms() if a.name == "OXT"])
+            print("Modeller: ", modeller.topology)
+            print("--- Deleting Atoms To Form Cyclic Peptide ---")
+            print(hydrogens_list)
+            modeller.delete(hydrogens_list)
+
+            # Now we need to get our N and C atoms from the new topology
+            residues_all = defaultdict(list)
+            for c in modeller.topology.chains():
+                residues_all[c.index].extend([r for r in c.residues()])
+            if len(list(residues_all.keys())) > 1:
+                residues = residues_all[1]
+            else: residues = residues_all[0]
             nterm = [i for i in residues[0].atoms() if i.name == "N" ][0]
             cterm = [i for i in residues[-1].atoms() if i.name == "C" ][0]
-            modeller.topology.addBond(nterm, cterm)
-            modeller.delete(hydrogens_list)
+            print("Modeller: ", modeller.topology)
             print("--- Peptide Bond Added N-C ---")
-
-        print("Modeller: ", modeller.topology)
+            modeller.topology.addBond(nterm, cterm)
+            print("Modeller: ", modeller.topology)
 
         # generate our system
         system = self.forcefield.createSystem(
             modeller.topology, constraints=openmm_app.HBonds,
         )
 
+        # Grab our residues of interest again since the Topology has changed
+        residues_all = defaultdict(list)
+        for c in modeller.topology.chains():
+            residues_all[c.index].extend([r for r in c.residues()])
+
         self._addHarmonicRestraint(
             system,
-            pdb,
-            residues_all[1],
+            modeller,
+            residues_all[1] if len(list(residues_all.keys())) > 1 else residues_all[0],
             self.stiffness,
         )
 
@@ -145,12 +162,92 @@ class LocalMinimize:
         with open("test.pdb", "w") as f:
             print(sim_dict["min_pdb"], file=f)
         print("Initial Energy: ", sim_dict["energyInit"], " --> ", sim_dict["energyFinal"])
+        rmsdA, rmsdB = self._calculateRMSD(np.array(sim_dict["posInit"]), np.array(sim_dict["posFinal"]), residues_all)
+        print(f"RSMD Difference for Chain A: {rmsdA}, Chain B: {rmsdB}")
         return sim_dict
+
+    def _calculateRMSD(
+            self,
+            pos1: npt.ArrayLike,
+            pos2: npt.ArrayLike, 
+            topology_dict: Dict[int, list],
+        ) -> Union[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+        """Generate an RMSD Difference from ChainA and Peptide for DEBUG and output information
+
+        PARAMS
+        ------
+        :pos1: Initial array of positions before minimization
+        :pos2: Final array of positions after minimization
+        :topology_dict: A dictionary of chain index as key and a list of residue objects
+
+        RETURNS
+        -------
+        :rmsd_A: RMSD difference in angstrom for Target
+        :rmsd_B: RMSD difference in angstrom for peptide
+        """
+        # Determine if there are multiple chains (complex) or a single chain (monomer)
+        complex = len(list(topology_dict.keys())) > 1
+
+        # generate our arrays based on size input and if our 
+        if complex:
+            test = [a for r in topology_dict[1] for a in r.atoms()]
+            atoms_A = [a.index for r in topology_dict[0] for a in r.atoms() if a.name in ["N", "CA", "C", "O"]]
+            atoms_B = [a.index for r in topology_dict[1] for a in r.atoms() if a.name in ["N", "CA", "C", "O"]]
+            # We want a (2, R, 3) Matrix 
+            pos_A = np.zeros(
+                (
+                2,
+                len(atoms_A),
+                3,
+                ),
+                dtype=np.float32,
+            )
+            pos_B = np.zeros(
+                (
+                2,
+                len(atoms_B),
+                3,
+                ),
+                dtype=np.float32,
+            )
+
+            # Now place our arrays correctly
+            pos_A[0] = pos1[atoms_A]
+            pos_B[0] = pos1[atoms_B]
+            pos_A[1] = pos2[atoms_A]
+            pos_B[1] = pos2[atoms_B]
+
+            # Now perform RMSD
+            rmsd_A = np.sqrt(np.sum((pos_A[0] - pos_A[1])**2) / pos_A.shape[1])
+            rmsd_B = np.sqrt(np.sum((pos_B[0] - pos_B[1])**2) / pos_B.shape[1])
+
+        else:
+            atoms_B = [a.index for r in topology_dict[0] for a in r.atoms() if a.name in ["N", "CA", "C", "O"]]
+            # We want a (2, R, 3) Matrix 
+            pos_B = np.zeros(
+                (
+                2,
+                len(atoms_B),
+                3,
+                ),
+                dtype=np.float32,
+            )
+
+            # Now place our arrays correctly
+            pos_B[0] = pos1[atoms_B]
+            pos_B[1] = pos2[atoms_B]
+
+            # Now perform RMSD
+            rmsd_A = np.array(0)
+            rmsd_B = np.sqrt(np.sum((pos_B[0] - pos_B[1])**2) / pos_B.shape[1])
+
+        return rmsd_A, rmsd_B
+
 
     def _addHarmonicRestraint(
         self,
         system: openmm.System,
-        ref_pdb: openmm_app.PDBFile,
+        ref_pdb: openmm_app.Modeller,
         minimize_residues: List[int],
         stiffness: unit.Unit,
         ):
@@ -159,7 +256,7 @@ class LocalMinimize:
         PARAMS
         ------
         :system: Our current setup system with implict water
-        :ref_pdb: PDB which was read in and has a topology object
+        :ref_pdb: Our current topology object
         :minimize_residues: Residues we would like to minimize
         :stiffness: Our spring constant (k) within our force (kcal/mol A**2)
         """
@@ -178,6 +275,7 @@ class LocalMinimize:
                 continue
             elif a.name == "CA":
                 custom_harmonic_force.addParticle(i, ref_pdb.positions[i])
+        print("Minimizing %d / %d particles." % (custom_harmonic_force.getNumParticles(), system.getNumParticles()))
         logging.info("Minimizing %d / %d particles.",
                      custom_harmonic_force.getNumParticles(), system.getNumParticles(),
                      )
