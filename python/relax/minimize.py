@@ -8,16 +8,25 @@
 ### Import Portion
 import os, sys
 import io
+import glob
+import tqdm
+import datetime
+import time
+# import concurrent.futures as futures
+import multiprocessing
 import argparse
 from collections import defaultdict
+from functools import partial
+import numpy as np
+
 from typing import List, Dict, Union
 from absl import logging
-import numpy as np
 import numpy.typing as npt
+
+import pdbfixer
 import openmm
 import openmm.app as openmm_app
 from openmm import unit
-import pdbfixer
 
 ### Class
 class LocalMinimize:
@@ -28,6 +37,7 @@ class LocalMinimize:
         max_attempts: int = 3,
         stiffness: float = 10.0,
         tolerance: float = 10.0,
+        outprefix: str = "out",
         ):
         """Generate an amber forcefield with the appropriate local minimization
 
@@ -38,6 +48,7 @@ class LocalMinimize:
         :max_attempts: Number of minimization attempts to try
         :stiffness: Our harmonic spring constant (kcal/mol A**2)
         :tolerance: Energy goal for L-BFBS iterations (kcal/mol)
+        :outprefix: String for out dir.
         """
         # init variables
         self.energy = unit.kilocalories_per_mole
@@ -47,6 +58,7 @@ class LocalMinimize:
         self.max_attempts = max_attempts
         self.tolerance = tolerance * self.energy
         self.stiffness = stiffness * self.energy / (self.length**2)
+        self.outprefix = outprefix
 
 
     def minimizeStructure(
@@ -63,7 +75,7 @@ class LocalMinimize:
         :complex: This is a monomer or a cyclic peptide monomer
         :gpu: Use a gpu or not (False/True)
         """
-        print("--- Fixing PDB --")
+        # print("--- Fixing PDB --")
         # load our pdb in
         fixer = pdbfixer.PDBFixer(file)
         fixer.findMissingResidues()
@@ -73,7 +85,7 @@ class LocalMinimize:
         with io.StringIO() as f:
             openmm_app.PDBFile.writeFile(fixer.topology, fixer.positions, f)
             pdb = f.getvalue()
-        print("--- Loading In PDB --")
+        # print("--- Loading In PDB --")
         pdb = openmm_app.PDBFile(io.StringIO(pdb))
         # pdb = openmm_app.PDBFile(file)
 
@@ -95,9 +107,9 @@ class LocalMinimize:
             else: residues = residues_all[0]
             hydrogens_list.extend([a for a in residues[0].atoms() if a.name in ["H3", "H2"]])
             hydrogens_list.extend([a for a in residues[-1].atoms() if a.name == "OXT"])
-            print("Modeller: ", modeller.topology)
-            print("--- Deleting Atoms To Form Cyclic Peptide ---")
-            print(hydrogens_list)
+            # print("Modeller: ", modeller.topology)
+            # print("--- Deleting Atoms To Form Cyclic Peptide ---")
+            # print(hydrogens_list)
             modeller.delete(hydrogens_list)
 
             # Now we need to get our N and C atoms from the new topology
@@ -109,10 +121,10 @@ class LocalMinimize:
             else: residues = residues_all[0]
             nterm = [i for i in residues[0].atoms() if i.name == "N" ][0]
             cterm = [i for i in residues[-1].atoms() if i.name == "C" ][0]
-            print("Modeller: ", modeller.topology)
-            print("--- Peptide Bond Added N-C ---")
+            # print("Modeller: ", modeller.topology)
+            # print("--- Peptide Bond Added N-C ---")
             modeller.topology.addBond(nterm, cterm)
-            print("Modeller: ", modeller.topology)
+            # print("Modeller: ", modeller.topology)
 
         # generate our system
         system = self.forcefield.createSystem(
@@ -159,11 +171,31 @@ class LocalMinimize:
         sim_dict["posFinal"] = state.getPositions(asNumpy=True).value_in_unit(self.length)
         sim_dict["min_pdb"] = self._get_pdb_string(simulation.topology, state.getPositions())
 
-        with open("test.pdb", "w") as f:
+        # extract out file suffix
+        fileprefix = file.split('/')[-1].split('.')[0]
+
+        # Make our out dir if not present already
+        if not os.path.exists(self.outprefix):
+            os.mkdir(self.outprefix)
+
+        # Write our pdb to a file
+        with open(os.path.join(self.outprefix, f"{fileprefix}-relaxed.pdb"), "w") as f:
             print(sim_dict["min_pdb"], file=f)
-        print("Initial Energy: ", sim_dict["energyInit"], " --> ", sim_dict["energyFinal"])
+
+
+        # print("Initial Energy: ", sim_dict["energyInit"], " --> ", sim_dict["energyFinal"])
+        # Calculate the RMSD changes per chains
         rmsdA, rmsdB = self._calculateRMSD(np.array(sim_dict["posInit"]), np.array(sim_dict["posFinal"]), residues_all)
-        print(f"RSMD Difference for Chain A: {rmsdA}, Chain B: {rmsdB}")
+
+        # Now if our status update file isn't real create
+        statusfile = os.path.join(self.outprefix, "out-info.csv")
+        if not os.path.exists(statusfile):
+            with open(statusfile, "w") as fout:
+                print("FILE,DATE,RMSD A, RMSD B,Init Potential Energy,Final Potential Energy", file=fout)
+        
+        with open(statusfile, "a") as fout:
+            print(f"{fileprefix},{datetime.date.today()},{rmsdA},{rmsdB},{sim_dict['energyInit']},{sim_dict['energyFinal']}", file=fout)
+        # print(f"RSMD Difference for Chain A: {rmsdA}, Chain B: {rmsdB}")
         return sim_dict
 
     def _calculateRMSD(
@@ -275,7 +307,7 @@ class LocalMinimize:
                 continue
             elif a.name == "CA":
                 custom_harmonic_force.addParticle(i, ref_pdb.positions[i])
-        print("Minimizing %d / %d particles." % (custom_harmonic_force.getNumParticles(), system.getNumParticles()))
+        # print("Minimizing %d / %d particles." % (custom_harmonic_force.getNumParticles(), system.getNumParticles()))
         logging.info("Minimizing %d / %d particles.",
                      custom_harmonic_force.getNumParticles(), system.getNumParticles(),
                      )
@@ -309,9 +341,23 @@ class LocalMinimize:
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument('--input-file', type=str, help="Test File To Minimize PDB path File")
+    p.add_argument('--input-file', type=str, default=None, help="Test File To Minimize PDB path File")
+    p.add_argument('--input-dir', type=str, default=None, help="Directory of pdb files")
+    p.add_argument('--output-dir', type=str, default="out", help="Specify out dir")
+    p.add_argument('--max-workers', type=int, default=multiprocessing.cpu_count()-2, help="Number of workers")
     p.add_argument('--gpu', action="store_true", help="Run on GPU")
     args = p.parse_args()
 
-    relax = LocalMinimize()
-    relax.minimizeStructure(args.input_file, gpu=args.gpu)
+    relax = LocalMinimize(outprefix=args.output_dir)
+    if args.input_dir == None:
+        relax.minimizeStructure(args.input_file, gpu=args.gpu)
+    else:
+        file_out = glob.glob(os.path.join(args.input_dir, "fixed_test*.pdb"))
+        partial_func = partial(relax.minimizeStructure, gpu=args.gpu)
+        # for file in tqdm.tqdm(file_out, total=len(file_out), ncols=100):
+            # relax.minimizeStructure(file, gpu=args.gpu)
+        print("CPUS-2: ", args.max_workers)
+        with multiprocessing.Pool(processes=args.max_workers) as p, tqdm.tqdm(total=len(file_out)) as pbar:
+            for result in p.imap(partial_func, file_out):
+                pbar.update()
+                pbar.refresh()
