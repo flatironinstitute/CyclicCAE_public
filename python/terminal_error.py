@@ -58,15 +58,20 @@ class TerminalPeptide:
         )
 
         # Extract torsion (phi/psi) and omega index
-        phi_psi_idx, omega_idx = self.torsion_extract(torsion_degree.size(-1), foldtree_root)
+        phi_psi_idx, omega_idx = self.torsion_extract(torsion_degree.size(-1), params["protein_len"], foldtree_root)
         # phi_psi_idx, omega_idx = phi_psi_idx.to(device), omega_idx.to(device)
 
         # grab actual values
         torsion = torsion_degree[:, phi_psi_idx]
         omega = torsion_degree[:, omega_idx]
 
+        # Extract bond angles
+        bond_angle_idx, bond_length_idx = self.extract_bond_angles(bond_angle_degree.size(-1), L=params["protein_len"], root=foldtree_root)
+        bond_angles = bond_angle_degree[:, bond_angle_idx]
+        bond_length_subset = bond_length[:, bond_length_idx]
+
         # Extract out coordinates
-        coordinates = self.terminal_peptide(torsion, omega, bond_angles, bond_length, foldtree_root, device)
+        coordinates = self.terminal_peptide(torsion, omega, bond_angles, bond_length_subset, foldtree_root, device)
 
         # Extract out N and C
         c_coords = coordinates[:, :, 1, :]
@@ -77,8 +82,10 @@ class TerminalPeptide:
 
         # Calculate the n-c peptide length of shape (B)
         bond_pred_length = torch.norm(n_roll - c_coords, dim=-1)
+        # bond_pred_length = torch.norm(n_coords - c_coords, dim=-1)
         terminal_pred_length = bond_pred_length[:, -1]
-        # print("PRED LENGTH:", terminal_pred_length)
+        # terminal_pred_length2 = bond_pred_length2[:, -1]
+        # print("PRED LENGTH:", terminal_pred_length2)
 
         # Extract O and Ca
         ca_coords = coordinates[:, :, 0, :]
@@ -87,32 +94,62 @@ class TerminalPeptide:
 
         # Calculate terminal angles
         # ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :]) # n_coords possibly wrong
-        ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], ca_coords[:, -1, :]) # n_coords possibly wrong
+        # ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], ca_coords[:, -1, :]) # n_coords possibly wrong
+        # ahd, bdh = self.calc_ahd_bah_angles(ca_coords[:, 0, :], n_roll[:, 0, :], c_coords[:, -1, :], ca_coords[:, -1, :]) # n_coords possibly wrong
 
         # calculate dihedrals
+        # HNCO  = self.dihedral_calc(h_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :])
         HNCO  = self.dihedral_calc(h_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :])
+        # HNCO  = self.dihedral_calc(o_coords[:, -1, :], c_coords[:, -1, :], n_roll[:, 0, :], h_coords[:, 0, :])
         # NCaCO = self.dihedral_calc(n_coords[:, -1, :], ca_coords[:, -1, :], c_coords[:, -1, :], o_coords[:, -1, :])
-        CaCNCa = self.dihedral_calc(ca_coords[:, -1, :], c_coords[:, -1, :], n_roll[:, 0, :], ca_coords[:, 0, :])
+        CaCNCa = self.dihedral_calc(ca_coords[:, -1, :], c_coords[:, -1, :], n_coords[:, 0, :], ca_coords[:, 0, :])
 
-        # print("OCNH:", torch.rad2deg(OCNH).view(-1))
-        # print("HNCO:", torch.rad2deg(HNCO).view(-1))
+
+        # Terminal bond angles
+        HNC = self.compute_angle(h_coords[:, 0, :], n_coords[:, 0, :], c_coords[:, -1, :])
+        NCO = self.compute_angle(n_coords[:, 0, :], c_coords[:, -1, :], o_coords[:, -1, :])
+        NCCa = self.compute_angle(n_coords[:, 0, :], c_coords[:, -1, :], ca_coords[:, -1, :])
+        CNCa = self.compute_angle(c_coords[:, -1, :], n_coords[:, 0, :], ca_coords[:, 0, :])
 
         # perform regression
+        # print("TERMINAL BOND LENGTH:", terminal_pred_length.flatten())
+        # print("REAL TERM", real_term.flatten())
         loss = torch.pow(terminal_pred_length.view(-1, 1) - real_term.view(-1, 1).to(device), 2)
 
         # terminal angle
-        bdh_loss = torch.pow(bdh.view(-1, 1) - (torch.ones(bdh.view(-1, 1).shape) * torch.deg2rad(torch.tensor(116.))).to(device), 2)
-        ahd_loss = torch.pow(ahd.view(-1, 1) - (torch.ones(ahd.view(-1, 1).shape) * torch.deg2rad(torch.tensor(116.))).to(device), 2)
-        OCNH_loss = torch.pow(HNCO.view(-1, 1) - (torch.ones(HNCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
+        # bdh_loss = torch.mean(torch.pow(torch.sin(bdh.view(-1, 1)) - (torch.ones(bdh.view(-1, 1).shape) * torch.sin(torch.deg2rad(torch.tensor(116.)))).to(device), 2) + torch.pow(torch.cos(bdh.view(-1, 1)) - (torch.ones(bdh.view(-1, 1).shape) * torch.cos(torch.deg2rad(torch.tensor(116.)))).to(device), 2))
+        # ahd_loss = torch.mean(torch.pow(torch.sin(ahd.view(-1, 1)) - (torch.ones(ahd.view(-1, 1).shape) * torch.sin(torch.deg2rad(torch.tensor(116.)))).to(device), 2) + torch.pow(torch.cos(ahd.view(-1, 1)) - (torch.ones(ahd.view(-1, 1).shape) * torch.cos(torch.deg2rad(torch.tensor(116.)))).to(device), 2))
+        # ahd_loss = torch.pow(ahd.view(-1, 1) - (torch.ones(ahd.view(-1, 1).shape) * torch.deg2rad(torch.tensor(116.))).to(device), 2)
+        # OCNH_loss = torch.pow(HNCO.view(-1, 1) - (torch.ones(HNCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
+        # OCNH_loss = torch.pow(torch.sin(HNCO.view(-1, 1)) - (torch.ones(HNCO.view(-1, 1).shape) * torch.sin(torch.deg2rad(torch.tensor(180.)))).to(device), 2) + torch.pow(torch.cos(HNCO.view(-1, 1)) - (torch.ones(HNCO.view(-1, 1).shape) * torch.cos(torch.deg2rad(torch.tensor(180.)))).to(device), 2)
+        # OCNH_loss = torch.pow(torch.cos(HNCO.view(-1, 1) - torch.pi)-1, 2)
+        OCNH_loss = torch.cos(HNCO.view(-1, 1)) + torch.ones(HNCO.view(-1,1).shape, device=device)
+        # HNC_loss = torch.pow(torch.cos(HNC.view(-1, 1) - (torch.ones(HNC.view(-1, 1).shape) * torch.deg2rad(torch.tensor(119.1399))).to(device))-1, 2)
+        # NCO_loss = torch.pow(torch.cos(NCO.view(-1, 1) - (torch.ones(NCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(123.0323))).to(device))-1, 2)
+        
+        HNC_loss = torch.ones(HNC.view(-1,1).shape, device=device) -  torch.cos(HNC.view(-1, 1) - (torch.ones(HNC.view(-1, 1).shape) * torch.deg2rad(torch.tensor(119.1399))).to(device))
+        NCO_loss = torch.ones(NCO.view(-1,1).shape, device=device) -  torch.cos(NCO.view(-1, 1) - (torch.ones(NCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(123.0323))).to(device))
+        NCCa_loss = torch.ones(NCCa.view(-1,1).shape, device=device) -  torch.cos(NCCa.view(-1, 1) - (torch.ones(NCCa.view(-1, 1).shape) * torch.deg2rad(torch.tensor(116.))).to(device))
+        CNCa_loss = torch.ones(CNCa.view(-1,1).shape, device=device) -  torch.cos(CNCa.view(-1, 1) - (torch.ones(CNCa.view(-1, 1).shape) * torch.deg2rad(torch.tensor(120.))).to(device))
         # NCaCO_loss = torch.pow(NCaCO.view(-1, 1) - (torch.ones(NCaCO.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
-        CaCNCa_loss = torch.pow(CaCNCa.view(-1, 1) - (torch.ones(CaCNCa.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device), 2)
+        # CaCNCa_loss = torch.cos(CaCNCa.view(-1, 1) + (torch.ones(CaCNCa.view(-1, 1).shape) * torch.deg2rad(torch.tensor(180.))).to(device))
+        CaCNCa_loss = torch.cos(CaCNCa.view(-1, 1)) + torch.ones(CaCNCa.view(-1, 1).shape).to(device)
+
+        # print("CaCNCa", torch.rad2deg(CaCNCa).flatten())
+        # print("NCCa ~64", torch.rad2deg(NCCa).flatten())
+        # print("CNCa ~60", torch.rad2deg(CNCa).flatten())
+        # print("HNC ANGLES 180-119=60.8601:", torch.rad2deg(HNC).flatten())
+        # print("NCO ANGLES 180-123=56.9677:", torch.rad2deg(NCO).flatten())
+
 
         # Clash penalty
-        clash_penalty = self.clash_constraint(coordinates, 2.0)
+        # clash_penalty = self.clash_constraint(coordinates, 2.0)
+        clash_penalty = torch.tensor(0.0, device=device)
         # print("clash penalty shape:", clash_penalty.shape)
 
         # return loss, bdh_loss, ahd_loss, OCNH_loss, NCaCO_loss, clash_penalty
-        return loss, bdh_loss, ahd_loss, OCNH_loss, CaCNCa_loss, clash_penalty, coordinates
+        # return loss, bdh_loss, ahd_loss, OCNH_loss, CaCNCa_loss, clash_penalty, coordinates
+        return loss, HNC_loss+NCCa_loss, NCO_loss+CNCa_loss, OCNH_loss, CaCNCa_loss, clash_penalty, coordinates
     
     def smooth_cutoff(self, r, r_cut, delta):
         """Smooth cutoff, so that only replusion is factored. Also differentiable"""
@@ -230,30 +267,60 @@ class TerminalPeptide:
         D: Tensor (B, 3)
             Nitrogen generated coords
         """
-        # Calculate vetors
-        AB = B - A
+        rij = B - A
+        rjk = C - B
+        rkl = D - C
+        n_ijk = torch.cross(rij, rjk)
+        n_jkl = torch.cross(rjk, rkl)
+        rjk_norm = torch.linalg.norm(rjk, axis=-1, keepdims=True)
+        t = torch.sum(torch.cross(n_ijk, n_jkl)*rjk, dim=-1, keepdims=True)
+        s = rjk_norm * torch.sum(n_ijk*n_jkl, dim=-1, keepdims=True)
+        phi = torch.atan2(t, s)
+        return phi
+        # # Calculate vetors
+        # AB = B - A
+        # BC = C - B
+        # CD = D - C
+        #
+        # # calc norm vectors
+        # norm1 = torch.cross(AB, BC)
+        # norm2 = torch.cross(BC, CD)
+        #
+        # # normalize using normal vecotrs
+        # # norm1 = norm1 / torch.norm(norm1, dim=-1, keepdim=True)
+        # # norm2 = norm2 / torch.norm(norm2, dim=-1, keepdim=True)
+        # norm1 = norm1 / torch.norm(norm1, dim=-1, keepdim=True)
+        # norm2 = norm2 / torch.norm(norm2, dim=-1, keepdim=True)
+        #
+        # # calculate the dto product
+        # bc_unit = BC / torch.norm(BC, dim=-1, keepdim=True)
+        #
+        # # cosine and sine of the diedhral angle
+        # cos_phi = torch.sum(norm1 * norm2, dim=-1)
+        # sin_phi = torch.sum(bc_unit * torch.cross(norm1, norm2, dim=-1), dim=-1)
+        # # dot_product = torch.einsum('bd,bd->b', norm1, norm2)
+        # # cos_theta = dot_product.clamp(-1.0, 1.0)
+        # # angle_rad = torch.acos(cos_theta)
+        #
+        # # Determine the sign of the anlge using the direction of BC
+        # # m1 = torch.cross(norm1, BC)
+        # # sign = torch.sign(torch.sum(m1 * norm2, dim=-1))
+        # # angle_rad = sign * angle_rad
+        # phi = torch.atan2(sin_phi, cos_phi)
+        #
+        # return phi #angle_rad
+
+    
+    def compute_angle(self, A, B, C):
+        """
+        Compute the bond angle (in radians) between three points A-B-C.
+        A, B, C: Coordinates of the three points.
+        """
+        BA = A - B
         BC = C - B
-        CD = D - C
-
-        # calc norm vectors
-        norm1 = torch.cross(AB, BC)
-        norm2 = torch.cross(BC, CD)
-
-        # normalize using normal vecotrs
-        norm1 = norm1 / torch.norm(norm1, dim=-1, keepdim=True)
-        norm2 = norm2 / torch.norm(norm2, dim=-1, keepdim=True)
-
-        # calculate the dto product
-        dot_product = torch.einsum('bd,bd->b', norm1, norm2)
-        cos_theta = dot_product.clamp(-1.0, 1.0)
-        angle_rad = torch.acos(cos_theta)
-
-        # Determine the sign of the anlge using the direction of BC
-        m1 = torch.cross(norm1, BC)
-        sign = torch.sign(torch.sum(m1 * norm2, dim=-1))
-        angle_rad = sign * angle_rad
-
-        return angle_rad
+        cos_theta = torch.sum(BA * BC, dim=-1) / (torch.linalg.vector_norm(BA, dim=-1) * torch.linalg.vector_norm(BC, dim=-1))
+        theta = torch.arccos(torch.clip(cos_theta, -1.0, 1.0))  # Clip to avoid numerical errors
+        return theta
 
     def terminal_peptide_lengths(self, dof_inputs: torch.Tensor, params: dict, foldtree_root: int, device: str):
         """Calculate N-C peptide bond Loss; Currently using Ideal bond length & bond angle
@@ -325,12 +392,16 @@ class TerminalPeptide:
         PARAMS
         ------
         dof_length: int
+            Length of DoF Tensor 
         root: int
+            Our root index given in AA
         L: int
+            Length of AA in peptide
 
         RETURNS
         -------
         bond_angle_idx: (Tensor) (M)
+        bond_length_idx: (Tensor) (M)
         """
         # Generate a dof number array
         dofs = torch.arange(dof_length)
@@ -338,26 +409,82 @@ class TerminalPeptide:
         for resi in range(L):
 
             if resi+1 == 1:
-                bond_angle_idx = torch.tensor([dofs[-1]-9+3, 0, 1, 3, 6]).unsqueeze(0)
-            elif resi+1 < root:
+                # bond_angle_idx = torch.tensor([dofs[-1]-9+3, 0, 1, 3, 6]).unsqueeze(0)
+                bond_angle_idx = torch.tensor([dofs[-1]-3, 0, 1, 3, 5]).unsqueeze(0)
+                # Bond order N-Ca, Ca-C, C-N, C=O, N-H
+                bond_length_idx = torch.tensor([0, 1, 2, 3, 5]).unsqueeze(0)
+            elif (resi+1 < root) and (resi+1 != 2):
                 # Update residue values
-                N = bond_angle_idx[0, -1]-4 if resi+1==2 else bond_angle_idx[-1, -1]-4
-                Ca = bond_angle_idx[0, -1]+2 if resi+1==2 else bond_angle_idx[-1, -1]+1
-                C = bond_angle_idx[0, -1]+3 if resi+1==2 else bond_angle_idx[-1, -1]+2
-                O = bond_angle_idx[0, -1]+5 if resi+1==2 else bond_angle_idx[-1, -1]+4
-                H = bond_angle_idx[0, -1]+8 if resi+1==2 else bond_angle_idx[-1, -1]+7
+                # N = bond_angle_idx[0, -1]-4  if resi+1==2 else bond_angle_idx[-1, -1]-4
+                # Ca = bond_angle_idx[0, -1]+2 if resi+1==2 else bond_angle_idx[-1, -1]+1
+                # C = bond_angle_idx[0, -1]+3  if resi+1==2 else bond_angle_idx[-1, -1]+2
+                # O = bond_angle_idx[0, -1]+5  if resi+1==2 else bond_angle_idx[-1, -1]+4
+                # H = bond_angle_idx[0, -1]+8  if resi+1==2 else bond_angle_idx[-1, -1]+7
+                N = bond_angle_idx[-1, -1]-2
+                Ca = bond_angle_idx[-1, -1]+3
+                C = bond_angle_idx[-1, -1]+4
+                O = bond_angle_idx[-1, -1]+6
+                H = bond_angle_idx[-1, -1]+7
                 bond_angle_idx = torch.cat(
                     (
                         bond_angle_idx,
                         torch.tensor([N, Ca, C, O, H]).unsqueeze(0),
                     ), dim=0,
                 )
+                NCa = bond_length_idx[-1, -1]+3
+                CaC = bond_length_idx[-1, -1]+4
+                CN  = bond_length_idx[-1, -1]+5
+                OH  = bond_length_idx[-1, -1]+6
+                NH  = bond_length_idx[-1, -1]+7
+                bond_length_idx = torch.cat(
+                    (
+                        bond_length_idx,
+                        torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
+                    ), dim=0,
+                )
+                # print("residue ", resi+1, bond_angle_idx)
+                # print("residue ", resi+1, bond_length_idx)
+            elif resi+1 == 2:
+                # Update residue values
+                # N = bond_angle_idx[0, -1]-4  if resi+1==2 else bond_angle_idx[-1, -1]-4
+                # Ca = bond_angle_idx[0, -1]+2 if resi+1==2 else bond_angle_idx[-1, -1]+1
+                # C = bond_angle_idx[0, -1]+3  if resi+1==2 else bond_angle_idx[-1, -1]+2
+                # O = bond_angle_idx[0, -1]+5  if resi+1==2 else bond_angle_idx[-1, -1]+4
+                # H = bond_angle_idx[0, -1]+8  if resi+1==2 else bond_angle_idx[-1, -1]+7
+                N = bond_angle_idx[-1, -1]-3
+                Ca = bond_angle_idx[-1, -1]+3
+                C = bond_angle_idx[-1, -1]+4
+                O = bond_angle_idx[-1, -1]+6
+                H = bond_angle_idx[-1, -1]+7
+                bond_angle_idx = torch.cat(
+                    (
+                        bond_angle_idx,
+                        torch.tensor([N, Ca, C, O, H]).unsqueeze(0),
+                    ), dim=0,
+                )
+                NCa = bond_length_idx[-1, -1]+3
+                CaC = bond_length_idx[-1, -1]+4
+                CN  = bond_length_idx[-1, -1]+5
+                OH  = bond_length_idx[-1, -1]+6
+                NH  = bond_length_idx[-1, -1]+7
+                bond_length_idx = torch.cat(
+                    (
+                        bond_length_idx,
+                        torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
+                    ), dim=0,
+                )
+                # print("residue after 1", resi+1, bond_angle_idx)
             elif resi+1 == root:
                 # Update Residues
-                N = bond_angle_idx[-1, -1]-4
-                Ca = bond_angle_idx[-1, -1]+2
-                C = bond_angle_idx[-1, -1]+7
-                O = bond_angle_idx[-1, -1]+3
+                # N = bond_angle_idx[-1, -1]-4
+                # Ca = bond_angle_idx[-1, -1]+2
+                # C = bond_angle_idx[-1, -1]+7
+                # O = bond_angle_idx[-1, -1]+3
+                # H = bond_angle_idx[-1, -1]+6
+                N = bond_angle_idx[-1, -1]-2
+                Ca = bond_angle_idx[-1, -1]+4
+                C = bond_angle_idx[-1, -1]+9
+                O = bond_angle_idx[-1, -1]+5
                 H = bond_angle_idx[-1, -1]+6
                 bond_angle_idx = torch.cat(
                     (
@@ -365,43 +492,113 @@ class TerminalPeptide:
                         torch.tensor([N, Ca, C, O, H]).unsqueeze(0),
                     ), dim=0,
                 )
+                NCa = bond_length_idx[-1, -1]+3
+                CaC = bond_length_idx[-1, -1]+4
+                CN  = bond_length_idx[-1, -1]+9
+                OH  = bond_length_idx[-1, -1]+5
+                NH  = bond_length_idx[-1, -1]+6
+                bond_length_idx = torch.cat(
+                    (
+                        bond_length_idx,
+                        torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
+                    ), dim=0,
+                )
+                # print("root-residue ", resi+1, bond_angle_idx)
+                # print("root-residue ", resi+1, bond_length_idx)
             elif resi+1 == L:
                 # Update Residues
-                N = bond_angle_idx[-1, -1]+2
-                Ca = bond_angle_idx[-1, -1]+3
-                C = 0 # Based upon first residue N
-                O = bond_angle_idx[-1, -1]+4
-                H = bond_angle_idx[-1, -1]+7
+                N = bond_angle_idx[-1, -1]+8
+                Ca = bond_angle_idx[-1, -1]+5
+                C = bond_angle_idx[-1, -1]+7 # Based upon first residue N
+                O = bond_angle_idx[-1, -1]+6
+                H = bond_angle_idx[-1, -1]+9
+                # N = bond_angle_idx[-1, -1]+2
+                # Ca = bond_angle_idx[-1, -1]+3
+                # C = 0 # Based upon first residue N
+                # O = bond_angle_idx[-1, -1]+4
+                # H = bond_angle_idx[-1, -1]+7
                 bond_angle_idx = torch.cat(
                     (
                         bond_angle_idx,
                         torch.tensor([N, Ca, C, O, H]).unsqueeze(0),
                     ), dim=0,
                 )
+                NCa = bond_length_idx[-1, -1]+4
+                CaC = bond_length_idx[-1, -1]+5
+                CN  = bond_length_idx[-1, -1]+7
+                OH  = bond_length_idx[-1, -1]+6
+                NH  = bond_length_idx[-1, -1]+9
+                bond_length_idx = torch.cat(
+                    (
+                        bond_length_idx,
+                        torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
+                    ), dim=0,
+                )
+                # print("Last residue ", resi+1, bond_angle_idx)
+                # print("Last residue ", resi+1, bond_length_idx)
             else:
                 # Update Residues
-                N = bond_angle_idx[-1, -1]+2
-                Ca = bond_angle_idx[-1, -1]+3
-                C = bond_angle_idx[-1, -1]+8
-                O = bond_angle_idx[-1, -1]+4
+                N = bond_angle_idx[-1, -1]+4
+                Ca = bond_angle_idx[-1, -1]+5
+                C = bond_angle_idx[-1, -1]+10 #25 + = 
+                O = bond_angle_idx[-1, -1]+6
                 H = bond_angle_idx[-1, -1]+7
+                # N = bond_angle_idx[-1, -1]+2
+                # Ca = bond_angle_idx[-1, -1]+3
+                # C = bond_angle_idx[-1, -1]+8
+                # O = bond_angle_idx[-1, -1]+4
+                # H = bond_angle_idx[-1, -1]+7
                 bond_angle_idx = torch.cat(
                     (
                         bond_angle_idx,
                         torch.tensor([N, Ca, C, O, H]).unsqueeze(0),
                     ), dim=0,
                 )
+                NCa = bond_length_idx[-1, -1]+4
+                CaC = bond_length_idx[-1, -1]+5
+                CN  = bond_length_idx[-1, -1]+10
+                OH  = bond_length_idx[-1, -1]+6
+                NH  = bond_length_idx[-1, -1]+7
+                bond_length_idx = torch.cat(
+                    (
+                        bond_length_idx,
+                        torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
+                    ), dim=0,
+                )
+                # print("after-root residue ", resi+1, bond_angle_idx)
+                # print("after-root residue ", resi+1, bond_length_idx)
 
-        return bond_angle_idx.view(-1)
+        return bond_angle_idx.view(-1), bond_length_idx.view(-1)
+
+    def calculate_root(self, prot_len: int) -> int:
+        """Calculate the root index position given length
+
+        PARAMS
+        ------
+        prot_len: int
+            The length of our peptide
+
+        RETURNS
+        -------
+        root_idx: int
+            The index where we will set our foldtree
+        """
+        if prot_len % 2 == 0:
+            return int(prot_len/2)
+        else:
+            return int((prot_len-1)/2)
 
 
-    def torsion_extract(self, L: int, root: int):
+
+    def torsion_extract(self, L: int, pep_len: int,  root: int):
         """Extract torsion angles given a peptide size and fold tree
 
         PARAMS
         ------
         L : int
-            Size of the torsion tensor (B, L) (last dimension)
+            Size of the torsion tensor where L is DoFs not AA (B, L) (last dimension)
+        pep_len: int
+            Number of residues within peptide
         root: int
             Fold Tree Root for the peptide
 
@@ -436,8 +633,9 @@ class TerminalPeptide:
         psi_post = indices[root_index::gly_default_natoms].tolist()
         omega_post = indices[root_index+1::gly_default_natoms].tolist()
         # phi_post = phi_post[:-1]
-        psi_post = psi_post[:-1]
-        omega_post = omega_post[:-1]
+        if pep_len % 2 == 0:
+            psi_post = psi_post[:-1]
+            omega_post = omega_post[:-1]
         # print("phi, psi, omega", phi_post, psi_post, omega_post)
 
         # phi/psi/omega pre root
@@ -663,17 +861,17 @@ class TerminalPeptide:
         """
         # convert angles to radians
         torsion = torch.deg2rad(torsion)
-        bond_angles = torch.deg2rad(bond_angles)
+        bond_angles = torch.deg2rad(180.00-bond_angles)
 
         # Real Omega
         omega = torch.deg2rad(omega) 
-        omega = torch.cat(
-            (
-                # torch.deg2rad(torch.tensor(-91.3)).unsqueeze(0).repeat(omega.size(0), 1),
-                omega,
-                torch.tensor(torch.pi, dtype=torch.float64, device=device).unsqueeze(0).repeat(omega.size(0), 1), # Add Extra Pi omega for loop
-            ), dim=-1,
-        )
+        # omega = torch.cat(
+        #     (
+        #         # torch.deg2rad(torch.tensor(-91.3)).unsqueeze(0).repeat(omega.size(0), 1),
+        #         omega,
+        #         torch.tensor(torch.pi, dtype=torch.float64, device=device).unsqueeze(0).repeat(omega.size(0), 1), # Add Extra Pi omega for loop
+        #     ), dim=-1,
+        # )
         # Ideal Omega
         # omega = torch.tensor(torch.pi).unsqueeze(0).repeat(bond_angles.size(0), torsion.size(1)//2)
         
@@ -698,93 +896,93 @@ class TerminalPeptide:
 
             # update index pos
             # if i == root_idx - 1:
-            # if i == 0:
-            #     # bond angles
-            #     NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_angles[:, index_pos[0]]
-            #     CaR  = bond_angles[:, index_pos[1]]
-            #     CR   = bond_angles[:, index_pos[2]]
-            #     COR  = bond_angles[:, index_pos[3]] #torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))
-            #     NHR  = bond_angles[:, index_pos[4]]
-            #     print(torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)))
-            #     print(torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)))
-            #     print(torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)))
-            #     print(torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)))
-            #     print(torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)))
+            if i == 0:
+                # bond angles
+                NR   = bond_angles[:, index_pos[0]] #torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_angles[:, index_pos[0]]
+                CaR  = bond_angles[:, index_pos[1]]
+                CR   = bond_angles[:, index_pos[2]]
+                COR  = bond_angles[:, index_pos[3]] #torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))
+                NHR  = bond_angles[:, index_pos[4]]
+                # print("NR:", torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)),  NR)
+                # print("CaR:", torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)), CaR)
+                # print("CR:", torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)),  CR)
+                # print("COR:", torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)), COR)
+                # print("NHR:", torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)), NHR)
+                #
+                # Bond Lengths
+                # NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+                # CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+                # CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+                # CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+                # NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+                NCa = bond_lengths[:, index_pos[0]]
+                CaC = bond_lengths[:, index_pos[1]]
+                CN  = bond_lengths[:, index_pos[2]]
+                CO  = bond_lengths[:, index_pos[3]] #torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0))
+                NH  = bond_lengths[:, index_pos[4]]
+                # print(NCa)
+                # print(CaC)
+                # print(CN)
+                # print(CO) 
+                # print(NH) 
+                # print("i == 0", i, index_pos)
+                index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
+            # elif i == root_idx - 2:
+            elif i == n-1:
+                # print("i == n-1", i, index_pos)
+                # bond angles
+                NR   = bond_angles[:, index_pos[0]]
+                CaR  = bond_angles[:, index_pos[1]]
+                CR   = bond_angles[:, index_pos[2]]
+                COR  = bond_angles[:, index_pos[3]]
+                NHR  = bond_angles[:, index_pos[4]]
+            #     # Bond Lengths
+                # NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+                # CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+                # CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+                # CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+                # NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+                NCa = bond_lengths[:, index_pos[0]]
+                CaC = bond_lengths[:, index_pos[1]]
+                CN  = bond_lengths[:, index_pos[2]] #torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_lengths[:, index_pos[2]]
+                CO  = bond_lengths[:, index_pos[3]]
+                NH  = bond_lengths[:, index_pos[4]]
+                index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
+            else:
+                # print("Filler", i, index_pos)
+                # bond angles
+                NR   = bond_angles[:, index_pos[0]]
+                CaR  = bond_angles[:, index_pos[1]]
+                CR   = bond_angles[:, index_pos[2]]
+                COR  = bond_angles[:, index_pos[3]]
+                NHR  = bond_angles[:, index_pos[4]]
+                # Bond Lengths
+                # NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+                # CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+                # CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+                # CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+                # NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+                NCa = bond_lengths[:, index_pos[0]]
+                CaC = bond_lengths[:, index_pos[1]]
+                CN  = bond_lengths[:, index_pos[2]]
+                CO  = bond_lengths[:, index_pos[3]]
+                NH  = bond_lengths[:, index_pos[4]]
+                index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
+                # print("ELSE", index_pos)
+
+            # # Ideal for tetsing
+            # NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
+            # CaR  = torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
+            # CR   = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
+            # COR  = torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
+            # NHR  = torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
             #
-            #     # Bond Lengths
-            #     NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-            #     CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-            #     CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-            #     CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-            #     NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
-            #     # NCa = bond_lengths[:, index_pos[0]]
-            #     # CaC = bond_lengths[:, index_pos[1]]
-            #     # CN  = bond_lengths[:, index_pos[2]]
-            #     # CO  = bond_lengths[:, index_pos[3]] #torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0))
-            #     # NH  = bond_lengths[:, index_pos[4]]
-            #     # print(NCa)
-            #     # print(CaC)
-            #     # print(CN)
-            #     # print(CO) 
-            #     # print(NH) 
-            #     print("i == 0", i, index_pos)
-            #     index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
-            # # elif i == root_idx - 2:
-            # elif i == n-1:
-            #     print("i == n-1", i, index_pos)
-            #     # bond angles
-            #     NR   = bond_angles[:, index_pos[0]]
-            #     CaR  = bond_angles[:, index_pos[1]]
-            #     CR   = bond_angles[:, index_pos[2]]
-            #     COR  = bond_angles[:, index_pos[3]]
-            #     NHR  = bond_angles[:, index_pos[4]]
-            #     # Bond Lengths
-            #     NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-            #     CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-            #     CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-            #     CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-            #     NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
-            #     # NCa = bond_lengths[:, index_pos[0]]
-            #     # CaC = bond_lengths[:, index_pos[1]]
-            #     # CN  = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_lengths[:, index_pos[2]]
-            #     # CO  = bond_lengths[:, index_pos[3]]
-            #     # NH  = bond_lengths[:, index_pos[4]]
-            #     index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
-            # else:
-            #     print("Filler", i, index_pos)
-            #     # bond angles
-            #     NR   = bond_angles[:, index_pos[0]]
-            #     CaR  = bond_angles[:, index_pos[1]]
-            #     CR   = bond_angles[:, index_pos[2]]
-            #     COR  = bond_angles[:, index_pos[3]]
-            #     NHR  = bond_angles[:, index_pos[4]]
-            #     # Bond Lengths
-            #     NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-            #     CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-            #     CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-            #     CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-            #     NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
-            #     # NCa = bond_lengths[:, index_pos[0]]
-            #     # CaC = bond_lengths[:, index_pos[1]]
-            #     # CN  = bond_lengths[:, index_pos[2]]
-            #     # CO  = bond_lengths[:, index_pos[3]]
-            #     # NH  = bond_lengths[:, index_pos[4]]
-            #     index_pos = torch.arange(index_pos[-1]+1, index_pos[-1]+6)
-            #     print("ELSE", index_pos)
-
-            # Ideal for tetsing
-            NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
-            CaR  = torch.deg2rad(torch.tensor(111.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
-            CR   = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
-            COR  = torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))  
-            NHR  = torch.deg2rad(torch.tensor(119.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0)) 
-
-            # bond lengths (Ideal for testing)
-            NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
-            CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
-            CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
-            CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
-            NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
+            # # bond lengths (Ideal for testing)
+            # NCa = torch.tensor(1.458, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 0*i]
+            # CaC = torch.tensor(1.524, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 2*i]
+            # CN  = torch.tensor(1.329, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 5*i]
+            # CO  = torch.tensor(1.231, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 6*i]
+            # NH  = torch.tensor(1.010, dtype=torch.float64, device=device).repeat(bond_lengths.size(0)) # bond_lengths[:, 1*i]
 
             # Rotate and Translate the Hydrogen Atom is in shape (B, 3, 3)
             V_H = torch.cat(
@@ -827,7 +1025,14 @@ class TerminalPeptide:
             ).T.unsqueeze(-1)
             C = Ca + torch.matmul(rotation, V_C)
             # Update Rotation Matrix
-            rotation = rotation @ self.T(CR, device) @ self.R(omega[:, i], device)
+            if i == n-1:
+                last_omega = self.dihedral_calc(Ca.transpose(1, 2).squeeze(1), C.transpose(1,2).squeeze(1),
+                                   coordinates[:, 0, 2, :], # first N
+                                   coordinates[:, 0, 1, :], # First Ca
+                                   )
+                rotation = rotation @ self.T(CR, device) @ self.R(last_omega[:, 0], device)
+            else:
+                rotation = rotation @ self.T(CR, device) @ self.R(omega[:, i], device)
             # print(f'ROT C - {i}', rotation[0])
 
             # Rotate and Translate The Oxyen Atom
@@ -855,11 +1060,83 @@ class TerminalPeptide:
             coordinates[:, i, 0, :] = Ca.transpose(1, 2).squeeze(1) #-4 (B, 3, 1) -> (B, 1, 3) -> (B, 3)
             coordinates[:, i, 1, :] = C.transpose(1, 2).squeeze(1)  #-1 (B, 3, 1) -> (B, 1, 3) -> (B, 3)
             coordinates[:, i, 3, :] = O.transpose(1, 2).squeeze(1)    # 0 (B, 3, 1) -> (B, 1, 3) -> (B, 3)
+            # coordinates[:, i, 2, :] = N.transpose(1, 2).squeeze(1) #1 (B, 3, 1) -> (B, 1, 3) -> (B, 3)
 
             if i < n-1:
                 coordinates[:, i+1, 2, :] = N.transpose(1, 2).squeeze(1) #1 (B, 3, 1) -> (B, 1, 3) -> (B, 3)
 
         return coordinates
+
+def parameter_check():
+    peptide_term_class = TerminalPeptide()
+
+    print("---8mer Check---")
+    # data = torch.load("./binary_import/dof_vectors2024-05-14torch_tensor.pt") # 8mer dataset
+    data = torch.load("./binary_import/6mer_full_virtualatoms_dof_vectors2024-12-10torch_tensor.pt") # 8mer dataset
+    params = data["params"]
+    x = data["x"]
+    pep_len, root_pos = params["protein_len"], peptide_term_class.calculate_root(params["protein_len"])
+    # pull out values
+    torsion_full = x[0, :params["torsion_main_n"]].unsqueeze(0)
+    bond_angles = x[0, params["torsion_main_n"]:params["torsion_main_n"]+params["bond_angle_main_n"]].unsqueeze(0)
+    bond_lengths = x[0, params["torsion_main_n"]+params["bond_angle_main_n"]:-params["energy_n"]].unsqueeze(0)
+    print('TORSION:', [round(x.item(),1) for x in torsion_full[0]])
+    print('TORSION RAD:', [round(x.item(), 2) for x in torch.deg2rad(torsion_full)[0]])
+    print('BOND:', bond_angles)
+    # phi psi idxx
+    phi_psi, omega_idx = peptide_term_class.torsion_extract(torsion_full.size(-1), pep_len, root_pos)
+    # phi psi and omega values
+    omega = torsion_full[:, omega_idx]
+    print("OMEGA:", omega)
+    torsion = torsion_full[:, phi_psi]
+    print("TORSION:", torsion)
+    # bond angle idx
+    bond_angle_idx, bond_length_idx = peptide_term_class.extract_bond_angles(dof_length=params["bond_angle_main_n"], root=root_pos, L=pep_len)
+    # Bond angle and index values
+    bond_angles = bond_angles[:, bond_angle_idx]
+    print('BOND SUBSET:', bond_angles)
+    print(bond_angles.view(pep_len, -1))
+    bond_lengths_subset = bond_lengths[:, bond_length_idx]
+    # compute coordinates
+    coordinates = peptide_term_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths_subset, root_idx=root_pos)
+    ca_coords = coordinates[:, :, 0, :]
+    n_coords = coordinates[:, :, 2, :]
+    c_coords = coordinates[:, :, 1, :]
+
+    # print("CA:", ca_coords)
+    # print("C:", c_coords)
+    # print("H:", coordinates[:, :, 4, :])
+    # print("N:", n_coords)
+
+    # line draw
+    bonds = torch.cat(
+        (
+        n_coords.unsqueeze(2),
+        ca_coords.unsqueeze(2),
+        c_coords.unsqueeze(2),
+        ), dim=2,
+    )
+    B, L, A, _ = bonds.shape
+    # print(n_coords)
+    n_roll = torch.roll(n_coords, shifts=1, dims=1)
+    # print(n_roll)
+    # all_bonds = torch.norm(c_coords - n_roll, dim=-1)
+    # all_bonds = torch.sqrt(torch.sum(torch.pow(torch.subtract(n_coords, c_coords), 2), dim=-1))
+    # all_bonds = torch.norm(c_coords[:, -1, :] - n_coords[:, 0, :], dim=-1)
+    terminal_length = torch.norm(c_coords[:, -1, :] - n_coords[:, 0, :], dim=-1)
+    # print(all_bonds)
+    # terminal_length = all_bonds[:, -1]
+    print("Terminal Peptide Length", terminal_length)
+
+    # CHECK FOR 8mer
+    # assert all(bond_angle_idx == torch.tensor([51,  0,  1,  3,  6,  2,  8,  9, 11, 14, 10, 15, 16, 18, 21, 17, 23, 28, 24, 27, 29, 30, 35,
+    #                                            31, 34, 36, 37, 42, 38, 41, 43, 44, 49, 45, 48, 50, 51, 0, 52, 55])), f"Bond Angle Index for 8mer are Incorrect. Current Index: {bond_angle_idx}"
+    assert all(phi_psi == torch.tensor([ 4,  0,  2,  8, 10, 15, 23, 28, 30, 35, 37, 42, 44, 49, 51, 53])), f"Torsion Angles for 8mer are Incorrect. Current Index: {phi_psi}"
+    assert all(omega_idx == torch.tensor([ 1,  9, 16, 29, 36, 43, 50])), f"Torsion Angles for 8mer are Incorrect. Current Index: {omega_idx}"
+    assert terminal_length.item() == 1.3122731986876857, f"Terminal Length for 8mer is incorrect. Current Terminal Length: {terminal_length.item()}"
+
+
+    print("---8mer Pass---")
 
 
 
@@ -869,22 +1146,25 @@ if __name__ == "__main__":
     # bond_angles = torch.randint(-180, 180, (10, 7*6))
     # bond_lengths = torch.randn((10, 7*6)) + 1
 
+    parameter_check()
+
     # init class
     peptide_term_class = TerminalPeptide()
 
     # Glycine each residue has 7 atoms: N, H, CA, 1HA, 2HA, C, O
     data = torch.load("./binary_import/dof_vectors2024-05-14torch_tensor.pt")
+    data = torch.load("./binary_import/7mer_dof_vectors_clusters_firstten2024-12-06torch_tensor.pt") # 7mer dataset
     params = data["params"]
     x = data["x"]
 
     # pull out values
     torsion_full = x[:, :params["torsion_main_n"]]
     bond_angles = x[:, params["torsion_main_n"]:params["torsion_main_n"]+params["bond_angle_main_n"]]
-    bond_lengths = x[:, params["torsion_main_n"]+params["bond_angle_main_n"]:-params["energy_n"]]
+    bond_lengths = x[:, params["torsion_main_n"]+params["bond_angle_main_n"]:-3]
 
-    phi_psi, omega_idx = peptide_term_class.torsion_extract(torsion_full.size(-1), 4)
-    # print("TORSION INDEX", phi_psi)
-    # print("OMEGA INDEX", omega_idx)
+    phi_psi, omega_idx = peptide_term_class.torsion_extract(torsion_full.size(-1), pep_len, root_pos)
+    print("TORSION INDEX", phi_psi)
+    print("OMEGA INDEX", omega_idx)
 
     # index tensors
     omega = torsion_full[:, omega_idx]
@@ -894,65 +1174,63 @@ if __name__ == "__main__":
 
     dof_indices = torch.arange(params["bond_angle_main_n"])
 
-    first_res = torch.tensor([dof_indices[-1]-9+3, 0, 1, 4, 6])
-    second_res = torch.tensor(
-        [
-            first_res[-1]-4,
-            first_res[-1]+2,
-            first_res[-1]+3,
-            first_res[-1]+5,
-            first_res[-1]+8,
-        ]
-    )
+    # first_res = torch.tensor([dof_indices[-1]-9+3, 0, 1, 4, 6])
+    # second_res = torch.tensor(
+    #     [
+    #         first_res[-1]-4,
+    #         first_res[-1]+2,
+    #         first_res[-1]+3,
+    #         first_res[-1]+5,
+    #         first_res[-1]+8,
+    #     ]
+    # )
+    #
+    #
+    # # Compute Bond Length Index 
+    # ## BEFORE ROOT
+    # root = pep_len - root_pos # need to define terms
+    # before_root = torch.tensor([0, 1, 2, 3, 6]).unsqueeze(0).repeat(root-1, 1)
+    # scale_before = torch.arange(root-1).reshape(root-1, 1) * 7 + 1
+    # # Scale the first one to not add anything
+    # scale_before[0] -= 1
+    # before_root += scale_before
+    #
+    # ## ROOT
+    # root_tensor = torch.tensor([1,2,3,6]) + before_root[-1, -1]
+    #
+    # ## AFTER ROOT
+    # after_root = (torch.tensor([1,2,3,4,7]) + root_tensor[-1]).unsqueeze(0).repeat(root, 1)
+    # scale_after = torch.arange(root).reshape(root, 1) * 7
+    # after_root += scale_after
+    #
+    #
+    # atom_index = torch.cat(
+    #     (
+    #         before_root.view(-1),
+    #         root_tensor,
+    #         after_root.view(-1),
+    #     ), dim=-1,
+    # )
 
+    bond_angle_idx = peptide_term_class.extract_bond_angles(dof_length=params["bond_angle_main_n"], root=root_pos, L=pep_len)
+    # print("INDEX BOND ANGLE: ", bond_angle_idx)
 
-    # Compute Bond Length Index 
-    ## BEFORE ROOT
-    root = pep_len - root_pos # need to define terms
-    before_root = torch.tensor([0, 1, 2, 3, 6]).unsqueeze(0).repeat(root-1, 1)
-    scale_before = torch.arange(root-1).reshape(root-1, 1) * 7 + 1
-    # Scale the first one to not add anything
-    scale_before[0] -= 1
-    before_root += scale_before
+    # print("ATOM INDEX")
+    # print('-----------')
+    # print(atom_index)
 
-    ## ROOT
-    root_tensor = torch.tensor([1,2,3,6]) + before_root[-1, -1]
-
-    ## AFTER ROOT
-    after_root = (torch.tensor([1,2,3,4,7]) + root_tensor[-1]).unsqueeze(0).repeat(root, 1)
-    scale_after = torch.arange(root).reshape(root, 1) * 7
-    after_root += scale_after
-
-
-    atom_index = torch.cat(
-        (
-            before_root.view(-1),
-            root_tensor,
-            after_root.view(-1),
-        ), dim=-1,
-    )
-
-    bond_angle_idx = peptide_term_class.extract_bond_angles(dof_length=params["bond_angle_main_n"], root=4, L=8)
-    print("BOND ANGLE")
-    print('-----------')
-    print(bond_angle_idx)
-
-    print("ATOM INDEX")
-    print('-----------')
-    print(atom_index)
-
-    print("TESTING PRE")
-    print(torch.deg2rad(bond_angles[:, 51]))
-    print(torch.deg2rad(bond_angles[:, 0]))
-    print(torch.deg2rad(bond_angles[:, 1]))
-    print(torch.deg2rad(bond_angles[:, 3]))
-    print(torch.deg2rad(bond_angles[:, 6]))
+    # print("TESTING PRE")
+    # print(torch.deg2rad(bond_angles[:, 51]))
+    # print(torch.deg2rad(bond_angles[:, 0]))
+    # print(torch.deg2rad(bond_angles[:, 1]))
+    # print(torch.deg2rad(bond_angles[:, 3]))
+    # print(torch.deg2rad(bond_angles[:, 6]))
 
     bond_angles = bond_angles[:, bond_angle_idx]
     bond_lengths = bond_lengths[:, bond_angle_idx]
 
     # compute coordinates
-    coordinates = peptide_term_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths, root_idx=4)
+    coordinates = peptide_term_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths, root_idx=root_pos)
     # ca_locations = (torch.arange(8) * 7) + 2
     # ca_locations = torch.tensor([(2*i) for i in range(8)])
     # print("CA LOCATIONS", ca_locations)
@@ -990,15 +1268,15 @@ if __name__ == "__main__":
     # c_residue = per_residue[:, idx_c, :]
     n_roll = torch.roll(n_coords, shifts=-1, dims=1)
 
-    residue_plot = 9
+    # residue_plot = 9
 
-    peptide_bond = []
-    for b in range(residue_plot, 10):
-        for l in range(L):
-            C_coord = c_coords[b, l, :].numpy()
-            N_coord = n_roll[b, l, :].numpy()
-            peptide_bond.append([C_coord, N_coord])
-    line_collection = Line3DCollection(peptide_bond, colors="red", linewidths=2, label="N-C Peptide Bond")
+    # peptide_bond = []
+    # for b in range(residue_plot, 10):
+    #     for l in range(L):
+    #         C_coord = c_coords[b, l, :].numpy()
+    #         N_coord = n_roll[b, l, :].numpy()
+    #         peptide_bond.append([C_coord, N_coord])
+    # line_collection = Line3DCollection(peptide_bond, colors="red", linewidths=2, label="N-C Peptide Bond")
 
     all_bonds = torch.norm(n_roll - c_coords, dim=-1)
     terminal_length = all_bonds[:, -1]
@@ -1012,42 +1290,42 @@ if __name__ == "__main__":
 
     
     # Set up 3D figure
-    fig = plt.figure()
-    ax = fig.add_subplot(projection="3d")
-
-    for i in range(residue_plot,10): #ca_coords.size(0)):
-        for j in range(8):
-            if j == 0:
-                ax.scatter(ca_coords[i, j, 0], ca_coords[i, j, 1], ca_coords[i, j, 2], s=120, c="yellow")
-
-                ax.scatter(n_coords[i, j, 0], n_coords[i, j, 1], n_coords[i, j, 2], s=120,c="yellow")
-
-                ax.scatter(c_coords[i, j, 0], c_coords[i, j, 1], c_coords[i, j, 2], s=120,c="yellow")
-            elif j == 7:
-                ax.scatter(ca_coords[i, j, 0], ca_coords[i, j, 1], ca_coords[i, j, 2], s=120, c="black")
-
-                ax.scatter(n_coords[i, j, 0], n_coords[i, j, 1], n_coords[i, j, 2], s=120,c="black")
-
-                ax.scatter(c_coords[i, j, 0], c_coords[i, j, 1], c_coords[i, j, 2], s=120,c="black")
-
-            elif j == 1:
-                ax.scatter(ca_coords[i, :, 0], ca_coords[i, :, 1], ca_coords[i, :, 2], label="Ca", s=60, c="green")
-
-                ax.scatter(n_coords[i, :, 0], n_coords[i, :, 1], n_coords[i, :, 2], s=60, label="N", c="orange")
-
-                ax.scatter(c_coords[i, :, 0], c_coords[i, :, 1], c_coords[i, :, 2], s=60, label="C", c="purple")
-            else:
-                ax.scatter(ca_coords[i, :, 0], ca_coords[i, :, 1], ca_coords[i, :, 2], s=60, c="green")
-
-                ax.scatter(n_coords[i, :, 0], n_coords[i, :, 1], n_coords[i, :, 2], s=60, c="orange")
-
-                ax.scatter(c_coords[i, :, 0], c_coords[i, :, 1], c_coords[i, :, 2], s=60, c="purple")
-    for i in range(bonds.size(1)):
-        if i == 0:
-            ax.plot(bonds[residue_plot, i, :, 0], bonds[residue_plot, i, :, 1], bonds[residue_plot, i, :, 2], color="blue", label="Backbone")
-        else:
-            ax.plot(bonds[residue_plot, i, :, 0], bonds[residue_plot, i, :, 1], bonds[residue_plot, i, :, 2], color="blue")
-    ax.add_collection(line_collection)
-
-    plt.legend()
-    plt.show()
+    # fig = plt.figure()
+    # ax = fig.add_subplot(projection="3d")
+    #
+    # for i in range(residue_plot,10): #ca_coords.size(0)):
+    #     for j in range(8):
+    #         if j == 0:
+    #             ax.scatter(ca_coords[i, j, 0], ca_coords[i, j, 1], ca_coords[i, j, 2], s=120, c="yellow")
+    #
+    #             ax.scatter(n_coords[i, j, 0], n_coords[i, j, 1], n_coords[i, j, 2], s=120,c="yellow")
+    #
+    #             ax.scatter(c_coords[i, j, 0], c_coords[i, j, 1], c_coords[i, j, 2], s=120,c="yellow")
+    #         elif j == 7:
+    #             ax.scatter(ca_coords[i, j, 0], ca_coords[i, j, 1], ca_coords[i, j, 2], s=120, c="black")
+    #
+    #             ax.scatter(n_coords[i, j, 0], n_coords[i, j, 1], n_coords[i, j, 2], s=120,c="black")
+    #
+    #             ax.scatter(c_coords[i, j, 0], c_coords[i, j, 1], c_coords[i, j, 2], s=120,c="black")
+    #
+    #         elif j == 1:
+    #             ax.scatter(ca_coords[i, :, 0], ca_coords[i, :, 1], ca_coords[i, :, 2], label="Ca", s=60, c="green")
+    #
+    #             ax.scatter(n_coords[i, :, 0], n_coords[i, :, 1], n_coords[i, :, 2], s=60, label="N", c="orange")
+    #
+    #             ax.scatter(c_coords[i, :, 0], c_coords[i, :, 1], c_coords[i, :, 2], s=60, label="C", c="purple")
+    #         else:
+    #             ax.scatter(ca_coords[i, :, 0], ca_coords[i, :, 1], ca_coords[i, :, 2], s=60, c="green")
+    #
+    #             ax.scatter(n_coords[i, :, 0], n_coords[i, :, 1], n_coords[i, :, 2], s=60, c="orange")
+    #
+    #             ax.scatter(c_coords[i, :, 0], c_coords[i, :, 1], c_coords[i, :, 2], s=60, c="purple")
+    # for i in range(bonds.size(1)):
+    #     if i == 0:
+    #         ax.plot(bonds[residue_plot, i, :, 0], bonds[residue_plot, i, :, 1], bonds[residue_plot, i, :, 2], color="blue", label="Backbone")
+    #     else:
+    #         ax.plot(bonds[residue_plot, i, :, 0], bonds[residue_plot, i, :, 1], bonds[residue_plot, i, :, 2], color="blue")
+    # ax.add_collection(line_collection)
+    #
+    # plt.legend()
+    # plt.show()

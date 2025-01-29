@@ -10,6 +10,7 @@ from collections import defaultdict
 import re
 import ast
 import matplotlib.pyplot as plt
+from typing import Union
 
 # xyz coordinates
 from terminal_error import TerminalPeptide
@@ -255,28 +256,35 @@ def extract_pdb_xyz(input: str):
                 if line_split[2] in ["N", "CA", "C", "O"]:
                     atom_specific = line_split[2]
                 elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
-                    if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
-                        atom_specific = line_split[2][0]
-                    elif line_split[2][0] == "S":
+                    if line_split[2][0] == "CB":
                         atom_specific = "C"
                     else:
-                        atom_specific = line_split[11]
-                else: 
-                    atom_specific =  "H"
+                        continue
+                    ####### Editing out below this to try only Cb pocket context (also else with H or C below as well) ####
+                    # if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
+                    #     atom_specific = line_split[2][0]
+                    # elif line_split[2][0] == "S":
+                    #     atom_specific = "C"
+                    # else:
+                    #     atom_specific = line_split[11]
+                # else: 
+                    # # atom_specific =  "H"
+                    # atom_specific =  "C"
                 # atom_specific = line_split[2] if line_split[2] in ["N", "CA", "C", "O"] else "C"
                 atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
                 index += 1
-            elif (line_split[4] == "A") & (line_split[11] == "H"):
-                # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                atom_specific = "H"
-                atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                index += 1
+            # elif (line_split[4] == "A") & (line_split[11] == "H"):
+            #     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+            #     atom_specific = "H"
+            #     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+            #     index += 1
             elif (line_split[4] == "B") & (line_split[2] in ["N", "CA", "C", "O"]):
                 # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
                 atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
                 index += 1
             else:
                 pass
+
 
     return atomdict
 
@@ -324,7 +332,7 @@ def gen_xyz_tensor(atomdict: dict):
                 atomdict[k][-1]
             ]
         )
-        print(atomdict[k])
+        # print(atomdict[k])
         sigma_mat[k] = sigma_key[atomdict[k][0]]
         epsilon_mat[k] = epsilon_key[atomdict[k][0]]
         color_tensor[k] = color_key[atomdict[k][0]]
@@ -344,9 +352,9 @@ def gen_xyz_tensor(atomdict: dict):
     sigma_peptide = sigma_mat[split_tensor_idx[0]:]
     epsilon_peptide = epsilon_mat[split_tensor_idx[0]:]
 
-    print(target.shape)
-    print(color_target.shape)
-    print(peptide.shape)
+    # print(target.shape)
+    # print(color_target.shape)
+    # print(peptide.shape)
 
     return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target
 
@@ -425,6 +433,46 @@ def harmonic_loss_func(xyz_peptide, xyz_target, cutoff_distance=4.0, d_target=2.
     print(loss)
     return loss
 
+
+def build_exclusion_mask(
+    num_residues: int,
+    atoms_per_res: int,
+    # bonded_local_pairs: list[tuple[int,int]],
+    # inter_residue_bonds: list[tuple[int,int]],
+):
+    """
+    Returns a boolean adjacency mask of shape (N, N) where
+    N = num_residues * atoms_per_res.
+    
+    We set mask[i,j] = True if (i,j) is bonded or otherwise "excluded"
+    from the nonbonded repulsion. Typically you'll invert it
+    (mask = ~adj) if you want a "repulsion mask".
+    
+    Parameters
+    ----------
+    num_residues: int
+    atoms_per_res: int
+    bonded_local_pairs: list of (a1, a2) local indices that are bonded in 1 residue
+    inter_residue_bonds: list of (local_atom_in_res_r, local_atom_in_res_(r+1))
+                         e.g. (2, 0) if 2= C in one residue
+                         and 0= N in the next residue.
+    """
+    N = num_residues * atoms_per_res
+    # Start a full "no adjacency" matrix
+    adj = torch.zeros(N, N, dtype=torch.bool)
+    
+    for r in range(0, N, 4):
+        offset = torch.arange(r-4, r)
+        # local bonded pairs in the same residue
+        for i in offset:
+            adj[i, offset] = True
+
+    # If you want a ring closure for a cyclic peptide, also connect last->first:
+    # For example, (C_{L-1}, N_0)
+    # you can do that explicitly outside or pass it in if you prefer.
+    
+    return adj
+
 def interface_loss(
     interface_atoms: torch.Tensor,
     recomputed_xyz: torch.Tensor,
@@ -432,6 +480,7 @@ def interface_loss(
     epsilon_peptide: torch.Tensor, 
     sigma_interface: torch.Tensor,
     epsilon_interface: torch.Tensor, 
+    self_peptide: bool = False,
     ):
     """Compute smooth differentiable distance inference loss metric
 
@@ -458,7 +507,12 @@ def interface_loss(
     # get pairwise distances
     pairwise_distances = torch.cdist(recomputed_xyz, interface_atoms, p=2)
     # print("MIN DISTANCE:", pairwise_distances.min(-1)[0].min(-1).values)
-    B, _, _ = pairwise_distances.shape
+    B, N, _ = pairwise_distances.shape
+    # if self_peptide:
+    #     print(pairwise_distances.shape)
+    #     print(recomputed_xyz.shape)
+    #     print(interface_atoms.shape)
+    #     pairwise_distances = pairwise_distances * (1 - torch.eye(N, N, device=recomputed_xyz.device).repeat(B, 1, 1))
 
     
     # weight matrix
@@ -466,8 +520,17 @@ def interface_loss(
     # W = torch.where(pairwise_distances <= 0.5, torch.tensor(10), w_ones)
 
     # Sigma & Espilon mats with the shape (Atoms, N)
-    S = torch.add(sigma_peptide.unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
-    E = torch.sqrt(epsilon_peptide.unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
+    # S = torch.add(sigma_peptide.unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
+    # E = torch.sqrt(epsilon_peptide.unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
+    # if self_peptide:
+    #     S = torch.add(sigma_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T, sigma_interface[interface_atoms.size(-1)].unsqueeze(0)) # Add together i + j
+    #     E = torch.sqrt(epsilon_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T @ epsilon_interface[interface_atoms.size(-1)].unsqueeze(0)) # sqrt(product of i * j)
+    #     print(S.shape)
+    #     print(sigma_interface)
+    #     print(interface_atoms.size(-1))
+    # else:
+    S = torch.add(sigma_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
+    E = torch.sqrt(epsilon_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
     S = S.repeat(B, 1, 1)
     E = E.repeat(B, 1, 1)
 
@@ -490,6 +553,13 @@ def interface_loss(
         )
     ) #* W
 
+    # if self_peptide:
+    #     #mask out bonded pairs
+    #     mask = build_exclusion_mask(N//4, 4)
+    #     loss = loss * ~mask.to(loss.device)
+    #     print(loss)
+    #     return loss.sum((-2, -1)), pairwise_distances.min(-1)[0].min(-1).values < 1.0
+    # else:
     return loss.sum((-2, -1)), pairwise_distances.min(-1)[0].min(-1).values < 1.0
     # return repulse.sum(-1), pairwise_distances.clone().detach()
 
@@ -659,83 +729,83 @@ def update_move(P: torch.Tensor, Q: torch.Tensor):
 
     return P + move
 
-def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
-    """Perform the kabsch algorithm to find the optimal rotation matrix
-    that aligns P to points Q
-
-    PARAMS
-    ------
-    P: Tensor (B, N, 3)
-        Predicted DoF XYZ points
-    Q: Tensor (N, 3)
-        PDB Peptide Heavy atom XYZ Points
-    motif: Tensor (2)
-        Residues involved in motif
-
-    RETURNS
-    -------
-    P_aligned: Tensor (B, N, 3)
-        Aligned DoF XYZ points
-    """
-    # motif_atoms
-    # Calculate on my own # THIS NEEDS TO BE FIXED
-    motif_mask = torch.arange(motif*4)
-
-    # Grab the residues you need
-    P_motif = P[:, motif_mask, :]
-    Q_motif = Q[:, motif_mask, :]
-
-    # Calc centroids
-    centroid_P = P.mean(dim=1) # (B, N, 3) -> (B, 3)
-    centroid_Q = Q.mean(dim=0) if len(Q.shape) == 2 else Q.mean(dim=1)# (N, 3) -> (3)
-
-    # Center the points base don centroid
-    P_centered = P - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N, 3)
-    Q_centered = Q - centroid_Q if len(Q.shape) == 2 else Q - centroid_Q.unsqueeze(1)# (N, 3) - (3) = (N, 3)
-
-    # (B, N, 3) -> (B, 3) -> (B, N, 3) - (B, 1, 3) = (B, N, 3)
-
-    # Adjust Q_centered to match
-    if len(Q.shape) == 2:
-        Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0), 1, 1) # (1, N, 3) -> (B, N, 3)
-
-    # Compute the Covariance matrix
-    H = torch.matmul(P_centered.transpose(-2, -1), Q_centered) # (B, 3, N) x (B, N, 3) = (B, 3, 3)
-
-    # Compute SVD for optimal rotation
-    U, S, Vt = torch.linalg.svd(H) 
-
-    # Compute Rotation Matrix Now
-    mask = (torch.linalg.det(U) * torch.linalg.det(Vt)) < 0.0
-    # R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
-
-    # Special Reflection case
-    # det = torch.linalg.det(R)
-    # mask = det < 0
-    if mask.sum() >= 1:
-        # Vt_copy = Vt.clone()
-        U_copy = U.clone()
-        U_copy[mask, :, -1] *= -1
-        # Vt_copy[mask, -1, :] *= -1
-        # R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
-        R = torch.matmul(U_copy.transpose(-2, -1), Vt.transpose(-2, -1))
-    else:
-        R = torch.matmul(U.transpose(-2, -1), Vt.transpose(-2, -1))
-
-    # print(torch.matmul(P_centered, R).shape)
-    # Apply Rotation
-    if len(Q.shape) == 2:
-        P_aligned = torch.matmul(P_centered, R) + centroid_Q 
-    else:
-        P_aligned = torch.matmul(P_centered, R) + centroid_Q.unsqueeze(1)
-
-    diff = P_aligned - Q
-    rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
-    print("RSMD:", rmsd.mean())
-
-    torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
-
-    return P_aligned
+# def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
+#     """Perform the kabsch algorithm to find the optimal rotation matrix
+#     that aligns P to points Q
+#
+#     PARAMS
+#     ------
+#     P: Tensor (B, N, 3)
+#         Predicted DoF XYZ points
+#     Q: Tensor (N, 3)
+#         PDB Peptide Heavy atom XYZ Points
+#     motif: Tensor (2)
+#         Residues involved in motif
+#
+#     RETURNS
+#     -------
+#     P_aligned: Tensor (B, N, 3)
+#         Aligned DoF XYZ points
+#     """
+#     # motif_atoms
+#     # Calculate on my own # THIS NEEDS TO BE FIXED
+#     motif_mask = torch.arange(motif*4)
+#
+#     # Grab the residues you need
+#     P_motif = P[:, motif_mask, :]
+#     Q_motif = Q[:, motif_mask, :]
+#
+#     # Calc centroids
+#     centroid_P = P.mean(dim=1) # (B, N, 3) -> (B, 3)
+#     centroid_Q = Q.mean(dim=0) if len(Q.shape) == 2 else Q.mean(dim=1)# (N, 3) -> (3)
+#
+#     # Center the points base don centroid
+#     P_centered = P - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N, 3)
+#     Q_centered = Q - centroid_Q if len(Q.shape) == 2 else Q - centroid_Q.unsqueeze(1)# (N, 3) - (3) = (N, 3)
+#
+#     # (B, N, 3) -> (B, 3) -> (B, N, 3) - (B, 1, 3) = (B, N, 3)
+#
+#     # Adjust Q_centered to match
+#     if len(Q.shape) == 2:
+#         Q_centered = Q_centered.unsqueeze(0).repeat(P_centered.size(0), 1, 1) # (1, N, 3) -> (B, N, 3)
+#
+#     # Compute the Covariance matrix
+#     H = torch.matmul(P_centered.transpose(-2, -1), Q_centered) # (B, 3, N) x (B, N, 3) = (B, 3, 3)
+#
+#     # Compute SVD for optimal rotation
+#     U, S, Vt = torch.linalg.svd(H) 
+#
+#     # Compute Rotation Matrix Now
+#     mask = (torch.linalg.det(U) * torch.linalg.det(Vt)) < 0.0
+#     # R = torch.matmul(Vt.transpose(-2, -1), U.transpose(-2, -1))
+#
+#     # Special Reflection case
+#     # det = torch.linalg.det(R)
+#     # mask = det < 0
+#     if mask.sum() >= 1:
+#         # Vt_copy = Vt.clone()
+#         U_copy = U.clone()
+#         U_copy[mask, :, -1] *= -1
+#         # Vt_copy[mask, -1, :] *= -1
+#         # R = torch.matmul(Vt_copy.transpose(-2, -1), U.transpose(-2, -1))
+#         R = torch.matmul(U_copy.transpose(-2, -1), Vt.transpose(-2, -1))
+#     else:
+#         R = torch.matmul(U.transpose(-2, -1), Vt.transpose(-2, -1))
+#
+#     # print(torch.matmul(P_centered, R).shape)
+#     # Apply Rotation
+#     if len(Q.shape) == 2:
+#         P_aligned = torch.matmul(P_centered, R) + centroid_Q 
+#     else:
+#         P_aligned = torch.matmul(P_centered, R) + centroid_Q.unsqueeze(1)
+#
+#     diff = P_aligned - Q
+#     rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+#     print("RSMD:", rmsd.mean())
+#
+#     torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+#
+#     return P_aligned
 
 def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
     """Perform the kabsch algorithm to find the optimal rotation matrix
@@ -758,6 +828,7 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
     # Calc Translation
     P_point = P[:, motif, :] # N atom of 4th residue root
     Q_point = Q[motif, :] # Same N atom
+
 
     # Compute centroids
     centroid_P = P_point.mean(dim=1) # (B, 3)
@@ -791,15 +862,15 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
     # Rotate points accordingly
     # P_aligned = torch.matmul(R, P_centered.transpose(2, 1)).transpose(2, 1) + t.unsqueeze(1)
     P_aligned = torch.matmul(R, P.transpose(2, 1)).transpose(2, 1) + t
-    print(P_aligned.shape)
+    # print(P_aligned.shape)
     
-    diff = P_aligned - Q
-    rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
-    print("RSMD Whole:", rmsd.mean().item())
+    # diff = P_aligned - Q
+    # rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+    # print("RSMD Whole:", rmsd.mean().item())
     
     diff_motif = P_aligned[:, motif, :] - Q[motif, :]
     rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
-    print("RSMD Motif:", rmsd_motif.mean().item())
+    # print("RSMD Motif:", rmsd_motif.mean().item())
 
     torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
 
@@ -907,6 +978,560 @@ def kabsch_test():
     print("L2 R: {}".format(l2_R.mean()))
     return 0
 
+def size_help(size: int, params: dict) -> Union[dict, int]:
+    """Alter the size of the input"""
+    if size == 6:
+        params["torsion_main_n"]     = 41
+        params["torsion_side_n"]     = 0
+        params["bond_angle_main_n"]  = 41
+        params["bond_angle_side_n"]  = 0
+        params["bond_length_main_n"] = 41
+        params["bond_length_side_n"] = 0
+        params["jump_n"]             = 0
+        params["energy_n"]           = 1
+    elif size == 7:
+        params["output_size"]          = 147
+        params["input_size"]           = 147
+        params["torsion_main_n"]     = 48 
+        params["torsion_side_n"]     = 0
+        params["bond_angle_main_n"]  = 48
+        params["bond_angle_side_n"]  = 0
+        params["bond_length_main_n"] = 48
+        params["bond_length_side_n"] = 0
+        params["jump_n"]             = 0
+        params["energy_n"]           = 1
+        params["protein_len"]        = 7 
+        params["output_size"]        = 147
+        params["input_size"]         = 147
+        params['dof_residue_metadata'] = torch.tensor([[1., 1., 1.],
+        [1., 2., 1.],
+        [1., 3., 1.],
+        [1., 4., 1.],
+        [1., 6., 1.],
+        [1., 7., 1.],
+        [1., 8., 1.],
+        [2., 1., 1.],
+        [2., 2., 1.],
+        [2., 3., 1.],
+        [2., 4., 1.],
+        [2., 5., 1.],
+        [2., 6., 1.],
+        [2., 7., 1.],
+        [3., 1., 1.],
+        [3., 3., 1.],
+        [3., 4., 1.],
+        [3., 5., 1.],
+        [3., 6., 1.],
+        [3., 7., 1.],
+        [4., 1., 1.],
+        [4., 2., 1.],
+        [4., 3., 1.],
+        [4., 4., 1.],
+        [4., 5., 1.],
+        [4., 6., 1.],
+        [4., 7., 1.],
+        [5., 1., 1.],
+        [5., 2., 1.],
+        [5., 3., 1.],
+        [5., 4., 1.],
+        [5., 5., 1.],
+        [5., 6., 1.],
+        [5., 7., 1.],
+        [6., 1., 1.],
+        [6., 2., 1.],
+        [6., 3., 1.],
+        [6., 4., 1.],
+        [6., 5., 1.],
+        [6., 6., 1.],
+        [6., 7., 1.],
+        [7., 1., 1.],
+        [7., 2., 1.],
+        [7., 3., 1.],
+        [7., 4., 1.],
+        [7., 7., 1.],
+        [7., 8., 1.],
+        [7., 9., 1.],
+        [1., 1., 2.],
+        [1., 2., 2.],
+        [1., 3., 2.],
+        [1., 4., 2.],
+        [1., 6., 2.],
+        [1., 7., 2.],
+        [1., 8., 2.],
+        [2., 1., 2.],
+        [2., 2., 2.],
+        [2., 3., 2.],
+        [2., 4., 2.],
+        [2., 5., 2.],
+        [2., 6., 2.],
+        [2., 7., 2.],
+        [3., 1., 2.],
+        [3., 3., 2.],
+        [3., 4., 2.],
+        [3., 5., 2.],
+        [3., 6., 2.],
+        [3., 7., 2.],
+        [4., 1., 2.],
+        [4., 2., 2.],
+        [4., 3., 2.],
+        [4., 4., 2.],
+        [4., 5., 2.],
+        [4., 6., 2.],
+        [4., 7., 2.],
+        [5., 1., 2.],
+        [5., 2., 2.],
+        [5., 3., 2.],
+        [5., 4., 2.],
+        [5., 5., 2.],
+        [5., 6., 2.],
+        [5., 7., 2.],
+        [6., 1., 2.],
+        [6., 2., 2.],
+        [6., 3., 2.],
+        [6., 4., 2.],
+        [6., 5., 2.],
+        [6., 6., 2.],
+        [6., 7., 2.],
+        [7., 1., 2.],
+        [7., 2., 2.],
+        [7., 3., 2.],
+        [7., 4., 2.],
+        [7., 7., 2.],
+        [7., 8., 2.],
+        [7., 9., 2.],
+        [1., 1., 3.],
+        [1., 2., 3.],
+        [1., 3., 3.],
+        [1., 4., 3.],
+        [1., 6., 3.],
+        [1., 7., 3.],
+        [1., 8., 3.],
+        [2., 1., 3.],
+        [2., 2., 3.],
+        [2., 3., 3.],
+        [2., 4., 3.],
+        [2., 5., 3.],
+        [2., 6., 3.],
+        [2., 7., 3.],
+        [3., 1., 3.],
+        [3., 3., 3.],
+        [3., 4., 3.],
+        [3., 5., 3.],
+        [3., 6., 3.],
+        [3., 7., 3.],
+        [4., 1., 3.],
+        [4., 2., 3.],
+        [4., 3., 3.],
+        [4., 4., 3.],
+        [4., 5., 3.],
+        [4., 6., 3.],
+        [4., 7., 3.],
+        [5., 1., 3.],
+        [5., 2., 3.],
+        [5., 3., 3.],
+        [5., 4., 3.],
+        [5., 5., 3.],
+        [5., 6., 3.],
+        [5., 7., 3.],
+        [6., 1., 3.],
+        [6., 2., 3.],
+        [6., 3., 3.],
+        [6., 4., 3.],
+        [6., 5., 3.],
+        [6., 6., 3.],
+        [6., 7., 3.],
+        [7., 1., 3.],
+        [7., 2., 3.],
+        [7., 3., 3.],
+        [7., 4., 3.],
+        [7., 7., 3.],
+        [7., 8., 3.],
+        [7., 9., 3.]], dtype=torch.float64)
+    elif size == 8:
+        params["output_size"]          = 175
+        params["input_size"]           = 175
+        params["torsion_main_n"]     = 58
+        params["torsion_side_n"]     = 0
+        params["bond_angle_main_n"]  = 58
+        params["bond_angle_side_n"]  = 0
+        params["bond_length_main_n"] = 58
+        params["bond_length_side_n"] = 0
+        params["jump_n"]             = 0
+        params["energy_n"]           = 3
+        params['dof_residue_metadata'] = torch.tensor([[1., 1., 1.],
+        [1., 2., 1.],
+        [1., 3., 1.],
+        [1., 4., 1.],
+        [1., 5., 1.],
+        [1., 6., 1.],
+        [1., 7., 1.],
+        [1., 8., 1.],
+        [2., 1., 1.],
+        [2., 2., 1.],
+        [2., 3., 1.],
+        [2., 4., 1.],
+        [2., 5., 1.],
+        [2., 6., 1.],
+        [2., 7., 1.],
+        [3., 1., 1.],
+        [3., 2., 1.],
+        [3., 3., 1.],
+        [3., 4., 1.],
+        [3., 5., 1.],
+        [3., 6., 1.],
+        [3., 7., 1.],
+        [4., 1., 1.],
+        [4., 3., 1.],
+        [4., 4., 1.],
+        [4., 5., 1.],
+        [4., 6., 1.],
+        [4., 7., 1.],
+        [5., 1., 1.],
+        [5., 2., 1.],
+        [5., 3., 1.],
+        [5., 4., 1.],
+        [5., 5., 1.],
+        [5., 6., 1.],
+        [5., 7., 1.],
+        [6., 1., 1.],
+        [6., 2., 1.],
+        [6., 3., 1.],
+        [6., 4., 1.],
+        [6., 5., 1.],
+        [6., 6., 1.],
+        [6., 7., 1.],
+        [7., 1., 1.],
+        [7., 2., 1.],
+        [7., 3., 1.],
+        [7., 4., 1.],
+        [7., 5., 1.],
+        [7., 6., 1.],
+        [7., 7., 1.],
+        [8., 1., 1.],
+        [8., 2., 1.],
+        [8., 3., 1.],
+        [8., 4., 1.],
+        [8., 5., 1.],
+        [8., 6., 1.],
+        [8., 7., 1.],
+        [8., 8., 1.],
+        [8., 9., 1.],
+        [1., 1., 2.],
+        [1., 2., 2.],
+        [1., 3., 2.],
+        [1., 4., 2.],
+        [1., 5., 2.],
+        [1., 6., 2.],
+        [1., 7., 2.],
+        [1., 8., 2.],
+        [2., 1., 2.],
+        [2., 2., 2.],
+        [2., 3., 2.],
+        [2., 4., 2.],
+        [2., 5., 2.],
+        [2., 6., 2.],
+        [2., 7., 2.],
+        [3., 1., 2.],
+        [3., 2., 2.],
+        [3., 3., 2.],
+        [3., 4., 2.],
+        [3., 5., 2.],
+        [3., 6., 2.],
+        [3., 7., 2.],
+        [4., 1., 2.],
+        [4., 3., 2.],
+        [4., 4., 2.],
+        [4., 5., 2.],
+        [4., 6., 2.],
+        [4., 7., 2.],
+        [5., 1., 2.],
+        [5., 2., 2.],
+        [5., 3., 2.],
+        [5., 4., 2.],
+        [5., 5., 2.],
+        [5., 6., 2.],
+        [5., 7., 2.],
+        [6., 1., 2.],
+        [6., 2., 2.],
+        [6., 3., 2.],
+        [6., 4., 2.],
+        [6., 5., 2.],
+        [6., 6., 2.],
+        [6., 7., 2.],
+        [7., 1., 2.],
+        [7., 2., 2.],
+        [7., 3., 2.],
+        [7., 4., 2.],
+        [7., 5., 2.],
+        [7., 6., 2.],
+        [7., 7., 2.],
+        [8., 1., 2.],
+        [8., 2., 2.],
+        [8., 3., 2.],
+        [8., 4., 2.],
+        [8., 5., 2.],
+        [8., 6., 2.],
+        [8., 7., 2.],
+        [8., 8., 2.],
+        [8., 9., 2.],
+        [1., 1., 3.],
+        [1., 2., 3.],
+        [1., 3., 3.],
+        [1., 4., 3.],
+        [1., 5., 3.],
+        [1., 6., 3.],
+        [1., 7., 3.],
+        [1., 8., 3.],
+        [2., 1., 3.],
+        [2., 2., 3.],
+        [2., 3., 3.],
+        [2., 4., 3.],
+        [2., 5., 3.],
+        [2., 6., 3.],
+        [2., 7., 3.],
+        [3., 1., 3.],
+        [3., 2., 3.],
+        [3., 3., 3.],
+        [3., 4., 3.],
+        [3., 5., 3.],
+        [3., 6., 3.],
+        [3., 7., 3.],
+        [4., 1., 3.],
+        [4., 3., 3.],
+        [4., 4., 3.],
+        [4., 5., 3.],
+        [4., 6., 3.],
+        [4., 7., 3.],
+        [5., 1., 3.],
+        [5., 2., 3.],
+        [5., 3., 3.],
+        [5., 4., 3.],
+        [5., 5., 3.],
+        [5., 6., 3.],
+        [5., 7., 3.],
+        [6., 1., 3.],
+        [6., 2., 3.],
+        [6., 3., 3.],
+        [6., 4., 3.],
+        [6., 5., 3.],
+        [6., 6., 3.],
+        [6., 7., 3.],
+        [7., 1., 3.],
+        [7., 2., 3.],
+        [7., 3., 3.],
+        [7., 4., 3.],
+        [7., 5., 3.],
+        [7., 6., 3.],
+        [7., 7., 3.],
+        [8., 1., 3.],
+        [8., 2., 3.],
+        [8., 3., 3.],
+        [8., 4., 3.],
+        [8., 5., 3.],
+        [8., 6., 3.],
+        [8., 7., 3.],
+        [8., 8., 3.],
+        [8., 9., 3.]], dtype=torch.float64)
+    elif size == 9:
+        params["torsion_main_n"]       = 65
+        params["torsion_side_n"]       = 0
+        params["bond_angle_main_n"]    = 65
+        params["bond_angle_side_n"]    = 0
+        params["bond_length_main_n"]   = 65
+        params["bond_length_side_n"]   = 0
+        params["output_size"]          = 198
+        params["input_size"]           = 198
+        params["jump_n"]               = 0
+        params["energy_n"]             = 3 
+        params["protein_len"]          = 9
+        params['dof_residue_metadata'] = torch.tensor([[1., 1., 1.],
+         [1., 2., 1.],
+         [1., 3., 1.],
+         [1., 4., 1.],
+         [1., 5., 1.],
+         [1., 6., 1.],
+         [1., 7., 1.],
+         [1., 8., 1.],
+         [2., 1., 1.],
+         [2., 2., 1.],
+         [2., 3., 1.],
+         [2., 4., 1.],
+         [2., 5., 1.],
+         [2., 6., 1.],
+         [2., 7., 1.],
+         [3., 1., 1.],
+         [3., 2., 1.],
+         [3., 3., 1.],
+         [3., 4., 1.],
+         [3., 5., 1.],
+         [3., 6., 1.],
+         [3., 7., 1.],
+         [4., 1., 1.],
+         [4., 3., 1.],
+         [4., 4., 1.],
+         [4., 5., 1.],
+         [4., 6., 1.],
+         [4., 7., 1.],
+         [5., 1., 1.],
+         [5., 2., 1.],
+         [5., 3., 1.],
+         [5., 4., 1.],
+         [5., 5., 1.],
+         [5., 6., 1.],
+         [5., 7., 1.],
+         [6., 1., 1.],
+         [6., 2., 1.],
+         [6., 3., 1.],
+         [6., 4., 1.],
+         [6., 5., 1.],
+         [6., 6., 1.],
+         [6., 7., 1.],
+         [7., 1., 1.],
+         [7., 2., 1.],
+         [7., 3., 1.],
+         [7., 4., 1.],
+         [7., 5., 1.],
+         [7., 6., 1.],
+         [7., 7., 1.],
+         [8., 1., 1.],
+         [8., 2., 1.],
+         [8., 3., 1.],
+         [8., 4., 1.],
+         [8., 5., 1.],
+         [8., 6., 1.],
+         [8., 7., 1.],
+         [9., 1., 1.],
+         [9., 2., 1.],
+         [9., 3., 1.],
+         [9., 4., 1.],
+         [9., 5., 1.],
+         [9., 6., 1.],
+         [9., 7., 1.],
+         [9., 8., 1.],
+         [9., 9., 1.],
+         [1., 1., 2.],
+         [1., 2., 2.],
+         [1., 3., 2.],
+         [1., 4., 2.],
+         [1., 5., 2.],
+         [1., 6., 2.],
+         [1., 7., 2.],
+         [1., 8., 2.],
+         [2., 1., 2.],
+         [2., 2., 2.],
+         [2., 3., 2.],
+         [2., 4., 2.],
+         [2., 5., 2.],
+         [2., 6., 2.],
+         [2., 7., 2.],
+         [3., 1., 2.],
+         [3., 2., 2.],
+         [3., 3., 2.],
+         [3., 4., 2.],
+         [3., 5., 2.],
+         [4., 4., 2.],
+         [5., 2., 2.],
+         [5., 3., 2.],
+         [5., 4., 2.],
+         [5., 5., 2.],
+         [5., 6., 2.],
+         [5., 7., 2.],
+         [6., 1., 2.],
+         [6., 2., 2.],
+         [6., 3., 2.],
+         [6., 4., 2.],
+         [6., 5., 2.],
+         [6., 6., 2.],
+         [6., 7., 2.],
+         [7., 1., 2.],
+         [7., 2., 2.],
+         [7., 3., 2.],
+         [7., 4., 2.],
+         [7., 5., 2.],
+         [7., 6., 2.],
+         [7., 7., 2.],
+         [8., 1., 2.],
+         [8., 2., 2.],
+         [8., 3., 2.],
+         [8., 4., 2.],
+         [8., 5., 2.],
+         [8., 6., 2.],
+         [8., 7., 2.],
+         [9., 1., 2.],
+         [9., 2., 2.],
+         [9., 3., 2.],
+         [9., 4., 2.],
+         [9., 5., 2.],
+         [9., 6., 2.],
+         [9., 7., 2.],
+         [9., 8., 2.],
+         [9., 9., 2.],
+         [1., 1., 3.],
+         [1., 2., 3.],
+         [1., 3., 3.],
+         [1., 4., 3.],
+         [1., 5., 3.],
+         [1., 6., 3.],
+         [1., 7., 3.],
+         [1., 8., 3.],
+         [2., 1., 3.],
+         [2., 2., 3.],
+         [2., 3., 3.],
+         [2., 4., 3.],
+         [2., 5., 3.],
+         [2., 6., 3.],
+         [2., 7., 3.],
+         [3., 1., 3.],
+         [3., 2., 3.],
+         [3., 3., 3.],
+         [3., 4., 3.],
+         [3., 5., 3.],
+         [3., 6., 3.],
+         [3., 7., 3.],
+         [4., 1., 3.],
+         [4., 3., 3.],
+         [4., 4., 3.],
+         [4., 5., 3.],
+         [4., 6., 3.],
+         [4., 7., 3.],
+         [5., 1., 3.],
+         [5., 2., 3.],
+         [5., 3., 3.],
+         [5., 4., 3.],
+         [5., 5., 3.],
+         [5., 6., 3.],
+         [5., 7., 3.],
+         [6., 1., 3.],
+         [6., 2., 3.],
+         [6., 3., 3.],
+         [6., 4., 3.],
+         [6., 5., 3.],
+         [6., 6., 3.],
+         [6., 7., 3.],
+         [7., 1., 3.],
+         [7., 2., 3.],
+         [7., 3., 3.],
+         [7., 4., 3.],
+         [7., 5., 3.],
+         [7., 6., 3.],
+         [7., 7., 3.],
+         [8., 1., 3.],
+         [8., 2., 3.],
+         [8., 3., 3.],
+         [8., 4., 3.],
+         [8., 5., 3.],
+         [8., 6., 3.],
+         [8., 7., 3.],
+         [9., 1., 3.],
+         [9., 2., 3.],
+         [9., 3., 3.],
+         [9., 4., 3.],
+         [9., 5., 3.],
+         [9., 6., 3.],
+         [9., 7., 3.],
+         [9., 8., 3.],
+         [9., 9., 3.]], dtype=torch.float64)
+    return params, params["output_size"]
 
 # def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
 #     """Perform the kabsch algorithm to find the optimal rotation matrix
@@ -1047,5 +1672,6 @@ if __name__ == "__main__":
     # # Figure out if Backbone passes hbond and terminal bond check
     # out = hbond_class.checkpoint(hbond_count_out, terminal_length)
     # print("OUT:", out)
+
 
 

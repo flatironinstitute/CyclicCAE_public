@@ -10,13 +10,17 @@
 
 # base python packages
 from collections import defaultdict
+import time
 import os
 import random
+import numpy as np
+from multiprocessing import shared_memory
 
 # ml imports
 import torch
 import torch.nn.init as init
 import torch.nn as nn
+from torch.utils.data import Sampler, Dataset
 
 # function import
 # from terminal_error import terminal_peptide_loss
@@ -25,12 +29,56 @@ import torch.nn as nn
 #                                               Classes
 ##################################################################################################################
 
+class SharedMemoryDataset(Dataset):
+    def __init__(self, shm_name, shape, dtype):
+        self.shm = shared_memory.SharedMemory(name=shm_name)
+        self.array = np.ndarray(shape, dtype=dtype, buffer=self.shm.buf)
+
+    def __getitem__(self, index):
+        sample = self.array[index]
+        return torch.from_numpy(sample), index
+
+    def __len__(self):
+        return self.array.shape[0]
+
+class MyDatasetShared(Dataset):
+    def __init__(self, shm_name, shape, dtype):
+        self.shm = shared_memory.SharedMemory(name=shm_name)
+        self.array = np.ndarray(shape, dtype=dtype, buffer=self.shm.buf)
+
+    def __getitem__(self, index):
+        sample = self.array[index]
+        return torch.from_numpy(sample)
+
+    def __len__(self):
+        return self.array.shape[0]
+
+class StochasticSampler(Sampler):
+    def __init__(self, dataset_size: int, subset_size: int):
+        """Shuffle around some subset_size amount of training samples based on the datset_size
+
+        PARAMS
+        ------
+        dataset_size:int: Total Number of samples in our dataset
+        subset_size:int: Specific size we want to use
+        """
+        self.dataset_size = dataset_size
+        self.subset_size = subset_size
+
+    def __iter__(self):
+        indices = torch.randperm(self.dataset_size)[:self.subset_size]
+        return iter(indices.tolist())
+
+    def __len__(self):
+        return self.subset_size
+
 class ScaleOutputs:
     def __init__(
         self,
         input_tensor: torch.Tensor,
         train: bool = True,
         score_terms: list = [0, 1, 2],
+        protein_len: int = 8,
         ):
         """Take the predicted value and scale them, but store min/max for inverse scaling
 
@@ -42,17 +90,36 @@ class ScaleOutputs:
             If inference then use established training min/max score values
         score_terms: list
             Supply to determine which score terms you would like to use [QM, REF2015, REF2015+FaSOL]
+        protein_len: int
+            Size of the peptide being predicted
         """
         # store input tensor
+        self.protein_len = protein_len
+        # Specify our out values
+        if protein_len == 6:
+            emin = torch.tensor([-3.8705e+04,  1.4710e+00,  5.1428e-01], dtype=torch.double)
+            emax = torch.tensor([0.0000, 11.1910, 21.2210], dtype=torch.double)
+        elif protein_len == 7:
+            emin = torch.tensor([-2.5057], dtype=torch.double)
+            emax = torch.tensor([31.0829], dtype=torch.double)
+        elif protein_len == 8:
+            emin = torch.tensor([0.000, 12.5430, 36.8702], dtype=torch.double)
+            emax = torch.tensor([-5.1624e04, -4.7750e00, 5.4859e-01], dtype=torch.double)
+        elif protein_len == 9:
+            emin = torch.tensor([-5.8076e+04, -6.9070e+00, -1.7488e+00], dtype=torch.double)
+            emax = torch.tensor([ 0.0000, 12.6490, 37.8209], dtype=torch.double)
+
         self.input_tensor = input_tensor
+        self.size = input_tensor.shape[-1]
         # create holding min/max values
-        self.max = torch.max(input_tensor, dim=0).values if train else torch.tensor([0.000, 12.5430, 36.8702], dtype=torch.double)
-        self.min = torch.min(input_tensor, dim=0).values if train else torch.tensor([-5.1624e04, -4.7750e00, 5.4859e-01], dtype=torch.double)
+        self.max = torch.max(input_tensor, dim=0).values if train else emax
+        self.min = torch.min(input_tensor, dim=0).values if train else emin
         # grab appropriate values
-        self.max = self.max[score_terms]
-        self.min = self.min[score_terms]
+        if self.size == 3:
+            self.max = self.max[score_terms]
+            self.min = self.min[score_terms]
         # scaled values
-        self.scaled_vals = self.scale_values.to("cuda" if torch.cuda.is_available() else "cpu")
+        self.scaled_vals = self.scale_values #.to("cuda" if torch.cuda.is_available() else "cpu")
 
     @property
     def scale_values(self):
@@ -97,6 +164,7 @@ def scale(x: torch.Tensor, params: dict):
     """Scale all input values"""
     # clone
     out = x.clone()
+    # out = x
 
     # starting spot in tensor
     linear_terms_start = params["torsion_main_n"] + params["torsion_side_n"] + params["bond_angle_main_n"] + params["bond_angle_side_n"]
@@ -106,14 +174,18 @@ def scale(x: torch.Tensor, params: dict):
 
     # grab out each section
     # Scale Bond Length
+    # print("BOND LENGTH", linear_terms_start, linear_terms_start + bond_length_size)
+    # print(out.shape)
     out[:, linear_terms_start: linear_terms_start + bond_length_size ] = normalize_vals(
         out[:, linear_terms_start: linear_terms_start + bond_length_size ] 
     )
+    # print(out.shape)
 
     # Scale Jumps if any
     if params["jump_n"] != 0:
         jump_end = linear_terms_start + bond_length_size + params["jump_n"]
         jump_start = linear_terms_start + bond_length_size
+        # print("JUMP", jump_start, jump_end)
         out[:, jump_start : jump_end ] = normalize_vals(
             out[:, jump_start : jump_end ]
         )
@@ -122,6 +194,8 @@ def scale(x: torch.Tensor, params: dict):
     if params["energy_n"] != 0:
         energy_end = linear_terms_start + bond_length_size + params["jump_n"] + params["energy_n"]
         energy_start = linear_terms_start + bond_length_size + params["jump_n"]
+        # print("ENERGY", energy_start, energy_end)
+        # print(out.shape)
         out[:, energy_start : energy_end ] = normalize_vals(
             out[:, energy_start : energy_end ]
         )
@@ -131,8 +205,9 @@ def scale(x: torch.Tensor, params: dict):
 
 def normalize_vals(x: torch.Tensor, norm_min:float = -1., norm_max:float = 1.):
     """Set terms between -1 and 1"""
-    min_val = x.min()
-    max_val = x.max()
+    # print("NORMALIZE SHAPE:", x.shape)
+    min_val = x.min() #dim=0).values
+    max_val = x.max() #dim=0).values
     norm_feature = (x - min_val) / (max_val - min_val) * (norm_max - norm_min) + norm_min
     return norm_feature
     
@@ -381,7 +456,7 @@ def loss_function(
     )
 
     # terminal peptide regression loss
-    terminal_loss = term_class.terminal_peptide_loss(dof_out, real_terminal_lengths, params, foldtree_root=4, device=device).mean()
+    terminal_loss = term_class.terminal_peptide_loss(dof_out, real_terminal_lengths, params, foldtree_root=term_class.calculate_root(params["protein_len"]), device=device)[0].mean()
 
     # Compute individual angle loss terms
     # torsion_loss = angle_loss_term(y_hat_angle[:, :y_hat_angle.size(-1)//2], y_angle[:, :y_hat_angle.size(-1)//2])
@@ -482,6 +557,7 @@ def train(
     params: dict,
     real_terminal_lengths: torch.Tensor,
     term_class,
+    train_sampler,
     ):
     """General Train function for the AutoEncoder Model
 
@@ -566,11 +642,14 @@ def train(
     model = model.to(device)
     model.train(True)
 
+    # torch.autograd.set_detect_anomaly(True)
+
     # init model weights
     # model.apply(xavier_init)
 
     # latent holding tensor
-    latent_plotly_tensor = torch.zeros((sample_n, (epochs//latent_plotly)+1, latent_dim), dtype=torch.double) if latent_plotly else torch.zeros((sample_n, latent_dim), dtype=torch.double)
+    # latent_plotly_tensor = torch.zeros((sample_n, (epochs//latent_plotly)+1, latent_dim), dtype=torch.double) if latent_plotly else torch.zeros((sample_n, latent_dim), dtype=torch.double)
+    latent_plotly_tensor = torch.zeros(0)
     extract_latent_epoch = latent_plotly if latent_plotly else epochs
     plotly_index = 0
     old_epoch = 0
@@ -600,6 +679,8 @@ def train(
 
     # loop through epochs
     for e in range(begin_epoch, epochs+begin_epoch):
+        train_sampler.set_epoch(e) # necessary for DDP Shuffling data
+        start_time = time.time()
 
         # loop through dataset 
         for n, (data, indices) in enumerate(train_dataset):
@@ -623,7 +704,7 @@ def train(
                     # linear terms
                     bond_lengths = y_linear[:, :-energy_n]
                     # energy = y_linear[:, -energy_n:]
-                    energy = scale_outputs.scaled_vals[indices, :]
+                    energy = scale_outputs.scaled_vals[indices, :].to(device)
 
                     args = {"y_hat_angle": out[:, :angle_n*2], # Torsion only we get rid of the *2
                             "y_angle": decomposed_x[:, :angle_n*2], # Torsion only we get rid of the *2
@@ -669,24 +750,24 @@ def train(
             ### Run same set without noise
             out, latent_rmsd_mat, latent_space, decomposed_x = model(x, False)
 
-            # Extract out the latent tensor if multiple middle dimensions
-            if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
-
-                # Keep track of the epoch and where we are in the middle index
-                if old_epoch != (e+1):
-                    plotly_index += 1
-                    old_epoch = (e+1)
-                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
-
-            # pull out initial  0 epoch latent
-            elif (e == 0) and (extract_latent_epoch != epochs):
-                # pass
-                latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
-
-            # if not passed then only extract the last epochs tensor
-            elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
-                # pass
-                latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
+            # # Extract out the latent tensor if multiple middle dimensions
+            # if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
+            #
+            #     # Keep track of the epoch and where we are in the middle index
+            #     if old_epoch != (e+1):
+            #         plotly_index += 1
+            #         old_epoch = (e+1)
+            #     latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+            #
+            # # pull out initial  0 epoch latent
+            # elif (e == 0) and (extract_latent_epoch != epochs):
+            #     # pass
+            #     latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+            #
+            # # if not passed then only extract the last epochs tensor
+            # elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
+            #     # pass
+            #     latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
 
             # Create output tensor to check
             y_linear = real_X[indices, angle_n:].to(device)
@@ -695,7 +776,7 @@ def train(
             # linear terms
             bond_lengths = y_linear[:, :-energy_n]
             # energy = y_linear[:, -energy_n:]
-            energy = scale_outputs.scaled_vals[indices, :]
+            energy = scale_outputs.scaled_vals[indices, :].to(device)
 
             # args input for loss
             args = {"y_hat_angle": out[:, :angle_n*2], 
@@ -745,6 +826,7 @@ def train(
                 terminal_list.append(terminal_loss_nonoise.item())
 
                 loss = loss_nonoise
+            # with torch.autograd.set_detect_anomaly(True):
             loss.backward() 
             # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
@@ -753,7 +835,7 @@ def train(
             # print('grad 4_4', model.energy_decoder4[4].weight.grad)
             # print('weight 4_4', model.energy_decoder4[4].weight)
 
-            # scheduler.step(e+n / len(dataset))
+            # scheduler.step(e+n / len(train_dataset))
             scheduler.step_cycleLR(step_size) # This is for the custom scheduler not for overfitting
             # scheduler.step()
 
@@ -798,24 +880,24 @@ def train(
                 # out, angles_decomposed, latent_rmsd_mat, latent_space, decomposed_x = model(x)
                 out, latent_rmsd_mat, latent_space, decomposed_x = model(x, False)
 
-                # Extract out the latent tensor if multiple middle dimensions
-                if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
-
-                    # Keep track of the epoch and where we are in the middle index
-                    if old_epoch != (e+1):
-                        plotly_index += 1
-                        old_epoch = (e+1)
-                    latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
-
-                # pull out initial  0 epoch latent
-                elif (e == 0) and (extract_latent_epoch != epochs):
-                    # pass
-                    latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
-
-                # if not passed then only extract the last epochs tensor
-                elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
-                    # pass
-                    latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
+                # # Extract out the latent tensor if multiple middle dimensions
+                # if ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch != epochs):
+                #
+                #     # Keep track of the epoch and where we are in the middle index
+                #     if old_epoch != (e+1):
+                #         plotly_index += 1
+                #         old_epoch = (e+1)
+                #     latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+                #
+                # # pull out initial  0 epoch latent
+                # elif (e == 0) and (extract_latent_epoch != epochs):
+                #     # pass
+                #     latent_plotly_tensor[indices, plotly_index, :] = latent_space.detach().cpu()
+                #
+                # # if not passed then only extract the last epochs tensor
+                # elif ((e+1) % extract_latent_epoch == 0) and (extract_latent_epoch == epochs):
+                #     # pass
+                #     latent_plotly_tensor[indices, :] = latent_space.detach().cpu()
 
                 # Create output tensor to check
                 y_linear = real_X[indices, angle_n:].to(device)
@@ -824,7 +906,7 @@ def train(
                 # linear terms
                 bond_lengths = y_linear[:, :-energy_n]
                 # energy = y_linear[:, -energy_n:]
-                energy = scale_outputs.scaled_vals[indices, :]
+                energy = scale_outputs.scaled_vals[indices, :].to(device)
 
                 # args input for loss
                 args = {"y_hat_angle": out[:, :angle_n*2], # Torsion only we get rid of the *2
@@ -864,8 +946,10 @@ def train(
 
             # UpdateLR on Plateau Scheduler step This is the custom scheduler
             scheduler.step_reduceLR(mean_val_loss)
+            # scheduler.step(mean_val_loss)
         else:
             scheduler.step_reduceLR(mean_loss)
+            # scheduler.step(mean_loss)
             mean_val_loss = 0
 
         # check if loss is lower
@@ -878,7 +962,7 @@ def train(
 
             # Write progress to tracking file
             with open(file_out_track, 'a') as specific_out:
-                print(f"{e+1},{mean_loss},{mean_val_loss},{a_mean},{l_mean},{lat_mean},{cons_mean}", file=specific_out)
+                print(f"{e+1},{mean_loss},{mean_val_loss},{a_mean},{l_mean},{lat_mean},{cons_mean},{terminal_mean}", file=specific_out)
 
             # First check if dirs exist if not then create
             first_layer_dir = os.path.join(output_dir, "model_weights/")
@@ -890,7 +974,8 @@ def train(
             torch.save(
                 {
                     "epoch": e+1,
-                    "model_state_dict": model.state_dict(),
+                    # "model_state_dict": model.state_dict(),
+                    "model_state_dict": model.module.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     # "scheduler_state_dict": scheduler.state_dict(),
                     "loss": loss,
@@ -908,7 +993,8 @@ def train(
                 torch.save(
                     {
                         "epoch": e+1,
-                        "model_state_dict": model.state_dict(),
+                        # "model_state_dict": model.state_dict(),
+                        "model_state_dict": model.module.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         # "scheduler_state_dict": scheduler.state_dict(),
                         "loss": loss,
@@ -917,12 +1003,13 @@ def train(
                 )
 
             # Save weights for passed epoch numbers
-            if (e+1) % weight_save_n == 0:
+            if device == 0 and (e+1) % weight_save_n == 0: # This is for DDP
                 specific_weights = os.path.join(first_layer_dir, f"epoch_{e+1}_weights_{file_num}.pt")
                 torch.save(
                     {
                         "epoch": e+1,
-                        "model_state_dict": model.state_dict(),
+                        # "model_state_dict": model.state_dict(),
+                        "model_state_dict": model.module.state_dict(), # This is for DDP
                         "optimizer_state_dict": optimizer.state_dict(),
                         # "scheduler_state_dict": scheduler.state_dict(),
                         "loss": loss,
@@ -930,8 +1017,10 @@ def train(
                     specific_weights,
                 )
 
+        end_time = time.time()
+        dt = round(end_time - start_time, 1)
         # Print out progress for each epoch
-        print(f"Epoch: {e+1}, Step: {step_size}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Val Loss: {mean_val_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Energy Loss: {cons_mean}, Terminal Loss (Cyclic): {terminal_mean}")
+        print(f"Epoch: {e+1}, Step: {step_size}, Epoch Time: {dt}, LR: {optimizer.param_groups[0]['lr']}, Train Loss: {mean_loss}, Val Loss: {mean_val_loss}, Angel Loss: {a_mean}, Linear Loss: {l_mean}, Latent RMSD Loss: {lat_mean}, Energy Loss: {cons_mean}, Terminal Loss (Cyclic): {terminal_mean}")
         # Visualize Output vs Real values for qualitative check
         if (e+1) % 50 == 0:
             angles = out[:, :angle_n*2]
