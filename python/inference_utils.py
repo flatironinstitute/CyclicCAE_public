@@ -220,13 +220,16 @@ class HBondCount:
         checkpoint_bool = terminal_bool & hbond_bool
         return checkpoint_bool
 
-def extract_pdb_xyz(input: str):
+def extract_pdb_xyz(input: str, full: bool = False):
     """Extract out Target xyz coordinates
 
     PARAMS
     ------
     input: str
         The pdb input target file
+    full: bool
+        If you want the full atom side chain information if not then we
+        use bb-heavy + Cb
 
     RETURNS
     ------
@@ -251,39 +254,59 @@ def extract_pdb_xyz(input: str):
             # if line_split[2] in ["N", "CA", "C", "O"]:
             #     atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
             #     index += 1
-            if (line_split[4] == "A") & (line_split[11] != "H"):
-                # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                if line_split[2] in ["N", "CA", "C", "O"]:
-                    atom_specific = line_split[2]
-                elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
-                    if line_split[2][0] == "CB":
-                        atom_specific = "C"
-                    else:
-                        continue
-                    ####### Editing out below this to try only Cb pocket context (also else with H or C below as well) ####
-                    # if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
-                    #     atom_specific = line_split[2][0]
-                    # elif line_split[2][0] == "S":
-                    #     atom_specific = "C"
-                    # else:
-                    #     atom_specific = line_split[11]
-                # else: 
-                    # # atom_specific =  "H"
-                    # atom_specific =  "C"
-                # atom_specific = line_split[2] if line_split[2] in ["N", "CA", "C", "O"] else "C"
-                atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                index += 1
-            # elif (line_split[4] == "A") & (line_split[11] == "H"):
-            #     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-            #     atom_specific = "H"
-            #     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-            #     index += 1
-            elif (line_split[4] == "B") & (line_split[2] in ["N", "CA", "C", "O"]):
-                # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                index += 1
+            if full:
+                if (line_split[4] == "A") & (line_split[11] != "H"):
+                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                    if line_split[2] in ["N", "CA", "C", "O"]:
+                        atom_specific = line_split[2]
+                    elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
+                        # if line_split[2][0] == "CB":
+                        #     atom_specific = "C"
+                        # else:
+                        #     continue
+                        ####### Editing out below this to try only Cb pocket context (also else with H or C below as well) ####
+                        if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
+                            atom_specific = line_split[2][0]
+                        elif line_split[2][0] == "S":
+                            atom_specific = "C"
+                        else:
+                            atom_specific = line_split[11]
+                    else: 
+                        # atom_specific =  "H"
+                        atom_specific =  "C"
+                    # atom_specific = line_split[2] if line_split[2] in ["N", "CA", "C", "O"] else "C"
+                    atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                    index += 1
+                # elif (line_split[4] == "A") & (line_split[11] == "H"):
+                #     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                #     atom_specific = "H"
+                #     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                #     index += 1
+                elif (line_split[4] == "B") & (line_split[2] in ["N", "CA", "C", "O"]):
+                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                    atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                    index += 1
+                else:
+                    pass
+            # Not full, so we use Cb for target information
             else:
-                pass
+                if (line_split[4] == "A") & (line_split[11] != "H"):
+                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                    if line_split[2] in ["N", "CA", "C", "O"]:
+                        atom_specific = line_split[2]
+                    elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
+                        if line_split[2][0] == "CB":
+                            atom_specific = "C"
+                        else:
+                            continue
+                    atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                    index += 1
+                elif (line_split[4] == "B") & (line_split[2] in ["N", "CA", "C", "O"]):
+                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+                    atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+                    index += 1
+                else:
+                    pass
 
 
     return atomdict
@@ -870,7 +893,7 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
     
     diff_motif = P_aligned[:, motif, :] - Q[motif, :]
     rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
-    # print("RSMD Motif:", rmsd_motif.mean().item())
+    print("RSMD Motif:", rmsd_motif.mean().item())
 
     torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
 
@@ -992,17 +1015,17 @@ def size_help(size: int, params: dict) -> Union[dict, int]:
     elif size == 7:
         params["output_size"]          = 147
         params["input_size"]           = 147
-        params["torsion_main_n"]     = 48 
-        params["torsion_side_n"]     = 0
-        params["bond_angle_main_n"]  = 48
-        params["bond_angle_side_n"]  = 0
-        params["bond_length_main_n"] = 48
-        params["bond_length_side_n"] = 0
-        params["jump_n"]             = 0
-        params["energy_n"]           = 1
-        params["protein_len"]        = 7 
-        params["output_size"]        = 147
-        params["input_size"]         = 147
+        params["torsion_main_n"]       = 48 
+        params["torsion_side_n"]       = 0
+        params["bond_angle_main_n"]    = 48
+        params["bond_angle_side_n"]    = 0
+        params["bond_length_main_n"]   = 48
+        params["bond_length_side_n"]   = 0
+        params["jump_n"]               = 0
+        params["energy_n"]             = 1
+        params["protein_len"]          = 7 
+        params["output_size"]          = 147
+        params["input_size"]           = 147
         params['dof_residue_metadata'] = torch.tensor([[1., 1., 1.],
         [1., 2., 1.],
         [1., 3., 1.],
@@ -1148,16 +1171,17 @@ def size_help(size: int, params: dict) -> Union[dict, int]:
         [7., 8., 3.],
         [7., 9., 3.]], dtype=torch.float64)
     elif size == 8:
-        params["output_size"]          = 175
-        params["input_size"]           = 175
-        params["torsion_main_n"]     = 58
-        params["torsion_side_n"]     = 0
-        params["bond_angle_main_n"]  = 58
-        params["bond_angle_side_n"]  = 0
-        params["bond_length_main_n"] = 58
-        params["bond_length_side_n"] = 0
-        params["jump_n"]             = 0
-        params["energy_n"]           = 3
+        params["output_size"]          = 177
+        params["input_size"]           = 177
+        params["protein_len"]          = 8
+        params["torsion_main_n"]       = 58
+        params["torsion_side_n"]       = 0
+        params["bond_angle_main_n"]    = 58
+        params["bond_angle_side_n"]    = 0
+        params["bond_length_main_n"]   = 58
+        params["bond_length_side_n"]   = 0
+        params["jump_n"]               = 0
+        params["energy_n"]             = 3
         params['dof_residue_metadata'] = torch.tensor([[1., 1., 1.],
         [1., 2., 1.],
         [1., 3., 1.],

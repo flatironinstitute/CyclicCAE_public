@@ -7,7 +7,7 @@ class TerminalPeptide:
     def __init__(self):
         pass
 
-    def terminal_peptide_loss(self, dof_inputs: torch.Tensor, real_term: torch.Tensor, params: dict, foldtree_root: int, device: str):
+    def terminal_peptide_loss(self, dof_inputs: torch.Tensor, real_term: torch.Tensor, params: dict, foldtree_root: int, device: str, control: bool = False):
         """Calculate N-C peptide bond Loss; Currently using Ideal bond length & bond angle
 
         PARAMS
@@ -20,6 +20,8 @@ class TerminalPeptide:
             How many terms there are for each individual DoF (torsion, bond angle, bond length)
         foldtree_root: int
             Specify the root of the foldetree that the peptide is using
+        control: bool
+            We just want to calculate the coordinates for this and it is alreaady in angles not sin/cos
 
         RETURNS
         -------
@@ -27,8 +29,12 @@ class TerminalPeptide:
             Regression based loss 1/n * Sigma_i((x_hat_i - x_i)**2)
         """
         # Define decomp numbers
-        decomp_torsion = params["torsion_main_n"]*2
-        decomp_bondang = params["bond_angle_main_n"]*2
+        if control:
+            decomp_torsion = params["torsion_main_n"]
+            decomp_bondang = params["bond_angle_main_n"]
+        else:
+            decomp_torsion = params["torsion_main_n"]*2
+            decomp_bondang = params["bond_angle_main_n"]*2
         # print(decomp_torsion)
         # print(decomp_bondang)
 
@@ -44,18 +50,22 @@ class TerminalPeptide:
         # print(bond_angles.shape)
 
         # torsion angles
-        torsion_degree = torch.rad2deg( 
-            torch.atan2( 
-                torsion_full[:, :torsion_full.size(-1)//2],
-                torsion_full[:, torsion_full.size(-1)//2:],
+        if control:
+            torsion_degree = torsion_full
+            bond_angle_degree = bond_angles
+        else:
+            torsion_degree = torch.rad2deg( 
+                torch.atan2( 
+                    torsion_full[:, :torsion_full.size(-1)//2],
+                    torsion_full[:, torsion_full.size(-1)//2:],
+                )
             )
-        )
-        bond_angle_degree = torch.rad2deg( 
-            torch.atan2( 
-                bond_angles[:, :bond_angles.size(-1)//2],
-                bond_angles[:, bond_angles.size(-1)//2:],
+            bond_angle_degree = torch.rad2deg( 
+                torch.atan2( 
+                    bond_angles[:, :bond_angles.size(-1)//2],
+                    bond_angles[:, bond_angles.size(-1)//2:],
+                )
             )
-        )
 
         # Extract torsion (phi/psi) and omega index
         phi_psi_idx, omega_idx = self.torsion_extract(torsion_degree.size(-1), params["protein_len"], foldtree_root)
@@ -78,12 +88,13 @@ class TerminalPeptide:
         n_coords = coordinates[:, :, 2, :]
 
         # roll n coords 1
-        n_roll = torch.roll(n_coords, shifts=-1, dims=1)
+        # n_roll = torch.roll(n_coords, shifts=-1, dims=1)
 
         # Calculate the n-c peptide length of shape (B)
-        bond_pred_length = torch.norm(n_roll - c_coords, dim=-1)
+        # bond_pred_length = torch.norm(n_roll - c_coords, dim=-1)
+        terminal_pred_length = torch.norm(c_coords[:, -1, :] - n_coords[:, 0, :], dim=-1)
         # bond_pred_length = torch.norm(n_coords - c_coords, dim=-1)
-        terminal_pred_length = bond_pred_length[:, -1]
+        # terminal_pred_length = bond_pred_length[:, -1]
         # terminal_pred_length2 = bond_pred_length2[:, -1]
         # print("PRED LENGTH:", terminal_pred_length2)
 
@@ -1071,8 +1082,8 @@ def parameter_check():
     peptide_term_class = TerminalPeptide()
 
     print("---8mer Check---")
-    # data = torch.load("./binary_import/dof_vectors2024-05-14torch_tensor.pt") # 8mer dataset
-    data = torch.load("./binary_import/6mer_full_virtualatoms_dof_vectors2024-12-10torch_tensor.pt") # 8mer dataset
+    data = torch.load("./binary_import/dof_vectors2024-05-14torch_tensor.pt") # 8mer dataset
+    # data = torch.load("./binary_import/6mer_full_virtualatoms_dof_vectors2024-12-10torch_tensor.pt") # 8mer dataset
     params = data["params"]
     x = data["x"]
     pep_len, root_pos = params["protein_len"], peptide_term_class.calculate_root(params["protein_len"])
@@ -1089,7 +1100,7 @@ def parameter_check():
     omega = torsion_full[:, omega_idx]
     print("OMEGA:", omega)
     torsion = torsion_full[:, phi_psi]
-    print("TORSION:", torsion)
+    print("TORSION:", [round(x.item(),1) for x in torsion[0]])
     # bond angle idx
     bond_angle_idx, bond_length_idx = peptide_term_class.extract_bond_angles(dof_length=params["bond_angle_main_n"], root=root_pos, L=pep_len)
     # Bond angle and index values
@@ -1169,6 +1180,7 @@ if __name__ == "__main__":
     # index tensors
     omega = torsion_full[:, omega_idx]
     torsion = torsion_full[:, phi_psi]
+    print(torsion)
 
     pep_len, root_pos = 8, 4
 

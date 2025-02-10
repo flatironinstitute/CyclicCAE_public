@@ -100,8 +100,10 @@ class ScaleOutputs:
             emin = torch.tensor([-3.8705e+04,  1.4710e+00,  5.1428e-01], dtype=torch.double)
             emax = torch.tensor([0.0000, 11.1910, 21.2210], dtype=torch.double)
         elif protein_len == 7:
-            emin = torch.tensor([-2.5057], dtype=torch.double)
-            emax = torch.tensor([31.0829], dtype=torch.double)
+            emin = torch.tensor([-4.5163e+04, -1.6130e+00, -2.5057e+00], dtype=torch.double)
+            emax = torch.tensor([ 0.0000, 12.1960, 31.0829], dtype=torch.double)
+            # emin = torch.tensor([-2.5057], dtype=torch.double)
+            # emax = torch.tensor([31.0829], dtype=torch.double)
         elif protein_len == 8:
             emin = torch.tensor([0.000, 12.5430, 36.8702], dtype=torch.double)
             emax = torch.tensor([-5.1624e04, -4.7750e00, 5.4859e-01], dtype=torch.double)

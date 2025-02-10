@@ -99,8 +99,10 @@ class DoFBinaryReader:
             self.protein_len = len(protein_seq.group(1))
 
             # Grab info
-            reference_pose = header.decode('latin-1')[104:]
-            print(header.decode('latin-1')[104:])
+            # skip_amount = 104 # 8mer
+            skip_amount = 2555 # 8mer
+            reference_pose = header.decode('latin-1')[skip_amount:] 
+            print(header.decode('latin-1')[skip_amount:])
 
             # Encode info
             test_utf = reference_pose.encode('utf-8')

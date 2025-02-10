@@ -27,12 +27,14 @@ class DoFExport:
         model_out: torch.Tensor,
         torsion_only: bool = False,
         no_energy: bool = False,
+        peptide_size: int = 8,
         ):
         # Assign params
         self.params = params
         self.model_out = model_out
         self.torsion_only = torsion_only
         self.no_energy = no_energy
+        self.peptide_size = peptide_size
 
         self.extract_to_binary
 
@@ -64,8 +66,10 @@ class DoFExport:
         bool_values = [1 if x > 0 else 0 for x in values]
 
         reference_pose = self.params["reference_pose"]
-        # reference_pose = (reference_pose.decode('latin-1')[2968:]).encode('utf-8')
-        reference_pose = (reference_pose.decode('latin-1')[2966:]).encode('utf-8')
+        if self.peptide_size == 8:
+            reference_pose = (reference_pose.decode('latin-1')[2968:]).encode('utf-8')
+        elif self.peptide_size == 9:
+            reference_pose = (reference_pose.decode('latin-1')[516:]).encode('utf-8')
 
         # reference_len = self.params["ref_pose_len"]
 
@@ -149,25 +153,28 @@ class DoFExport:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model-out-data", type=str, required=True, help="Trajectories from the model, we want converted to Binary.")
-    p.add_argument("--dataset-used", type=str, default="./dof_vectors2024-03-19torch_tensor.pt",
-                   help="Set Dataset Used to Train model (default: dof_vectors2024-03-19torch_tensor.pt)")
+    # p.add_argument("--dataset-used", type=str, default="./dof_vectors2024-03-19torch_tensor.pt",
+    #                help="Set Dataset Used to Train model (default: dof_vectors2024-03-19torch_tensor.pt)")
+    p.add_argument("--datasetloader", type=str, default="../dataload_6to9_01022025.pt", help="Load the dataloader params dictionary pt file")
+    p.add_argument("--peptide-size", type=int, default=8, help="Specify the size of the peptide to determine the params to load")
     p.add_argument("--torsion-only", action="store_true", help="Only Send Torsion Data")
     p.add_argument("--no-energy", action="store_true", help="Exclude Jump and Energy Term")
     args = p.parse_args()
 
     # Load in speicifc dataset
-    dataset = torch.load(args.dataset_used)
+    dataset = torch.load(args.datasetloader)
 
     # Load in passed model outputs
-    out = torch.load(args.model_out_data)
+    out = torch.load(args.model_out_data, map_location="cuda:0" if torch.cuda.is_available() else "cpu")
 
-    PARAMS = dataset["params"]
+    PARAMS = dataset[args.peptide_size] #["params"]
 
     DoFExport(
         params = PARAMS,
         model_out = out,
         torsion_only = args.torsion_only,
         no_energy = args.no_energy,
+        peptide_size = args.peptide_size,
     )
 
 

@@ -32,7 +32,7 @@ from openmm import unit
 class LocalMinimize:
     def __init__(
         self,
-        rounds: int = 300,
+        rounds: int = 500,
         ff_name: str = "amber14-all.xml",
         max_attempts: int = 3,
         stiffness: float = 10.0,
@@ -66,6 +66,7 @@ class LocalMinimize:
         file: str,
         cyclic: bool = True,
         gpu: bool = False,
+        motif: List[int] = None,
         ) -> Dict[str, float]:
         """Use harmonic minimization to minimize a passed peptide
 
@@ -105,8 +106,8 @@ class LocalMinimize:
             if len(list(residues_all.keys())) > 1:
                 residues = residues_all[1]
             else: residues = residues_all[0]
-            hydrogens_list.extend([a for a in residues[0].atoms() if a.name in ["H3", "H2"]])
-            hydrogens_list.extend([a for a in residues[-1].atoms() if a.name == "OXT"])
+            hydrogens_list.extend([a for a in residues[0].atoms() if a.name in ["H3", "H2", "OVU1"]])
+            hydrogens_list.extend([a for a in residues[-1].atoms() if a.name in ["OXT", "OVL1", "OVL2"]])
             # print("Modeller: ", modeller.topology)
             # print("--- Deleting Atoms To Form Cyclic Peptide ---")
             # print(hydrogens_list)
@@ -136,11 +137,23 @@ class LocalMinimize:
         for c in modeller.topology.chains():
             residues_all[c.index].extend([r for r in c.residues()])
 
+        if len(residues_all.keys()) > 1:
+            for r in residues_all[0]:
+                for a in r.atoms():
+                    if a.name in ["N", "CA", "O", "C", "1H", "2H", "3H", "HA", "H"]:
+                        system.setParticleMass(a.index, 0.0)
+
+        for i in reversed(range(system.getNumConstraints())):
+          p1, p2, d = system.getConstraintParameters(i)
+          if system.getParticleMass(p1) == 0*unit.amu or system.getParticleMass(p2) == 0*unit.amu:
+            system.removeConstraint(i)
+
         self._addHarmonicRestraint(
             system,
             modeller,
             residues_all[1] if len(list(residues_all.keys())) > 1 else residues_all[0],
             self.stiffness,
+            motif,
         )
 
         # Set up our simulation
@@ -282,6 +295,7 @@ class LocalMinimize:
         ref_pdb: openmm_app.Modeller,
         minimize_residues: List[int],
         stiffness: unit.Unit,
+        motif: List[int] = None,
         ):
         """Add a harmonic potential restraint to our system
 
@@ -291,6 +305,7 @@ class LocalMinimize:
         :ref_pdb: Our current topology object
         :minimize_residues: Residues we would like to minimize
         :stiffness: Our spring constant (k) within our force (kcal/mol A**2)
+        :motif: List of residues that are going to be kept fixed
         """
         # Specify our force and add parameters
         custom_harmonic_force = openmm.CustomExternalForce(
@@ -300,6 +315,9 @@ class LocalMinimize:
         custom_harmonic_force.addPerParticleParameter("x0")
         custom_harmonic_force.addPerParticleParameter("y0")
         custom_harmonic_force.addPerParticleParameter("z0")
+
+        # store a chain list
+        chain_list = [c for c in ref_pdb.topology.chains()]
 
         # Add particles to minimize
         for i, a in enumerate(ref_pdb.topology.atoms()):
@@ -313,6 +331,17 @@ class LocalMinimize:
                      )
         # Add our force to the system
         system.addForce(custom_harmonic_force)
+
+        # Set our motif particle masses to zero, so that forces are not applied to them
+        # Therefore, they do not move
+        # if motif != None:
+        #     if len(chain_list) > 1:
+        #         for m in range(0,len(motif)):
+        #             motif[m] += minimize_residues[0].index - 1
+        #     # Add particles to minimize
+        #     for i, a in enumerate(ref_pdb.topology.atoms()):
+        #         if a.residue.index in motif:
+        #             system.setParticleMass(a.index, 0.0)
 
     def _get_pdb_string(
         self,
@@ -342,18 +371,21 @@ class LocalMinimize:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument('--input-file', type=str, default=None, help="Test File To Minimize PDB path File")
+    p.add_argument('--file-prefix-search', type=str, default="fixed_test", help="Prefix pattern to match for pdbs in input-dir")
     p.add_argument('--input-dir', type=str, default=None, help="Directory of pdb files")
     p.add_argument('--output-dir', type=str, default="out", help="Specify out dir")
     p.add_argument('--max-workers', type=int, default=multiprocessing.cpu_count()-2, help="Number of workers")
+    p.add_argument('--motif', type=int, nargs='+', default=None, help="Specify motif residues (Supply as numbers with spaces between them. 1 indexing)")
     p.add_argument('--gpu', action="store_true", help="Run on GPU")
+    p.add_argument('--stiffness', type=float, default=10.0, help="Specify harmonic k stiffness value.")
     args = p.parse_args()
 
-    relax = LocalMinimize(outprefix=args.output_dir)
+    relax = LocalMinimize(outprefix=args.output_dir, stiffness=args.stiffness)
     if args.input_dir == None:
-        relax.minimizeStructure(args.input_file, gpu=args.gpu)
+        relax.minimizeStructure(args.input_file, gpu=args.gpu, motif=args.motif)
     else:
-        file_out = glob.glob(os.path.join(args.input_dir, "fixed_test*.pdb"))
-        partial_func = partial(relax.minimizeStructure, gpu=args.gpu)
+        file_out = glob.glob(os.path.join(args.input_dir, args.file_prefix_search+"*.pdb"))
+        partial_func = partial(relax.minimizeStructure, gpu=args.gpu, motif=args.motif)
         # for file in tqdm.tqdm(file_out, total=len(file_out), ncols=100):
             # relax.minimizeStructure(file, gpu=args.gpu)
         print("CPUS-2: ", args.max_workers)
