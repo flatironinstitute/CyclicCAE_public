@@ -84,6 +84,7 @@ class EnergyPath:
         interface_cutoff: float = 1.0,
         ramp_constraint: bool = True,
         full_pocket: bool = False,
+        random_sample: bool = False,
         ):
         """GDS for energy minima structure from starting point
 
@@ -140,6 +141,8 @@ class EnergyPath:
                 Specifies if we are ramping from cb -> full pocket or not during energy minimization.
             full_pocket: bool
                 Specify if we are only keeping full pocket or cb if ramp_constraints not set
+            random_sample: bool
+                Generate random samples from the latent space for whatever passed batch size in params.
         """
         # Pull up points
         self.steps = steps
@@ -151,8 +154,9 @@ class EnergyPath:
         self.cutoff_true = cutoff_true
         self.partial_optimization = partial_optimization
         self.freeze_residues = freeze_residues
-        self.contiguous = self.check_contiguous(self.freeze_residues)
         self.freeze_torsion = freeze_torsion
+        self.random_sample = random_sample
+        self.contiguous = self.check_contiguous(self.freeze_residues)
         self.freeze_bond_angle = freeze_bond_angle
         self.freeze_bond_length = freeze_bond_length
         if self.partial_optimization and (torch.sum(torch.tensor([self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_length])).item() == 0):
@@ -408,7 +412,9 @@ class EnergyPath:
             If the motif is contiguous or not
         """
         # If it is only 1 residue, no need to check just pass true
-        if len(motif) == 1:
+        if not self.freeze_torsion:
+            return True
+        elif len(motif) == 1:
             return True
         # If it is longer then check
         else:
@@ -652,7 +658,7 @@ class EnergyPath:
         # harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
         return harmonic_loss
 
-    def inpainting(self, B: int, random_no_reference: bool = False, interface_dict = None):
+    def inpainting(self, B: int, random_no_reference: bool = False, interface_dict = None, terminal = True):
         """given frozen residues search for scaffolds to hold motif residues
 
         PARAMS
@@ -695,9 +701,6 @@ class EnergyPath:
             elif self.PARAMS["protein_len"] == 9:
                 scatter_latent.uniform_(-0.20100, 0.20100)
                 # scatter_latent.uniform_(-0.9800, 0.9800)
-
-            if random_no_reference:
-                return None, scatter_latent
             
             # run the points through the decoder
             out = self.decoder(scatter_latent)
@@ -718,6 +721,7 @@ class EnergyPath:
             # bond_angle_sin = bond_angle[:, :58]
             # bond_angle_cos = bond_angle[:, 58:]
             # bond_length = out[:, 116*2:-3]
+
 
             # generate tensor of preds
             # preds = torch.cat(
@@ -832,52 +836,76 @@ class EnergyPath:
             else:
                 interface_total_loss = torch.zeros(out.size(0), dtype=torch.bool, device=self.device)
 
-            # Determine which points are within the latent space cutoff
-            int_mask = interface_total_loss <= self.interface_cutoff
-            terminal_mask = term_bond_loss < 0.5 #2.0
-            ocnh_mask = ocnh_loss < 0.5
-            hnc_mask = hnc_loss < 0.5
-            nco_mask = nco_loss < 0.5
-            harm_mask = harmonic_loss <= self.inpaint_dist
-            # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
-            if self.contiguous:
-                mask = torch.logical_and(
-                    ocnh_mask.view(-1, 1), torch.logical_and(
-                        hnc_mask.view(-1, 1), torch.logical_and(
-                            nco_mask.view(-1, 1), torch.logical_and(
-                                harm_mask.view(-1,1), torch.logical_and(
-                                    int_mask.view(-1,1), terminal_mask.view(-1, 1)
-                                )
+            if random_no_reference:
+                if terminal:
+                    # Determine which points are within the latent space cutoff
+                    terminal_mask = term_bond_loss < 0.5 #2.0
+                    ocnh_mask = ocnh_loss < 0.5
+                    hnc_mask = hnc_loss < 0.5
+                    nco_mask = nco_loss < 0.5
+                    mask = torch.logical_and(
+                        ocnh_mask.view(-1, 1), torch.logical_and(
+                            hnc_mask.view(-1, 1), torch.logical_and(
+                                nco_mask.view(-1, 1), terminal_mask.view(-1, 1)
                             ),
-                        ),
-                    )).view(-1)
-            #### Need to rework this method
-            #### Might be beneficial to take the residue spacing for this one and check all (i, j, k) pairs and not just the specific
-            #### residue we are starting with
-            #### This would be a somewhat lengthy change, so not important for the moment.
+                        )
+                    ).view(-1)
+                else:
+                    mask = torch.ones(term_bond_loss.shape, dtype=bool)
+                # torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
+                # bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+                # preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
+                # torch.save({"random_x": preds, "latent_point": scatter_latent}, f"randomPoints_batch{B}_{datetime.date.today()}.pt")
+                # print("Random Scatter DONE")
+                # return preds, scatter_latent
+
             else:
-                print("CA non-contiguous")
-                ca_motif_distance_mask = ca_distance_motif_initial <= 0.5
-                mask = torch.logical_and(
-                    ocnh_mask.view(-1, 1), torch.logical_and(
-                        hnc_mask.view(-1, 1), torch.logical_and(
-                            nco_mask.view(-1, 1), torch.logical_and(
-                                harm_mask.view(-1,1), torch.logical_and(
-                                    int_mask.view(-1,1), torch.logical_and(
-                                        terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
-                                )
+                # Determine which points are within the latent space cutoff
+                int_mask = interface_total_loss <= self.interface_cutoff
+                terminal_mask = term_bond_loss < 0.5 #2.0
+                ocnh_mask = ocnh_loss < 0.5
+                hnc_mask = hnc_loss < 0.5
+                nco_mask = nco_loss < 0.5
+                harm_mask = harmonic_loss <= self.inpaint_dist
+                # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
+                if self.contiguous:
+                    mask = torch.logical_and(
+                        ocnh_mask.view(-1, 1), torch.logical_and(
+                            hnc_mask.view(-1, 1), torch.logical_and(
+                                nco_mask.view(-1, 1), torch.logical_and(
+                                    harm_mask.view(-1,1), torch.logical_and(
+                                        int_mask.view(-1,1), terminal_mask.view(-1, 1)
+                                    )
+                                ),
                             ),
-                        ),
-                    )).view(-1)
-                # mask = torch.logical_and(
-                #                 harm_mask.view(-1,1), torch.logical_and(
-                #                     int_mask.view(-1,1), torch.logical_and(
-                #                         terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
-                #     )).view(-1)
+                        )).view(-1)
+                #### Need to rework this method
+                #### Might be beneficial to take the residue spacing for this one and check all (i, j, k) pairs and not just the specific
+                #### residue we are starting with
+                #### This would be a somewhat lengthy change, so not important for the moment.
+                else:
+                    print("CA non-contiguous")
+                    ca_motif_distance_mask = ca_distance_motif_initial <= 0.5
+                    mask = torch.logical_and(
+                        ocnh_mask.view(-1, 1), torch.logical_and(
+                            hnc_mask.view(-1, 1), torch.logical_and(
+                                nco_mask.view(-1, 1), torch.logical_and(
+                                    harm_mask.view(-1,1), torch.logical_and(
+                                        int_mask.view(-1,1), torch.logical_and(
+                                            terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
+                                    )
+                                ),
+                            ),
+                        )).view(-1)
+                    # mask = torch.logical_and(
+                    #                 harm_mask.view(-1,1), torch.logical_and(
+                    #                     int_mask.view(-1,1), torch.logical_and(
+                    #                         terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
+                    #     )).view(-1)
 
 
-            # mask = torch.logical_and(torch.logical_and(int_mask.view(-1, 1), harm_mask.view(-1, 1)),terminal_mask.view(-1, 1)).view(-1),
-            # ),
+                # mask = torch.logical_and(torch.logical_and(int_mask.view(-1, 1), harm_mask.view(-1, 1)),terminal_mask.view(-1, 1)).view(-1),
+                # ),
 
 
             # add to set of scaffolds
@@ -899,8 +927,10 @@ class EnergyPath:
                 ).detach()
 
             # Report run statistics
-            print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, BATCH LOW: {harmonic_loss.min().item():.2f}, BATCH MEAN: {harmonic_loss.mean().item():.2f}, CUTOFF: {self.inpaint_dist}, SCAFFOLDS FOUND: {points.size(0)}')
-                
+            if random_no_reference:
+                print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, SCAFFOLDS FOUND: {points.size(0)}')
+            else:
+                print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, BATCH LOW: {harmonic_loss.min().item():.2f}, BATCH MEAN: {harmonic_loss.mean().item():.2f}, CUTOFF: {self.inpaint_dist}, SCAFFOLDS FOUND: {points.size(0)}')
 
             # If scaffolds found Stop While Loop
             run+=1
@@ -919,7 +949,10 @@ class EnergyPath:
         # Save outputs
         if torch.is_tensor(scaffolds):
             print(f"Found {scaffolds.size(0)} To Proceed With")
-            torch.save({"scaffold": scaffolds, "latent_point": points}, "inpaintStartOutStructures.pt")
+            torsion = self.calc_angles(scaffolds[:, :self.PARAMS["torsion_main_n"]*2])
+            bond_angle = self.calc_angles(scaffolds[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+            preds = torch.cat((torsion, bond_angle, scaffolds[:, self.PARAMS["torsion_main_n"]*2*2:]), dim=-1)
+            torch.save({"scaffold": preds, "latent_point": points}, "inpaintStartOutStructures.pt")
         else:
             print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
         if scaffolds.size(0) > self.scaffold_number:
@@ -1319,13 +1352,15 @@ class EnergyPath:
 
         return x_t, H, harmonic_change, harmonic_loss, energy_t
 
-    def generate_constraint_termbond(self, B: int):
+    def generate_constraint_termbond(self, scaffolds: torch.tensor, terminal: bool):
         """Use dE/d(Latent Space) to generate constructs with and without termbond constraint
 
         PARAMS
         ------
-        B: int
-            Batch Size (number of training examples)
+        scaffolds: torch.tensor
+            Inputs from inpainting with random sampling
+        terminal: bool
+            Whether to use the terminal or not
 
         RETURNS
         -------
@@ -1334,14 +1369,7 @@ class EnergyPath:
         without_constraint: Tensor (B, D)
             DoF Matrix that was generated without the terminal bond constraint
         """
-        # First inference generating is with term bond constraints
-        term_bond_loop = True
-        redo = True
-        # set up tensor of random init values
-        scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
-        scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
-        # store original points
-        original_points = scatter_latent.clone().detach()
+        scatter_latent = scaffolds
         start_range = 0
         # Init gradient requirement on the latent points
         scatter_latent.requires_grad_()
@@ -1352,8 +1380,6 @@ class EnergyPath:
         elif self.sgd_optim:
             optimizer = torch.optim.SGD([scatter_latent], lr=self.lr, momentum=0.9)
 
-        # while redo:
-        start_time = time.time()
         for step in range(start_range, self.steps):
             # zero grad
             optimizer.zero_grad()
@@ -1361,91 +1387,282 @@ class EnergyPath:
             # get the structure from the latent point
             out = self.decoder(scatter_latent)
 
-            # Prediction Information
-            torsion = out[:, :self.PARAMS["torsion_main_n"]*2]
-            torsion_sin = torsion[:, :self.PARAMS["torsion_main_n"]]
-            torsion_cos = torsion[:, self.PARAMS["torsion_main_n"]:]
-            bond_angle = out[:, self.PARAMS["bond_angle_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2]
-            bond_angle_sin = bond_angle[:, :self.PARAMS["bond_angle_main_n"]]
-            bond_angle_cos = bond_angle[:, self.PARAMS["bond_angle_main_n"]:]
-            bond_length = out[:, self.PARAMS["bond_angle_main_n"]*2*2:-3]
-            preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["bond_angle_main_n"]*2*2:-3]), dim=-1)
-            # torsion = out[:, :116]
-            # torsion_sin = torsion[:, :58]
-            # torsion_cos = torsion[:, 58:]
-            # bond_angle = out[:, 116:116*2]
-            # bond_angle_sin = bond_angle[:, :58]
-            # bond_angle_cos = bond_angle[:, 58:]
-            # bond_length = out[:, 116*2:-3]
-            # preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
-
-            if (step == start_range) & redo:
-                original_decode_dofs = preds
-
             # grab the energies (ref2015 score)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
             energy = energies[:, -1]
 
-            if term_bond_loop:
-                # N-C Terminal Peptide Bond Loss
-                term_bond_loss = self.term_bond.terminal_peptide_loss(
+            if terminal:
+                term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
                     dof_inputs = out,
                     real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                     params = self.PARAMS,
                     foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                     device = out.device,
                 )
-            else: term_bond_loss = torch.tensor([0.0], dtype=torch.float64, device=self.device)
-            term_bond_coeff = 10 if step >= int(self.steps*0.6) else 1
 
-            loss = (energy + term_bond_coeff*term_bond_loss).mean()
+                coords_inter = torch.cat(
+                    (
+                        coordinates[:, :, 2, :].unsqueeze(2), # N
+                        coordinates[:, :, 0, :].unsqueeze(2), # CA
+                        coordinates[:, :, 1, :].unsqueeze(2), # C
+                        coordinates[:, :, 3, :].unsqueeze(2), # O
 
-            # print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, Loss: {loss.item()}")
+                    ), dim = 2,
+                )
+
+                if not self.contiguous:
+                    ca_motif = coordinates[:, self.freeze_residues, 0, :] # (B, motif, 3)
+                    ref_ca_motif = ref_coordinates[:, self.freeze_residues, 0, :] # (B, motif, 3)
+                    #### This is a PLACEHOLDER 
+                    #### TODO: Make it so that self.ca_motif_initial is constructed from a pased PDB
+                    #### This means reworking how initial motif DoFs are grabbed as well.
+                    #### This is for the next version. However for testing this will be used
+                    #### The distance needs to be precalculated
+                    # ca_motif_initial = torch.norm(
+                    #     torch.tensor([-26.782, -15.341, -19.5], dtype=torch.float32) - torch.tensor([-27.428, -16.801, -10.125], dtype=torch.float32),
+                    # ).repeat(ca_motif.size(0)).to(self.device)
+                    ref_ca_motif_initial = torch.cdist(ref_ca_motif, ref_ca_motif)
+                    ca_distance_motif = torch.cdist(ca_motif, ca_motif)
+                    # ca_distance_motif_initial = torch.pow(ca_motif[:, 0, -1] - ca_motif_initial, 2)
+                    ca_distance_motif_initial = torch.pow(ref_ca_motif_initial[:, 0, -1] - ca_distance_motif[:, 0, -1], 2)
+                    ca_distance_motif_loss = torch.pow(ca_distance_motif_initial, 2)*self.lambda_2
+                else:
+                    ca_distance_motif_loss = torch.zeros(1, device=self.device)
+
+                # Align points
+                coord_B, coord_L, coord_A, coord_D = coords_inter.shape
+                coords = coords_inter.reshape(coord_B, coord_L * coord_A, coord_D).squeeze(0)
+                if len(coords.shape) == 2:
+                    coords = coords.unsqueeze(0)
+                interface_total_loss = torch.zeros(1, device=energy.device)
+
+                # Clone terms
+                ocnh_loss_term = ocnh_loss.clone()
+                ahd_loss_term = ahd_loss.clone()
+                bah_loss_term = bah_loss.clone()
+                ncaco_loss_term = ncaco_loss.clone()
+                term_bond_loss_term = term_bond_loss.clone()
+
+                combo_angles = ahd_loss_term + bah_loss_term + ncaco_loss_term + ocnh_loss_term
+            else: 
+                term_bond_loss_term = torch.tensor([0.0], dtype=torch.float64, device=self.device).requires_grad_(True)
+                ca_distance_motif_loss = torch.tensor([0.0], dtype=torch.float64, device=self.device).requires_grad_(True)
+                combo_angles = torch.tensor([0.0], dtype=torch.float64, device=self.device).requires_grad_(True)
+
+            # term_bond_coeff = 10 if step >= int(self.steps*0.6) else 1
+            term_bond_coeff = 100 if step >= int(self.steps*0.5) else 10
+
+            # loss = (energy + term_bond_coeff*term_bond_loss).mean()
+            loss = (energy + self.lambda_2*ca_distance_motif_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*combo_angles).mean()
+
+            if step % 10 == 0:
+                print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Terminal Bond: {term_bond_loss_term.mean().item()}, Loss: {loss.item()}")
             # back prop
             loss.backward()
             optimizer.step()
 
-            out = out.detach().clone()
-            torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
-            bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
-            preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-3]), dim=-1)
-            # torsion = self.calc_angles(out[:, :116])
-            # bond_angle = self.calc_angles(out[:, 116:116*2])
-            # preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
+        out = out.detach().clone()
+        torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
+        bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+        preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-3]), dim=-1)
 
-        # Update Time
-        batch_time = round(time.time() - start_time, 3)
-        print()
-        print('-------------------')
-        print(f"Batch {B} Time: {batch_time}")
-        print('-------------------')
-        print()
+        return preds
 
-        if term_bond_loop:
-            with_constraint = preds.cpu().detach()
-            term_bond_loop = False
-            scatter_latent = original_points.clone().detach().requires_grad_(True)
-            # Define optimizer you want
-            if self.adam_optim:
-                optimizer = torch.optim.AdamW([scatter_latent], lr=self.lr)
-            elif self.sgd_optim:
-                optimizer = torch.optim.SGD([scatter_latent], lr=self.lr, momentum=0.9)
-            term_time = batch_time
-        else:
-            without_constraint = preds.cpu().detach()
-            redo = False
-            non_term_time = batch_time
-        
-        # Save dataset
-        torch.save(
-            {
-                "minimized_dofs": with_constraint,
-                # "without_constraint": without_constraint,
-                "terminalconstraint_time": term_time,
-                # "non_terminalconstraint_time": non_term_time,
-                "original_decode_dofs": original_decode_dofs,
-            }, f"termbond_original_vs_minimze_data_{B}.pt"
-        )
+
+    # def generate_constraint_termbond(self, B: int):
+    #     """Use dE/d(Latent Space) to generate constructs with and without termbond constraint
+    #
+    #     PARAMS
+    #     ------
+    #     B: int
+    #         Batch Size (number of training examples)
+    #
+    #     RETURNS
+    #     -------
+    #     with_constraint: Tensor (B, D)
+    #         DoF Matrix that was generated using the terminal bond constraint
+    #     without_constraint: Tensor (B, D)
+    #         DoF Matrix that was generated without the terminal bond constraint
+    #     """
+    #     # First inference generating is with term bond constraints
+    #     term_bond_loop = True
+    #     redo = True
+    #     # set up tensor of random init values
+    #     scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
+    #     scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
+    #     # store original points
+    #     original_points = scatter_latent.clone().detach()
+    #     start_range = 0
+    #     # Init gradient requirement on the latent points
+    #     scatter_latent.requires_grad_()
+    #
+    #     # Define optimizer you want
+    #     if self.adam_optim:
+    #         optimizer = torch.optim.AdamW([scatter_latent], lr=self.lr)
+    #     elif self.sgd_optim:
+    #         optimizer = torch.optim.SGD([scatter_latent], lr=self.lr, momentum=0.9)
+    #
+    #     # while redo:
+    #     start_time = time.time()
+    #     while redo:
+    #         for step in range(start_range, self.steps):
+    #             # zero grad
+    #             optimizer.zero_grad()
+    #
+    #             # get the structure from the latent point
+    #             out = self.decoder(scatter_latent)
+    #
+    #             # Prediction Information
+    #             # torsion = out[:, :self.PARAMS["torsion_main_n"]*2]
+    #             # torsion_sin = torsion[:, :self.PARAMS["torsion_main_n"]]
+    #             # torsion_cos = torsion[:, self.PARAMS["torsion_main_n"]:]
+    #             # bond_angle = out[:, self.PARAMS["bond_angle_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2]
+    #             # bond_angle_sin = bond_angle[:, :self.PARAMS["bond_angle_main_n"]]
+    #             # bond_angle_cos = bond_angle[:, self.PARAMS["bond_angle_main_n"]:]
+    #             # bond_length = out[:, self.PARAMS["bond_angle_main_n"]*2*2:-3]
+    #             # preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["bond_angle_main_n"]*2*2:-3]), dim=-1)
+    #
+    #             # torsion = out[:, :116]
+    #             # torsion_sin = torsion[:, :58]
+    #             # torsion_cos = torsion[:, 58:]
+    #             # bond_angle = out[:, 116:116*2]
+    #             # bond_angle_sin = bond_angle[:, :58]
+    #             # bond_angle_cos = bond_angle[:, 58:]
+    #             # bond_length = out[:, 116*2:-3]
+    #             # preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
+    #
+    #             if (step == start_range) & redo:
+    #                 mid_out = out.detach().clone()
+    #                 torsion = self.calc_angles(mid_out[:, :self.PARAMS["torsion_main_n"]*2])
+    #                 bond_angle = self.calc_angles(mid_out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+    #                 preds = torch.cat((torsion, bond_angle, mid_out[:, self.PARAMS["torsion_main_n"]*2*2:-3]), dim=-1)
+    #                 original_decode_dofs = preds
+    #
+    #             # grab the energies (ref2015 score)
+    #             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
+    #             energy = energies[:, -1]
+    #
+    #             if term_bond_loop:
+    #                 # # N-C Terminal Peptide Bond Loss
+    #                 # term_bond_loss = self.term_bond.terminal_peptide_loss(
+    #                 #     dof_inputs = out,
+    #                 #     real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+    #                 #     params = self.PARAMS,
+    #                 #     foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
+    #                 #     device = out.device,
+    #                 # )
+    #                 term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
+    #                     dof_inputs = out,
+    #                     real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+    #                     params = self.PARAMS,
+    #                     foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
+    #                     device = out.device,
+    #                 )
+    #
+    #                 coords_inter = torch.cat(
+    #                     (
+    #                         coordinates[:, :, 2, :].unsqueeze(2), # N
+    #                         coordinates[:, :, 0, :].unsqueeze(2), # CA
+    #                         coordinates[:, :, 1, :].unsqueeze(2), # C
+    #                         coordinates[:, :, 3, :].unsqueeze(2), # O
+    #
+    #                     ), dim = 2,
+    #                 )
+    #
+    #                 if not self.contiguous:
+    #                     ca_motif = coordinates[:, self.freeze_residues, 0, :] # (B, motif, 3)
+    #                     ref_ca_motif = ref_coordinates[:, self.freeze_residues, 0, :] # (B, motif, 3)
+    #                     #### This is a PLACEHOLDER 
+    #                     #### TODO: Make it so that self.ca_motif_initial is constructed from a pased PDB
+    #                     #### This means reworking how initial motif DoFs are grabbed as well.
+    #                     #### This is for the next version. However for testing this will be used
+    #                     #### The distance needs to be precalculated
+    #                     # ca_motif_initial = torch.norm(
+    #                     #     torch.tensor([-26.782, -15.341, -19.5], dtype=torch.float32) - torch.tensor([-27.428, -16.801, -10.125], dtype=torch.float32),
+    #                     # ).repeat(ca_motif.size(0)).to(self.device)
+    #                     ref_ca_motif_initial = torch.cdist(ref_ca_motif, ref_ca_motif)
+    #                     ca_distance_motif = torch.cdist(ca_motif, ca_motif)
+    #                     # ca_distance_motif_initial = torch.pow(ca_motif[:, 0, -1] - ca_motif_initial, 2)
+    #                     ca_distance_motif_initial = torch.pow(ref_ca_motif_initial[:, 0, -1] - ca_distance_motif[:, 0, -1], 2)
+    #                     ca_distance_motif_loss = torch.pow(ca_distance_motif_initial, 2)*self.lambda_2
+    #                 else:
+    #                     ca_distance_motif_loss = torch.zeros(1, device=self.device)
+    #
+    #                 # Align points
+    #                 coord_B, coord_L, coord_A, coord_D = coords_inter.shape
+    #                 coords = coords_inter.reshape(coord_B, coord_L * coord_A, coord_D).squeeze(0)
+    #                 if len(coords.shape) == 2:
+    #                     coords = coords.unsqueeze(0)
+    #                 interface_total_loss = torch.zeros(1, device=energy.device)
+    #
+    #                 # Clone terms
+    #                 ocnh_loss_term = ocnh_loss.clone()
+    #                 ahd_loss_term = ahd_loss.clone()
+    #                 bah_loss_term = bah_loss.clone()
+    #                 ncaco_loss_term = ncaco_loss.clone()
+    #                 term_bond_loss_term = term_bond_loss.clone()
+    #
+    #
+    #                 combo_angles = ahd_loss_term + bah_loss_term + ncaco_loss_term + ocnh_loss_term
+    #             else: 
+    #                 term_bond_loss_term = torch.tensor([0.0], dtype=torch.float64, device=self.device).requires_grad_(True)
+    #                 ca_distance_motif_loss = torch.tensor([0.0], dtype=torch.float64, device=self.device).requires_grad_(True)
+    #                 combo_angles = torch.tensor([0.0], dtype=torch.float64, device=self.device).requires_grad_(True)
+    #
+    #             # term_bond_coeff = 10 if step >= int(self.steps*0.6) else 1
+    #             term_bond_coeff = 100 if step >= int(self.steps*0.5) else 10
+    #
+    #             # loss = (energy + term_bond_coeff*term_bond_loss).mean()
+    #             loss = (energy + self.lambda_2*ca_distance_motif_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*combo_angles).mean()
+    #
+    #             if step % 10 == 0:
+    #                 print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, Loss: {loss.item()}")
+    #             # back prop
+    #             loss.backward()
+    #             optimizer.step()
+    #
+    #         # Update Time
+    #         batch_time = round(time.time() - start_time, 3)
+    #         print()
+    #         print('-------------------')
+    #         print(f"Batch {B} Time: {batch_time}")
+    #         print('-------------------')
+    #         print()
+    #
+    #         if term_bond_loop:
+    #             out = out.detach().clone()
+    #             torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
+    #             bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+    #             preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-3]), dim=-1)
+    #             with_constraint = preds.cpu().detach()
+    #             term_bond_loop = False
+    #             scatter_latent = original_points.clone()
+    #             scatter_latent.requires_grad_(True)
+    #             # Define optimizer you want
+    #             if self.adam_optim:
+    #                 optimizer = torch.optim.AdamW([scatter_latent], lr=self.lr)
+    #             elif self.sgd_optim:
+    #                 optimizer = torch.optim.SGD([scatter_latent], lr=self.lr, momentum=0.9)
+    #             term_time = batch_time
+    #         else:
+    #             out = out.detach().clone()
+    #             torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
+    #             bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+    #             preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-3]), dim=-1)
+    #             without_constraint = preds.cpu().detach()
+    #             redo = False
+    #             non_term_time = batch_time
+    #         
+    #             # Save dataset
+    #             torch.save(
+    #                 {
+    #                     "minimized_dofs": with_constraint,
+    #                     "without_constraint": without_constraint,
+    #                     "terminalconstraint_time": term_time,
+    #                     "non_terminalconstraint_time": non_term_time,
+    #                     "original_decode_dofs": original_decode_dofs,
+    #                 }, f"termbond_original_vs_minimze_data_{B}_{datetime.date.today()}.pt"
+    #             )
 
     def energy_steps(self, start_points: torch.Tensor = None, mcmc_minimize: bool = False, minimize_steps: int = 1000,
                      interface_full_dict = None, interface_cb_dict = None):
@@ -2020,8 +2237,8 @@ if __name__ == "__main__":
     p.add_argument("--interface-cutoff", type=float, default=20.0, help="Metric for accepting a not clashing peptide [10.0 for compact pockets, 20.0 for others] ")
     p.add_argument("--fullpocket-minimize", action="store_true", help="Specify if pocket context takes into account all non-hydrgoen bb and side-chain atoms \
                         or only bb-heavy + Cb atoms (which is default if you don't specify this flag)")
-    p.add_argument("--ramp-interface-constraint", action="store_true", help="This sets the first 50% of the energy minimize steps to bb-heavy + Cb pocket context. \
-                        Then for the last 50% switches to full pocket context (all heavy atoms). If not set then uses passed pocket specification throughout")
+    p.add_argument("--ramp-interface-constraint", action="store_true", help="This sets the first 0.50 of the energy minimize steps to bb-heavy + Cb pocket context. \
+                        Then for the last 0.50 switches to full pocket context (all heavy atoms). If not set then uses passed pocket specification throughout")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -2058,6 +2275,7 @@ if __name__ == "__main__":
         interface_cutoff = args.interface_cutoff,
         ramp_constraint = args.ramp_interface_constraint,
         full_pocket = args.fullpocket_minimize,
+        random_sample = args.random_sample,
     )
 
     # Search And Output
@@ -2075,6 +2293,20 @@ if __name__ == "__main__":
             energySearch.energy_steps()
         energySearch.dist_energy_plot()
         energySearch.output_GDS()
+    elif args.termbond_test:
+        # Terminal Bond
+        print("*"*30)
+        print("TERMINAL BOND GENERATION DATASET")
+        print("*"*30)
+        scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample)
+        terminal_out = energySearch.generate_constraint_termbond(latent_points, True)
+        # Non-Terminal Bond
+        print("*"*30)
+        print("WITHOUT TERMINAL BOND GENERATION DATASET")
+        print("*"*30)
+        scaffolds, latent_pointss = energySearch.inpainting(args.batch_size, args.random_sample, terminal=False)
+        noterminal_out = energySearch.generate_constraint_termbond(latent_points, False)
+        torch.save({"with_constraint": terminal_out, "without_constraint": noterminal_out}, f"termbond_without_vs_with_{datetime.date.today()}.pt" )
     elif args.mcmc:
         energySearch.metropolis_hastings(args.batch_size, args.sigma)
         if args.minimize_mcmc:
@@ -2102,10 +2334,13 @@ if __name__ == "__main__":
                               "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
             # print(interface.shape)
 
-        if args.fullpocket_minimize:
-            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_full_dict)
-        else:
-            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict)
+            if args.fullpocket_minimize:
+                scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_full_dict)
+            else:
+                scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict)
+        elif (args.freeze_residues):
+            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = None)
+            energySearch.energy_steps(latent_points)
 
         if (not args.random_sample) and (args.mcmc_steps >= 1):
             latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
@@ -2113,13 +2348,12 @@ if __name__ == "__main__":
             energySearch.energy_steps(latent_points, interface_full_dict = interface_full_dict, interface_cb_dict = interface_cb_dict)
         elif (args.pdb_interface != None) and (args.mcmc_steps >= 1):
             energySearch.energy_steps(latent_traj[:, 0, :], interface_full_dict = interface_full_dict, interface_cb_dict = interface_cb_dict)
-        elif args.random_sample:
-            energySearch.energy_steps(latent_points)
-        else:
+        elif (args.random_sample) and (args.mcmc_steps < 1):
+            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample)
+        elif (args.random_sample) and (args.energy_steps):
             energySearch.energy_steps(latent_points)
         energySearch.output_GDS(args.random_sample, skip_individual = args.skip_individual)
-    elif args.termbond_test:
-        energySearch.generate_constraint_termbond(args.batch_size)
+
 
 
 
