@@ -377,7 +377,7 @@ def gen_xyz_tensor(atomdict: dict):
 
     # print(target.shape)
     # print(color_target.shape)
-    # print(peptide.shape)
+    print(peptide.shape)
 
     return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target
 
@@ -830,7 +830,74 @@ def update_move(P: torch.Tensor, Q: torch.Tensor):
 #
 #     return P_aligned
 
-def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
+def kabsch_rigid_transform(P_point: torch.Tensor, Q_point: torch.Tensor):
+    """Perform the kabsch algorithm to find the optimal rotation matrix
+    that aligns P to points Q
+
+    PARAMS
+    ------
+    P: Tensor (B, N, 3)
+        Predicted DoF XYZ points
+    Q: Tensor (B, N, 3)
+        PDB Peptide Heavy atom XYZ Points
+
+    RETURNS
+    -------
+    P_aligned: Tensor (B, N, 3)
+        Aligned DoF XYZ points
+    t:
+    R:
+    """
+    # Compute centroids
+    centroid_P = P_point.mean(dim=1) # (B, 3)
+    centroid_Q = Q_point.mean(dim=1) # (3)
+
+    # Centered Points
+    P_centered = P_point - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N 3)
+    Q_centered = Q_point - centroid_Q.unsqueeze(1) # (N, 3) - (1, 3) = (N, 3)
+
+    # Calculate covariance matrix
+    H = torch.matmul(P_centered.transpose(2, 1), Q_centered) # (B, 3, N) * (1, N, 3) = (B, N, N)
+
+    # Compute SVD for optimal rotation on the covarinace matrix
+    U, S, Vt = torch.linalg.svd(H) 
+
+    # Compute Rotation Matrix Now
+    R = torch.matmul(Vt.transpose(2, 1), U.transpose(2, 1))
+
+    # Special Reflection case
+    det = torch.linalg.det(R)
+    mask = det < 0.0
+    if mask.sum() >= 1:
+        Vt_copy = Vt.clone()
+        Vt_copy[mask, -1, :] *= -1
+        R = torch.matmul(Vt_copy.transpose(2, 1), U.transpose(2, 1))
+
+    # Translate vector: I want (B, 1, 3) or (B, 3)
+    # (1, 1, 3) - ( (B, 1, 3) * (B, 3, 3) ) =  (1, 1, 3) - (B, 3, 3) =  (B, 3, 3)
+    # t = centroid_Q - torch.matmul(centroid_P.unsqueeze(1), R.transpose(2, 1)).squeeze(1)
+
+    t = centroid_Q.squeeze(1) - torch.matmul(R, centroid_P.squeeze(1).unsqueeze(2)).squeeze(2)
+    
+    # Rotate points accordingly
+    # P_aligned = torch.matmul(R, P_centered.transpose(2, 1)).transpose(2, 1) + t.unsqueeze(1)
+    # P_aligned = torch.matmul(R, P_point.transpose(2, 1)).transpose(2, 1) + t.unsqueeze(1)
+    P_aligned = torch.matmul(P_centered, R.transpose(2, 1)) + centroid_Q.unsqueeze(1)
+    # print(P_aligned.shape)
+    
+    # diff = P_aligned - Q
+    # rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+    # print("RSMD Whole:", rmsd.mean().item())
+    
+    # diff_motif = P_aligned - Q_point
+    # rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P_point.size(1))
+    # print("RSMD Motif:", rmsd_motif.mean().item())
+
+    # torch.save({"paligned": P_aligned, "control": Q_point}, "paligned.pt")
+
+    return P_aligned, t, R
+
+def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slice(None)):
     """Perform the kabsch algorithm to find the optimal rotation matrix
     that aligns P to points Q
 
@@ -854,15 +921,16 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
 
 
     # Compute centroids
-    centroid_P = P_point.mean(dim=1) # (B, 3)
-    centroid_Q = Q_point.mean(dim=0) # (3)
+    centroid_P = P_point.mean(dim=1) # (B, N, 3) -> (B, 3)
+    centroid_Q = Q_point.mean(dim=0,keepdim=True) # (N, 3) -> (1, 3)
 
     # Centered Points
     P_centered = P_point - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N 3)
-    Q_centered = Q_point - centroid_Q.unsqueeze(0) # (N, 3) - (1, 3) = (N, 3)
+    Q_centered = Q_point - centroid_Q # (N, 3) - (1, 3) = (N, 3)
 
     # Calculate covariance matrix
-    H = torch.matmul(P_centered.transpose(2, 1), Q_centered.unsqueeze(0)) # (B, 3, N) * (1, N, 3) = (B, N, N)
+    # H = torch.matmul(P_centered.transpose(2, 1), Q_centered.unsqueeze(0)) # (B, 3, N) * (1, N, 3) = (B, N, N)
+    H = torch.matmul(P_centered.transpose(2, 1), Q_centered) # (B, 3, N) * (1, N, 3) = (B, N, N)
 
     # Compute SVD for optimal rotation on the covarinace matrix
     U, S, Vt = torch.linalg.svd(H) 
@@ -880,24 +948,103 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor):
 
     # Translate vector: I want (B, 1, 3) or (B, 3)
     # (1, 1, 3) - ( (B, 1, 3) * (B, 3, 3) ) =  (1, 1, 3) - (B, 3, 3) =  (B, 3, 3)
-    t = centroid_Q - torch.matmul(centroid_P.unsqueeze(1), R.transpose(2, 1))
+    # t = centroid_Q - torch.matmul(centroid_P.unsqueeze(1), R.transpose(2, 1))
+    t = centroid_Q.squeeze(1) - torch.matmul(R, centroid_P.squeeze(1).unsqueeze(2)).squeeze(2)
     
     # Rotate points accordingly
     # P_aligned = torch.matmul(R, P_centered.transpose(2, 1)).transpose(2, 1) + t.unsqueeze(1)
-    P_aligned = torch.matmul(R, P.transpose(2, 1)).transpose(2, 1) + t
-    # print(P_aligned.shape)
+    # P_aligned = torch.matmul(R, P.transpose(2, 1)).transpose(2, 1) + t
+    P_aligned = torch.matmul(P_centered, R.transpose(2, 1)) + centroid_Q.unsqueeze(1)
     
     # diff = P_aligned - Q
     # rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
     # print("RSMD Whole:", rmsd.mean().item())
     
-    diff_motif = P_aligned[:, motif, :] - Q[motif, :]
+    diff_motif = P_aligned - Q[motif, :].unsqueeze(0)
     rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
     print("RSMD Motif:", rmsd_motif.mean().item())
 
-    torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+    P_total = torch.matmul(P, R.transpose(2, 1)) + t.unsqueeze(1)
 
-    return P_aligned
+    # torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+
+    if motif == slice(None):
+        return P_aligned, t, R
+    else:
+        return P_total
+
+## Keep this as the original
+# def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slice(None)):
+#     """Perform the kabsch algorithm to find the optimal rotation matrix
+#     that aligns P to points Q
+#
+#     PARAMS
+#     ------
+#     P: Tensor (B, N, 3)
+#         Predicted DoF XYZ points
+#     Q: Tensor (N, 3)
+#         PDB Peptide Heavy atom XYZ Points
+#     motif: Tensor (A)
+#         atom indexs 
+#
+#     RETURNS
+#     -------
+#     P_aligned: Tensor (B, N, 3)
+#         Aligned DoF XYZ points
+#     """
+#     # Calc Translation
+#     P_point = P[:, motif, :] # N atom of 4th residue root
+#     Q_point = Q[motif, :] # Same N atom
+#
+#
+#     # Compute centroids
+#     centroid_P = P_point.mean(dim=1) # (B, 3)
+#     centroid_Q = Q_point.mean(dim=0) # (3)
+#
+#     # Centered Points
+#     P_centered = P_point - centroid_P.unsqueeze(1) # (B, N, 3) - (B, 1, 3) = (B, N 3)
+#     Q_centered = Q_point - centroid_Q.unsqueeze(0) # (N, 3) - (1, 3) = (N, 3)
+#
+#     # Calculate covariance matrix
+#     H = torch.matmul(P_centered.transpose(2, 1), Q_centered.unsqueeze(0)) # (B, 3, N) * (1, N, 3) = (B, N, N)
+#
+#     # Compute SVD for optimal rotation on the covarinace matrix
+#     U, S, Vt = torch.linalg.svd(H) 
+#
+#     # Compute Rotation Matrix Now
+#     R = torch.matmul(Vt.transpose(2, 1), U.transpose(2, 1))
+#
+#     # Special Reflection case
+#     det = torch.linalg.det(R)
+#     mask = det < 0.0
+#     if mask.sum() >= 1:
+#         Vt_copy = Vt.clone()
+#         Vt_copy[mask, -1, :] *= -1
+#         R = torch.matmul(Vt_copy.transpose(2, 1), U.transpose(2, 1))
+#
+#     # Translate vector: I want (B, 1, 3) or (B, 3)
+#     # (1, 1, 3) - ( (B, 1, 3) * (B, 3, 3) ) =  (1, 1, 3) - (B, 3, 3) =  (B, 3, 3)
+#     t = centroid_Q - torch.matmul(centroid_P.unsqueeze(1), R.transpose(2, 1))
+#     
+#     # Rotate points accordingly
+#     # P_aligned = torch.matmul(R, P_centered.transpose(2, 1)).transpose(2, 1) + t.unsqueeze(1)
+#     P_aligned = torch.matmul(R, P.transpose(2, 1)).transpose(2, 1) + t
+#     # print(P_aligned.shape)
+#     
+#     # diff = P_aligned - Q
+#     # rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
+#     # print("RSMD Whole:", rmsd.mean().item())
+#     
+#     diff_motif = P_aligned[:, motif, :] - Q[motif, :]
+#     rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
+#     print("RSMD Motif:", rmsd_motif.mean().item())
+#
+#     torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+#
+#     if motif == slice(None):
+#         return P_aligned, t, R
+#     else:
+#         return P_aligned
 
 def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     """Perform the kabsch algorithm to find the optimal rotation matrix
@@ -974,9 +1121,84 @@ def kabsch_algorithm(P: torch.Tensor, Q: torch.Tensor):
     rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
     print("RSMD:", rmsd.mean())
 
-    torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
+    # torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
 
-    return P_aligned
+    # Original without Rigid Body Transformation loss terms added
+    # return P_aligned
+    # After terms added
+    return P_aligned, t, R
+
+def pdb_index_grab(split_motifs: list) -> list:
+    """
+    Extract out the coordinates needed for our particular design of interest
+
+    :peptide_atoms: a tensor of size (N * 4, 3) where N is the number of residues
+    :split_motifs: list of torch.Tensor residue indexes (0 index)
+    """
+    out = list()
+    for region in split_motifs:
+        scaled = (region+1) * 4
+        out.append(torch.tensor(
+            [i for i in range(scaled-4, scaled)]
+        ))
+    return out
+
+def split_motif_atoms(residue_index: torch.Tensor) -> list:
+    """
+    Split our motif atoms into multiple regions if they are discontiguous
+
+    PARAMS
+    ------
+    :residue_index: Tensor of residue positions (0 index)
+    
+    RETURNS
+    -------
+    :regions (List[torch.Tensor]): Each region's index in their own tensor
+    """
+    regions = list()
+    p = 0
+    l = 0
+    for i in range(1, residue_index.shape[0]):
+        check = residue_index[p]+1 != residue_index[i]
+        if check:
+            regions.append(residue_index[l:i])
+            l = i
+        p+=1
+        if (i+1 == residue_index.shape[0]) and (check):
+            regions.append(residue_index[-1].unsqueeze(0))
+        elif (i+1 == residue_index.shape[0]) and (not check):
+            regions.append(residue_index[l:])
+    return pdb_index_grab(regions), regions
+
+
+def discontig_motif_loss(region1: torch.Tensor, region2: torch.Tensor,
+                         # atoms_native: torch.Tensor,
+                         t_native: torch.Tensor, R_native: torch.Tensor):
+    """
+    Run Kabsch Algo to get the translation and Rotation of the rigid body our motifs.
+    Calculate loss based on the R and t difference from ideal
+
+    ***Assuming these are two regions. Where region1 is contiguous and region2 is contiguous***
+
+    PARAMS
+    ------
+    :region1: A contiguous indexing tensor for atoms associated with this region of the motif
+    :region2: A contiguous indexing tensor for atoms associated with this (2nd) region of the motif
+    :t_native: The native translation vector
+    :R_native: The native Rotation vector 
+
+    RETURNS
+    -------
+    :motif_loss (Tensor[float]): Combined translation and Rotation loss terms
+    """
+    # Calculate current t and R 
+    _, t_pred, R_pred = kabsch_rigid_transform(region1, region2)
+
+    t_loss = torch.pow(t_pred - t_native, 2).mean(-1)
+    r_loss = torch.pow(R_pred - R_native, 2).mean((-2, -1)) #.sum(-1).mean(-1)
+    combo = t_loss + r_loss
+
+    return combo
 
 def kabsch_test():
     # set seed
