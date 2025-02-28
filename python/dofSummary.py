@@ -244,7 +244,7 @@ class DoFSummary:
             self.motif_residue_info[m.item()] = pose.residue(m.item())
 
         # Make sure our structure is cyclic
-        self.full_cyclize_pose(pose)
+        self.declare_terminal_bond(pose)
 
         # Now mutate our residues to Glycine
         for ir in range(1, pose.total_residue()+1):
@@ -375,30 +375,26 @@ class DoFSummary:
         """
         # Modify the variant types
         modifyvariant_nterm = sm.ModifyVariantTypeMover()
-        modifyvariant_nterm.set_additional_type_to_remove("CUTPOINT_UPPER")
-        modifyvariant_nterm.set_additional_type_to_remove("LOWER_TERMINUS_VARIANT")
-        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_VARIANT")
-        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_CONNECTION_VARIANT")
+        modifyvariant_nterm.set_additional_type_to_add("CUTPOINT_UPPER")
         modifyvariant_nterm.set_residue_selector(select.ResidueIndexSelector(1))
         modifyvariant_nterm.apply(pose)
 
         modifyvariant_cterm = sm.ModifyVariantTypeMover()
-        modifyvariant_cterm.set_additional_type_to_remove("CUTPOINT_LOWER")
-        modifyvariant_cterm.set_additional_type_to_remove("UPPER_TERMINUS_VARIANT")
-        modifyvariant_cterm.set_additional_type_to_remove("DIMETHYLATED_CTERMINUS_VARIANT")
+        modifyvariant_cterm.set_additional_type_to_add("CUTPOINT_LOWER")
         modifyvariant_cterm.set_residue_selector(select.ResidueIndexSelector(pose.total_residue()))
         modifyvariant_cterm.apply(pose)
 
         # Fix termini, though this isn't that important
         declarebond = sm.DeclareBond()
         declarebond.set(
-            res1 = pose.total_residue(),
-            atom1 = 'C',
-            res2 = 1,
-            atom2 ='N',
+            res1 = 1,
+            atom1 = 'N',
+            res2 = pose.total_residue(),
+            atom2 ='C',
             add_termini = True,
         )
         declarebond.apply(pose)
+        pose.update_residue_neighbors()
         return 0
 
     def generate_initial_empty_glycine_pose(self, N: int) -> Pose:
