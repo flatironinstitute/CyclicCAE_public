@@ -9,8 +9,9 @@
 from pyrosetta import init
 import pyrosetta.io as io
 from pyrosetta.rosetta.core.pose import Pose
+import pyrosetta.rosetta.protocols as protocols
 import pyrosetta.rosetta.protocols.simple_moves as sm
-import pyrosetta.rosetta.protocols.cyclic_peptide as cp
+# import pyrosetta.rosetta.protocols.cyclic_peptide as cp
 import pyrosetta.rosetta.core.select.residue_selector as select
 import pyrosetta.rosetta.core as core
 import pyrosetta.rosetta.core.io.silent as silent
@@ -55,6 +56,7 @@ class DoFSummary:
 
         # init instance of pyrosetta with params
         params = "-mute all -score:weights ref2015.wts -write_all_connect_info"
+        # params = "-score:weights ref2015.wts -write_all_connect_info"
         init(params)
 
 
@@ -154,6 +156,8 @@ class DoFSummary:
         ft.add_edge(root, peptide_pose.total_residue(), -1)
         ft.reorder(root)
         peptide_pose.fold_tree(ft)
+
+        self.peptide_native = peptide_pose.clone()
 
         return peptide_pose
 
@@ -503,6 +507,76 @@ class DoFSummary:
 
         return dof_id
 
+    def minimize_pose(
+        self,
+        pose: Pose,
+        ) -> int:
+        """
+        Apply a minmover to the pose for scoring
+
+        PARAMS
+        ------
+        :pose: Pose with desired motif residues and the scaffold is poly-glycine
+
+        RETURNS
+        -------
+        :pose: minimized version of this pose
+        """
+        pose_before = pose.clone()
+
+        # Set up a movemap
+        mm = core.kinematics.MoveMap()
+        mm.set_bb(True)
+        mm.set_chi(True)
+        for ir in range(1, pose.total_residue()+1):
+            if ir in list(self.motif_residue_info.keys()):
+                mm.set_bb(ir, False)
+                mm.set_chi(ir, False)
+
+        # Set up minimover
+        minmover = protocols.minimization_packing.MinMover()
+        minmover.movemap(mm)
+        minmover.score_function(self.scorefxn)
+        minmover.min_type("lbfgs_armijo_nonmonotone")
+        minmover.apply(pose)
+
+        rmsd = core.scoring.bb_rmsd_including_O(pose_before, pose)
+        # print(f"RMSD all heavy atom after minimization: {rmsd:.3f}")
+        pose.scores["MinMover_bbheavy_RMSD"] = rmsd
+        return 0
+
+    def calculate_rmsd_between_native(self, curpose: Pose, native_pose: Pose) -> int:
+        """
+        Measure RMSD against native and current pose
+
+        PARAMS
+        ------
+        :curpose: Threaded pose that was mutated
+        :native_pose: PDB native peptide mutated
+        """
+        # init selectors
+        rmsd_motif = core.simple_metrics.metrics.RMSDMetric(native_pose)
+        rmsd_fullbb = core.simple_metrics.metrics.RMSDMetric(native_pose)
+
+        # set heavy backbone atoms
+        rmsd_motif.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
+        rmsd_fullbb.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
+        rmsd_motif.set_run_superimpose(True)
+        rmsd_fullbb.set_run_superimpose(True)
+
+        # specify selectors
+        motif_selector = select.ResidueIndexSelector()
+        motif_selector.set_index(",".join([str(i) for i in self.motif_residue_info.keys()]))
+
+        # add our residues selections
+        rmsd_motif.set_residue_selector(motif_selector)
+        rmsd_motif.set_residue_selector_reference(motif_selector)
+
+        # perform RMSD calculation
+        rmsd_motif.apply(curpose, "motif_bbHeavy_RMSD")
+        rmsd_fullbb.apply(curpose, "full_bbHeavy_RMSD")
+        return 0
+
     def align_to_native_motif_positions(
         self,
         pose: Pose,
@@ -591,6 +665,8 @@ class DoFSummary:
             # pose = self.align_to_native_motif_positions(pose.clone())
 
         if score_outputs:
+            self.minimize_pose(pose)
+            self.calculate_rmsd_between_native(pose, self.peptide_native)
             self.scorefxn(pose)
             # print(f"POSE {scaffold+1} Energy:", pose.energies().total_energy())
         return pose
@@ -623,6 +699,13 @@ class DoFSummary:
         # set a scorefunction
         if score_outputs:
             self.scorefxn = core.scoring.get_score_function(is_fullatom = True)
+            self.scorefxn.set_weight(core.scoring.hbond_lr_bb, 11.7)
+            self.scorefxn.set_weight(core.scoring.hbond_sr_bb, 11.7)
+            self.scorefxn.set_weight(core.scoring.coordinate_constraint, 1.0)
+            self.scorefxn.set_weight(core.scoring.atom_pair_constraint, 1.0)
+            self.scorefxn.set_weight(core.scoring.dihedral_constraint, 1.0)
+            self.scorefxn.set_weight(core.scoring.angle_constraint, 1.0)
+            self.scorefxn.set_weight(core.scoring.chainbreak, 10.0)
 
         x = dof_dict["x"]
         params = dof_dict["params"]

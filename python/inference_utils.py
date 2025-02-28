@@ -375,9 +375,6 @@ def gen_xyz_tensor(atomdict: dict):
     sigma_peptide = sigma_mat[split_tensor_idx[0]:]
     epsilon_peptide = epsilon_mat[split_tensor_idx[0]:]
 
-    # print(target.shape)
-    # print(color_target.shape)
-    print(peptide.shape)
 
     return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target
 
@@ -1173,7 +1170,8 @@ def split_motif_atoms(residue_index: torch.Tensor) -> list:
 
 def discontig_motif_loss(region1: torch.Tensor, region2: torch.Tensor,
                          # atoms_native: torch.Tensor,
-                         t_native: torch.Tensor, R_native: torch.Tensor):
+                         t_native: torch.Tensor, R_native: torch.Tensor,
+                         t_lambda: int = 1, R_lambda: int = 1):
     """
     Run Kabsch Algo to get the translation and Rotation of the rigid body our motifs.
     Calculate loss based on the R and t difference from ideal
@@ -1196,7 +1194,8 @@ def discontig_motif_loss(region1: torch.Tensor, region2: torch.Tensor,
 
     t_loss = torch.pow(t_pred - t_native, 2).mean(-1)
     r_loss = torch.pow(R_pred - R_native, 2).mean((-2, -1)) #.sum(-1).mean(-1)
-    combo = t_loss + r_loss
+    # print(r_loss, r_loss * R_lambda)
+    combo = t_loss * t_lambda + r_loss * R_lambda
 
     return combo
 
