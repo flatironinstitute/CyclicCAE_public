@@ -160,7 +160,7 @@ class TerminalPeptide:
 
         # return loss, bdh_loss, ahd_loss, OCNH_loss, NCaCO_loss, clash_penalty
         # return loss, bdh_loss, ahd_loss, OCNH_loss, CaCNCa_loss, clash_penalty, coordinates
-        return loss, HNC_loss+NCCa_loss, NCO_loss+CNCa_loss, OCNH_loss, CaCNCa_loss, clash_penalty, coordinates
+        return loss, HNC_loss+NCCa_loss, NCO_loss+CNCa_loss, OCNH_loss, CaCNCa_loss, HNCO, coordinates
     
     def smooth_cutoff(self, r, r_cut, delta):
         """Smooth cutoff, so that only replusion is factored. Also differentiable"""
@@ -281,10 +281,10 @@ class TerminalPeptide:
         rij = B - A
         rjk = C - B
         rkl = D - C
-        n_ijk = torch.cross(rij, rjk)
-        n_jkl = torch.cross(rjk, rkl)
+        n_ijk = torch.cross(rij, rjk, dim=-1)
+        n_jkl = torch.cross(rjk, rkl, dim=-1)
         rjk_norm = torch.linalg.norm(rjk, axis=-1, keepdims=True)
-        t = torch.sum(torch.cross(n_ijk, n_jkl)*rjk, dim=-1, keepdims=True)
+        t = torch.sum(torch.cross(n_ijk, n_jkl, dim=-1)*rjk, dim=-1, keepdims=True)
         s = rjk_norm * torch.sum(n_ijk*n_jkl, dim=-1, keepdims=True)
         phi = torch.atan2(t, s)
         return phi

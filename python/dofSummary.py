@@ -23,7 +23,12 @@ import os
 
 #### Class
 class DoFSummary:
-    def __init__(self, ignore_virtualatoms: bool = False, prefix: str = 'test',):
+    def __init__(
+        self,
+        ignore_virtualatoms: bool = False,
+        prefix: str = 'test',
+        extract_minimize_input: bool = False,
+        ):
         """
         Either extract DoFs from a PDB's pose for input into the model or
         thread DoFs from the model output onto a template pose convert
@@ -34,9 +39,12 @@ class DoFSummary:
         :ignore_virtualatoms: Excludes virtual atoms from DoF extraction/threading
             if passed
         :prefix: Prefix for the outputs of your PDBs/SilentFile. 
+        :extract_minimize_input: True/False if True then the entire input peptides
+            DoFs are extracted and minimized using CyclicCAE.
         """
         self.ignore_virtualatoms = ignore_virtualatoms
         self.prefix = prefix
+        self.extract_minimize_input = extract_minimize_input
 
         # create list of current DOF types in Rosetta
         dof_types = [
@@ -53,6 +61,9 @@ class DoFSummary:
 
         # Create a dict that maps int representations to class types
         self.dof_int_to_type = dict(zip([i for i in range(1, len(dof_types)+1)], dof_types))
+
+        # init native peptide, as this is important for switch functions
+        self.peptide_native = None
 
         # init instance of pyrosetta with params
         params = "-mute all -score:weights ref2015.wts -write_all_connect_info"
@@ -176,7 +187,7 @@ class DoFSummary:
         :dof_type: An integer that represents the dof type we want
             to etract
         :residues_of_interest: Tensor of size (M) which indexes the residues
-            we are interested to extract (0-indexed)
+            we are interested to extract (1-indexed)
 
         RETURNS
         -------
@@ -190,7 +201,7 @@ class DoFSummary:
         atom_tree = pose.atom_tree()
 
         # Loop through our residues of interest and extract DoF info
-        if dof_type == 1:
+        if (dof_type == 1) and (not self.extract_minimize_input):
             for ir in residues_of_interest:
                 dof_tensor.extend(
                     [
@@ -216,6 +227,9 @@ class DoFSummary:
         # DoF Types 1 and 2 are in radians FYI
         if dof_type == 1:
             dof_tensor = torch.deg2rad(dof_tensor)
+        #### NOTE: WE NEED TO CALCULATE THE DIHEDRAL OMEGA FOR THE LAST RESIDUE
+        #### YOU CAN USE pyrosetta.toolbox.numpy_utils.calc_dihedral(c)
+        #### Where c is a np.ndarray of coordinates of four points in space ( atoms)
         return dof_tensor.unsqueeze(0)
 
     def extract_dof_from_pose(
@@ -245,6 +259,11 @@ class DoFSummary:
         # Make sure our structure is cyclic
         self.full_cyclize_native(pose)
 
+        # If this is True, then we want all of the DoFs and Residue information
+        if self.extract_minimize_input:
+            residues_of_interest = torch.tensor([i for i in range(1, pose.total_residue()+1)],
+                                                dtype=torch.long)
+
         # First we extract out the Resiude level information of our motif
         self.motif_residue_info = dict()
         for m in residues_of_interest:
@@ -259,6 +278,14 @@ class DoFSummary:
             mutateResidue.apply(pose)
 
         pose.update_residue_neighbors()
+
+        self.full_cyclize_pose(pose)
+
+        print("Full Cyclize")
+        atom_tree = pose.atom_tree()
+        for ir in range(1, pose.total_residue()+1):
+            for ia in range(1, pose.residue_type(ir).natoms()+1):
+                print('Residue:', ir, 'Atom:', ia)
 
         # Extract DoFs of interest
         motif_torsion_dofs = self.dof_extract(pose, 1, residues_of_interest) if self.include_mainchain_torsions else None
@@ -308,7 +335,6 @@ class DoFSummary:
 
         # extract only the peptide/binder pose
         peptide_pose = self.read_pdb_extract_peptide(input_pdb, peptide_chain)
-
 
         # extract the dofs from our peptide pose
         motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs = self.extract_dof_from_pose(
@@ -528,10 +554,11 @@ class DoFSummary:
         mm = core.kinematics.MoveMap()
         mm.set_bb(True)
         mm.set_chi(True)
-        for ir in range(1, pose.total_residue()+1):
-            if ir in list(self.motif_residue_info.keys()):
-                mm.set_bb(ir, False)
-                mm.set_chi(ir, False)
+        if self.peptide_native != None:
+            for ir in range(1, pose.total_residue()+1):
+                if ir in list(self.motif_residue_info.keys()):
+                    mm.set_bb(ir, False)
+                    mm.set_chi(ir, False)
 
         # Set up minimover
         minmover = protocols.minimization_packing.MinMover()
@@ -603,6 +630,7 @@ class DoFSummary:
         scaffold: int,
         score_outputs: bool,
         random_outputs: bool,
+        minimize_pose: bool,
         ) -> Pose:
         """
         Thread a singular DoF vector onto a pose
@@ -614,6 +642,8 @@ class DoFSummary:
         :score_outputs: determine if we want to score our pose or not
         :random_outputs: True/False if True then residues don't need to be mutated
             or placed back in a Target context.
+        :minimize_pose: Use MinMover to minimize the pose slightly in Rosetta's
+            ref2015 scorefunction
 
         RETURNS
         -------
@@ -664,11 +694,13 @@ class DoFSummary:
             # After this place back in PDB alignment, but that isn't necessary yet
             # pose = self.align_to_native_motif_positions(pose.clone())
 
-        if score_outputs:
+        if minimize_pose:
             self.minimize_pose(pose)
-            self.calculate_rmsd_between_native(pose, self.peptide_native)
+            if (self.peptide_native != None) and (not self.extract_minimize_input):
+                self.calculate_rmsd_between_native(pose, self.peptide_native)
+
+        if score_outputs:
             self.scorefxn(pose)
-            # print(f"POSE {scaffold+1} Energy:", pose.energies().total_energy())
         return pose
 
     def thread_dofs_to_poses(
@@ -678,6 +710,7 @@ class DoFSummary:
         score_outputs: bool = False,
         output_path: str = "./",
         random_outputs: bool = False,
+        minimize_pose: bool = True,
         ) -> None:
         """
         Take a DoF vector output from CyclicCAE and apply each row to 
@@ -695,6 +728,8 @@ class DoFSummary:
         :output_path: Path to the output directory
         :random_outputs: True/False if True then residues don't need to be mutated
             or placed back in a Target context.
+        :minimize_pose: Use MinMover to minimize the pose slightly in Rosetta's
+            ref2015 scorefunction
         """
         # set a scorefunction
         if score_outputs:
@@ -765,6 +800,7 @@ class DoFSummary:
                 scaffold = s,
                 score_outputs = score_outputs,
                 random_outputs = random_outputs,
+                minimize_pose = minimize_pose,
             )
             if not silentfile:
                 updated_pose.dump_pdb(
@@ -792,19 +828,29 @@ def main() -> int:
     Main function for testing our functions and the script as a whole.
     """
     # pull in a dof vector .pt for testing
-    # data = torch.load("./binary_import/dof_vectors_clusters_firstten2024-04-11torch_tensor.pt", map_location="cpu", weights_only=False)
+    data = torch.load("./binary_import/dof_vectors_clusters_firstten2024-04-11torch_tensor.pt", map_location="cpu", weights_only=False)
     
     # enable our class
-    dofSummary = DoFSummary()
+    dofSummary = DoFSummary(
+        extract_minimize_input=True, # This is for testing full output minimization 
+    )
 
     motif_dof = dofSummary.extract_pdb_pose_and_dof(
         input_pdb = "../xml/vikram_valdiation/6xbf-peptide-target-vikram-complex.pdb",
         peptide_chain = 2,
-        residues_of_interest = torch.tensor([4, 7], dtype=torch.int8),
+        residues_of_interest = None,
+        # residues_of_interest = torch.tensor([4, 7], dtype=torch.int8),
     )
 
-    # thread our dofs
-    # dofSummary.thread_dofs_to_poses(data, silentfile=True, score_outputs=)
+    # # thread our dofs
+    # dofSummary.thread_dofs_to_poses(
+    #     data,
+    #     silentfile=True,
+    #     score_outputs=True,
+    #     output_path =  "./",
+    #     random_outputs = False,
+    #     minimize_pose = True,
+    # )
 
     return 0
 

@@ -79,6 +79,7 @@ class ScaleOutputs:
         train: bool = True,
         score_terms: list = [0, 1, 2],
         protein_len: int = 8,
+        energy_size: int = 3,
         ):
         """Take the predicted value and scale them, but store min/max for inverse scaling
 
@@ -112,7 +113,7 @@ class ScaleOutputs:
             emax = torch.tensor([ 0.0000, 12.6490, 37.8209], dtype=torch.double)
 
         self.input_tensor = input_tensor
-        self.size = input_tensor.shape[-1]
+        self.size = input_tensor.shape[-1] if train else energy_size
         # create holding min/max values
         self.max = torch.max(input_tensor, dim=0).values if train else emax
         self.min = torch.min(input_tensor, dim=0).values if train else emin
@@ -121,7 +122,8 @@ class ScaleOutputs:
             self.max = self.max[score_terms]
             self.min = self.min[score_terms]
         # scaled values
-        self.scaled_vals = self.scale_values #.to("cuda" if torch.cuda.is_available() else "cpu")
+        if train:
+            self.scaled_vals = self.scale_values #.to("cuda" if torch.cuda.is_available() else "cpu")
 
     @property
     def scale_values(self):

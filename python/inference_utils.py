@@ -244,7 +244,6 @@ def extract_pdb_xyz(input: str, full: bool = False):
     atomdict = defaultdict(list)
     index = 0
 
-
     # grab ATOM lines
     for line in data:
         # Do if atom in line
@@ -1233,6 +1232,9 @@ def size_help(size: int, params: dict) -> Union[dict, int]:
         params["bond_length_side_n"] = 0
         params["jump_n"]             = 0
         params["energy_n"]           = 1
+        params["normalize"]            = True
+        params["reference_pose"]       = "foo"
+        params["ref_pose_len"]         = 128
     elif size == 7:
         params["output_size"]          = 147
         params["input_size"]           = 147
@@ -1245,6 +1247,9 @@ def size_help(size: int, params: dict) -> Union[dict, int]:
         params["jump_n"]               = 0
         params["energy_n"]             = 1
         params["protein_len"]          = 7 
+        params["normalize"]            = True
+        params["reference_pose"]       = "foo"
+        params["ref_pose_len"]         = 128
         params["output_size"]          = 147
         params["input_size"]           = 147
         params['dof_residue_metadata'] = torch.tensor([[1., 1., 1.],
@@ -1401,6 +1406,9 @@ def size_help(size: int, params: dict) -> Union[dict, int]:
         params["bond_angle_side_n"]    = 0
         params["bond_length_main_n"]   = 58
         params["bond_length_side_n"]   = 0
+        params["normalize"]            = True
+        params["reference_pose"]       = "foo"
+        params["ref_pose_len"]         = 128
         params["jump_n"]               = 0
         params["energy_n"]             = 3
         params['dof_residue_metadata'] = torch.tensor([[1., 1., 1.],
@@ -1586,6 +1594,9 @@ def size_help(size: int, params: dict) -> Union[dict, int]:
         params["bond_length_side_n"]   = 0
         params["output_size"]          = 198
         params["input_size"]           = 198
+        params["normalize"]            = True
+        params["reference_pose"]       = "foo"
+        params["ref_pose_len"]         = 128
         params["jump_n"]               = 0
         params["energy_n"]             = 3 
         params["protein_len"]          = 9
