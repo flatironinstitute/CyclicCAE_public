@@ -30,6 +30,7 @@ from inference_utils import (
     split_motif_atoms, discontig_motif_loss, kabsch_rigid_transform,
 )
 from dofSummary import DoFSummary
+from motif_functions import compute_motif_indices
 
 #############
 ##### Classes
@@ -61,10 +62,10 @@ class EnergyPath:
         self,
         steps: int,
         minima: float,
-        start_point: torch.Tensor,
+        # start_point: torch.Tensor,
         weight_passed: str,
         lr: float,
-        dataset: str,
+        # dataset: str,
         cutoff: float,
         cutoff_true: bool,
         partial_optimization: bool,
@@ -195,25 +196,25 @@ class EnergyPath:
         self.fullpocket = full_pocket
 
         # Grab values required for model and other parts
-        dataset = torch.load(dataset)
-        self.ORIG_PARAMS = dataset["params"]
-        params = dataset["params"].copy()
+        # dataset = torch.load(dataset)
+        # self.ORIG_PARAMS = dataset["params"]
+        # params = dataset["params"].copy()
         # print("PARAMS AFTER ASSIGN")
         # print(self.ORIG_PARAMS)
         # Added this, but don't know if it is necessary yet
-        self.PARAMS, self.dof_size = size_help(out_size, params)
+        self.PARAMS, self.dof_size = size_help(out_size, dict())
         # print("PARAMS AFTER Size HELP")
         # print(self.ORIG_PARAMS)
-        X = dataset["x"].double()
+        # X = dataset["x"].double()
         self.energy_n = self.PARAMS["energy_n"]
         # print("grab min and max of energy")
         # print("MIN:", X[:, -self.energy_n:].min(dim=0).values)
         # print("MAX:", X[:, -self.energy_n:].max(dim=0).values)
 
-        self.minima_energy = X[:, -self.energy_n:].min(dim=0).values
+        # self.minima_energy = X[:, -self.energy_n:].min(dim=0).values
 
         # start point select without pdb input
-        self.start_point_dof = X[start_point, :]
+        # self.start_point_dof = X[start_point, :]
 
         # generate holding tensor and input the beginning traj
         # self.dof_traj = torch.zeros((steps, start_point_dof.size(-1) - self.energy_n), dtype=torch.float64, device=device)
@@ -224,11 +225,11 @@ class EnergyPath:
         # self.dof_traj[0, :] = start_point_dof[:-self.energy_n]
         # Store points 
         # self.start_point = self.start_point_dof[:-self.energy_n]
-        self.start_point = self.start_point_dof[:-self.ORIG_PARAMS["energy_n"]]
-        self.start_point = self.start_point.unsqueeze(0)
-        self.start_point = self.start_point.to(device)
-        # Energy store
-        self.sample_energy = self.start_point_dof[-self.energy_n:]
+        # self.start_point = self.start_point_dof[:-self.ORIG_PARAMS["energy_n"]]
+        # self.start_point = self.start_point.unsqueeze(0)
+        # self.start_point = self.start_point.to(device)
+        # # Energy store
+        # self.sample_energy = self.start_point_dof[-self.energy_n:]
 
         # init the model and eval mode
         self.model = ConvCase4(
@@ -251,8 +252,8 @@ class EnergyPath:
         self.model.eval()
 
         # scale start point data
-        X_start_point = torch.cat((X, self.start_point_dof.unsqueeze(0)), dim=0)
-        scaled_X_start_point = scale(X_start_point, self.ORIG_PARAMS) 
+        # X_start_point = torch.cat((X, self.start_point_dof.unsqueeze(0)), dim=0)
+        # scaled_X_start_point = scale(X_start_point, self.ORIG_PARAMS) 
         # traj_scale_dof = scale(X_start_point[:, :self.dof_size], self.PARAMS)
         # print(scaled_X_start_point.shape, traj_scale_dof.shape)
 
@@ -262,27 +263,27 @@ class EnergyPath:
         self.energy_path = torch.zeros(self.steps)
 
         # Pull out scaled start point
-        self.start_point_scaled = scaled_X_start_point[-1, :]
-        self.start_point_scaled = self.start_point_scaled.unsqueeze(0)
+        # self.start_point_scaled = scaled_X_start_point[-1, :]
+        # self.start_point_scaled = self.start_point_scaled.unsqueeze(0)
         # self.start_point = self.start_point.to("cuda" if torch.cuda.is_available() else "cpu")
-        self.start_point_scaled = self.start_point_scaled.to(device)
+        # self.start_point_scaled = self.start_point_scaled.to(device)
 
         # scale energy for conversion importance
         score_terms = torch.tensor([2]) if self.energy_n == 1 else torch.arange(self.energy_n)
-        self.energy_scale = ScaleOutputs(X[:, -self.energy_n:], train=False, score_terms=score_terms, protein_len=self.PARAMS["protein_len"])
+        self.energy_scale = ScaleOutputs(None, train=False, score_terms=score_terms, protein_len=self.PARAMS["protein_len"])
 
         if self.freeze_residues != None:
             # Set up atoms to start with per residue
             freeze_one = freeze_residues == 0
             # Generate for both our reference and our constructs
-            freeze_eight_ref = freeze_residues == self.ORIG_PARAMS["protein_len"]-1
+            # freeze_eight_ref = freeze_residues == self.ORIG_PARAMS["protein_len"]-1
             freeze_eight_target = freeze_residues == self.PARAMS["protein_len"]-1
-            freeze_root_ref = freeze_residues == self.term_bond.calculate_root(self.ORIG_PARAMS["protein_len"])-1
+            # freeze_root_ref = freeze_residues == self.term_bond.calculate_root(self.ORIG_PARAMS["protein_len"])-1
             freeze_root_target = freeze_residues == self.term_bond.calculate_root(self.PARAMS["protein_len"])-1
-            atoms_per_residue_ref = torch.ones(freeze_residues.shape, dtype=torch.int8) * 7
+            # atoms_per_residue_ref = torch.ones(freeze_residues.shape, dtype=torch.int8) * 7
             atoms_per_residue_target = torch.ones(freeze_residues.shape, dtype=torch.int8) * 7
-            atoms_per_residue_ref[freeze_one] += 1
-            atoms_per_residue_ref[freeze_eight_ref] += 2
+            # atoms_per_residue_ref[freeze_one] += 1
+            # atoms_per_residue_ref[freeze_eight_ref] += 2
             atoms_per_residue_target[freeze_one] += 1
             atoms_per_residue_target[freeze_eight_target] += 2
             freeze_mas = freeze_residues > 0
@@ -304,111 +305,53 @@ class EnergyPath:
             phi_psi_idx, omega_idx = self.term_bond.torsion_extract(self.PARAMS["torsion_main_n"], self.PARAMS["protein_len"], root)
             bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(self.PARAMS["bond_angle_main_n"], root=root, L=self.PARAMS["protein_len"])
             # phi_psi_true = phi_psi_idx[torch.cat(((self.freeze_residues * 2).view(-1, 1), (self.freeze_residues * 2).view(-1, 1) + 1), dim=-1).view(-1)]
-            phi_psi_true = phi_psi_idx[((self.freeze_residues * 2).view(-1, 1) + torch.arange(len(self.freeze_residues)).unsqueeze(0)).view(-1)]
+            phi_psi_true = phi_psi_idx[((self.freeze_residues * 2).view(-1, 1) + torch.tensor([0, 1])).view(-1)]
             #### NOTE to Andrew: OMEGA_idx only has 7 elements, since the terminal omega DoF isn't available in the data
             #### NOTE: This means that I need to either compute it for this one. Though This should be fixed if I extract info
             #### NOTE: from a pdb and calculate dihedrals/angles/lengths from there. Right now last residue doesn't work.
             torsion_true = torch.cat((phi_psi_true.view(len(self.freeze_residues), -1), omega_idx[self.freeze_residues].view(-1, 1)), dim=-1).view(-1)
-            bond_angle_true = ((self.freeze_residues * 2).view(-1, 1) + torch.arange(5).unsqueeze(0)).view(-1)
+            # bond_angle_true = ((self.freeze_residues * 2).view(-1, 1) + torch.arange(5).unsqueeze(0)).view(-1)
+            append_angles = list()
+            for ir in self.freeze_residues:
+                if ir.item() == 0:
+                    append_angles.extend((torch.arange(8, dtype=torch.long) + (ir*2)).tolist())
+                elif ir.item() == root:
+                    append_angles.extend((torch.arange(6, dtype=torch.long) + (ir*2)).tolist())
+                elif ir.item() == self.PARAMS["protein_len"]-1:
+                    append_angles.extend((torch.arange(9, dtype=torch.long) + (ir*2)).tolist())
+                else:
+                    append_angles.extend((torch.arange(7, dtype=torch.long) + (ir*2)).tolist())
+            bond_angle_true = torch.tensor(append_angles)
 
 
-            # # generate start locations
-            # start_torsion_index = freeze_residues * 7
-            # # start_torsion_index[freeze_mas] += 1
-            # # This is a change below
-            # start_bond_angle_index_ref = start_torsion_index + self.ORIG_PARAMS["torsion_main_n"]#58
-            # start_bond_length_index_ref = start_bond_angle_index_ref + self.ORIG_PARAMS["bond_angle_main_n"] #58
-            # start_bond_angle_index_target = start_torsion_index + self.PARAMS["torsion_main_n"]#58
-            # start_bond_length_index_target = start_bond_angle_index_target + self.PARAMS["bond_angle_main_n"] #58
-            #
-            # # generate end locations for both ref and target
-            # end_torsion_index_ref = start_torsion_index + atoms_per_residue_ref
-            # end_bond_angle_index_ref = start_bond_angle_index_ref + atoms_per_residue_ref
-            # end_bond_length_index_ref = start_bond_length_index_ref + atoms_per_residue_ref
-            #
-            # end_torsion_index_target = start_torsion_index + atoms_per_residue_target
-            # end_bond_angle_index_target = start_bond_angle_index_target + atoms_per_residue_target
-            # end_bond_length_index_target = start_bond_length_index_target + atoms_per_residue_target
-            #
-            # # index tensors
-            # residue_len = freeze_residues.numel()
-            #
-            # # iter through the residues to build lists
-            # for res in range(residue_len):
-            #     if res == 0:
-            #         torsion_index_ref            = torch.arange(start_torsion_index[res], end_torsion_index_ref[res], device=self.device)
-            #         bond_angle_index_ref         = torch.arange(start_bond_angle_index_ref[res], end_bond_angle_index_ref[res], device=self.device)
-            #         bond_length_index_ref        = torch.arange(start_bond_length_index_ref[res], end_bond_length_index_ref[res], device=self.device)
-            #
-            #         torsion_index_target         = torch.arange(start_torsion_index[res], end_torsion_index_target[res], device=self.device)
-            #         bond_angle_index_target      = torch.arange(start_bond_angle_index_target[res], end_bond_angle_index_target[res], device=self.device)
-            #         bond_length_index_target     = torch.arange(start_bond_length_index_target[res], end_bond_length_index_target[res], device=self.device)
-            #         print(torsion_index_ref)
-            #         print(bond_angle_index_ref)
-            #         print(bond_length_index_ref)
-            #     else:
-            #         torsion_index_ref            = torch.cat((torsion_index_ref, torch.arange(start_torsion_index[res], end_torsion_index_ref[res], device=self.device)))
-            #         bond_angle_index_ref         = torch.cat((bond_angle_index_ref, torch.arange(start_bond_angle_index_ref[res], end_bond_angle_index_ref[res], device=self.device)))
-            #         bond_length_index_ref        = torch.cat((bond_length_index_ref, torch.arange(start_bond_length_index_ref[res], end_bond_length_index_ref[res], device=self.device)))
-            #
-            #         torsion_index_target         = torch.cat((torsion_index_target, torch.arange(start_torsion_index[res], end_torsion_index_target[res], device=self.device)))
-            #         bond_angle_index_target      = torch.cat((bond_angle_index_target, torch.arange(start_bond_angle_index_target[res], end_bond_angle_index_target[res], device=self.device)))
-            #         bond_length_index_target     = torch.cat((bond_length_index_target, torch.arange(start_bond_length_index_target[res], end_bond_length_index_target[res], device=self.device)))
-
-                    # torsion_index = torch.cat((torsion_index, torch.arange(start_torsion_index[res], end_torsion_index[res])))
-                    # bond_angle_index = torch.cat((bond_angle_index, torch.arange(start_bond_angle_index[res], end_bond_angle_index[res])))
-                    # bond_length_index = torch.cat((bond_length_index, torch.arange(start_bond_length_index[res], end_bond_length_index[res])))
-
-            # self.torsion_index_ref         = torsion_index_ref.to(torch.long)
-            # self.torsion_index_target      = torsion_index_target.to(torch.long)
-            # self.bond_angle_index_ref      = bond_angle_index_ref.to(torch.long) - self.ORIG_PARAMS["torsion_main_n"]
-            # self.bond_length_index_ref     = bond_length_index_ref.to(torch.long) - (self.ORIG_PARAMS["torsion_main_n"]*2)
-            # self.bond_angle_index_target   = bond_angle_index_target.to(torch.long) - self.PARAMS["torsion_main_n"]
-            # self.bond_length_index_target  = bond_length_index_target.to(torch.long) - (self.PARAMS["torsion_main_n"]*2)
             self.torsion_index_ref         = torsion_true.to(torch.long)
             self.torsion_index_target      = torsion_true.to(torch.long)
             self.bond_angle_index_ref      = bond_angle_true.to(torch.long)
             self.bond_length_index_ref     = bond_angle_true.to(torch.long)
             self.bond_angle_index_target   = bond_angle_true.to(torch.long) #- self.PARAMS["torsion_main_n"]
             self.bond_length_index_target  = bond_angle_true.to(torch.long)# - (self.PARAMS["torsion_main_n"]*2)
-            # print("Torsion:", self.torsion_index_ref, self.torsion_index_target)
-            # print("Bond Angle:", self.bond_angle_index_ref, self.bond_angle_index_target)
-            # print("Bond Angle - 58:", self.bond_angle_index_ref - self.ORIG_PARAMS["torsion_main_n"], self.bond_angle_index_target - self.PARAMS["torsion_main_n"])
-            # print("Bond Length:", self.bond_length_index_ref, self.bond_length_index_target)
-            # print("Bond Length - 58*2:", self.bond_length_index_ref - (self.ORIG_PARAMS["torsion_main_n"]*2), self.bond_length_index_target - (self.PARAMS["torsion_main_n"]*2))
-            # combine them
-            # self.idx_ref = torch.cat(
-            #     (
-            #         torsion_index_ref,
-            #         bond_angle_index_ref,
-            #         bond_length_index_ref,
-            #     )
-            # ).to(torch.long)
-            # self.idx_target = torch.cat(
-            #     (
-            #         torsion_index_target,
-            #         bond_angle_index_target,
-            #         bond_length_index_target,
-            #     )
-            # ).to(torch.long)
-            #
-            # if freeze_torsion and freeze_bond_angle:
-            #     self.idx_ref    = self.idx_ref[:torsion_index_ref.numel()+bond_angle_index_ref.numel()]
-            #     self.idx_target = self.idx_target[:torsion_index_ref.numel()+bond_angle_index_target.numel()]
-            # elif freeze_torsion:
-            #     self.idx_ref    = self.idx_ref[:torsion_index_ref.numel()]
-            #     self.idx_target = self.idx_target[:torsion_index_target.numel()]
-            # elif freeze_bond_length:
-            #     self.idx_ref    = self.idx_ref[torsion_index_ref.numel()+bond_angle_index_ref.numel():]
-            #     self.idx_target = self.idx_target[torsion_index_target.numel()+bond_angle_index_target.numel():]
-
+            self.torsion_index, self.bond_dof_index, self.residue_index = compute_motif_indices(
+                self.PARAMS["protein_len"],
+                self.PARAMS["torsion_main_n"],
+                self.freeze_residues.shape[0],
+                root,
+                phi_psi_idx,
+                omega_idx,
+                bond_angle_idx,
+                bond_length_idx,
+            )
         else:
+            self.torsion_index = slice(None)
+            self.bond_dof_index = slice(None)
+            self.residue_index = slice(None)
+
             self.torsion_index_ref         = slice(None)
             self.torsion_index_target      = slice(None)
             self.bond_angle_index_ref      = slice(None)
             self.bond_length_index_ref     = slice(None) 
             self.bond_angle_index_target   = slice(None) 
             self.bond_length_index_target  = slice(None) 
+
 
     def check_contiguous(self, motif: list[int]):
         """Check to see if the motif passed is contiguous or not
@@ -423,7 +366,7 @@ class EnergyPath:
             If the motif is contiguous or not
         """
         # If it is only 1 residue, no need to check just pass true
-        if not self.freeze_torsion:
+        if motif == None:
             return True
         elif len(motif) == 1:
             return True
@@ -435,6 +378,7 @@ class EnergyPath:
                 # know that this is non-contiguous
                 if motif[j]+1 != motif[i]:
                     return False
+                j = i
         return True
 
     def encoder(self, input: torch.Tensor):
@@ -641,6 +585,38 @@ class EnergyPath:
         mask[idx] = False
         return a[mask.unsqueeze(0)]
 
+    # def harmonic_diff_inpaint(
+    #     self, 
+    #     real_t_sin: torch.Tensor, 
+    #     real_t_cos: torch.Tensor,
+    #     real_ba_sin: torch.Tensor,
+    #     real_ba_cos: torch.Tensor,
+    #     real_bond_length: torch.Tensor,
+    #     torsion_sin: torch.Tensor,
+    #     torsion_cos: torch.Tensor,
+    #     bond_angle_sin: torch.Tensor,
+    #     bond_angle_cos: torch.Tensor,
+    #     bond_length: torch.Tensor,
+    #     ):
+    #     """Harmonic Difference"""
+    #     print(real_t_sin.shape)
+    #     print(real_ba_sin.shape)
+    #     print(bond_angle_sin.shape)
+    #     print(self.bond_angle_index_ref)
+    #     harmonic_penalty_sin_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_sin - torsion_sin[:, self.torsion_index_target],2).mean(dim=-1).to(device=self.device)
+    #     harmonic_penalty_cos_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_cos - torsion_cos[:, self.torsion_index_target],2).mean(dim=-1).to(device=self.device)
+    #     # harmonic_penalty_sin_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_sin[:, self.bond_angle_index_ref] - bond_angle_sin[:, self.bond_angle_index_target],2).mean(dim=-1).to(device=self.device)
+    #     # harmonic_penalty_cos_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_cos[:, self.bond_angle_index_ref] - bond_angle_cos[:, self.bond_angle_index_target],2).mean(dim=-1).to(device=self.device)
+    #     # harmonic_penalty_bond_length = torch.tensor(0.0, device=self.device)    if not self.freeze_bond_length else torch.pow(real_bond_length[:, self.bond_length_index_ref] - bond_length[:, self.bond_length_index_target],2).mean(dim=-1).to(device=self.device)
+    #     harmonic_penalty_sin_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_sin - bond_angle_sin[:, self.bond_angle_index_target],2).mean(dim=-1).to(device=self.device)
+    #     harmonic_penalty_cos_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_cos - bond_angle_cos[:, self.bond_angle_index_target],2).mean(dim=-1).to(device=self.device)
+    #     harmonic_penalty_bond_length = torch.tensor(0.0, device=self.device)    if not self.freeze_bond_length else torch.pow(real_bond_length - bond_length[:, self.bond_length_index_target],2).mean(dim=-1).to(device=self.device)
+    #     harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
+    #     # harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
+    #     print(harmonic_loss)
+    #     print(harmonic_loss.min())
+    #     return harmonic_loss
+
     def harmonic_diff_inpaint(
         self, 
         real_t_sin: torch.Tensor, 
@@ -655,14 +631,84 @@ class EnergyPath:
         bond_length: torch.Tensor,
         ):
         """Harmonic Difference"""
-        harmonic_penalty_sin_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_sin - torsion_sin[:, self.torsion_index_target],2).mean(dim=-1).to(device=self.device)
-        harmonic_penalty_cos_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_cos - torsion_cos[:, self.torsion_index_target],2).mean(dim=-1).to(device=self.device)
-        harmonic_penalty_sin_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_sin[:, self.bond_angle_index_ref] - bond_angle_sin[:, self.bond_angle_index_target],2).mean(dim=-1).to(device=self.device)
-        harmonic_penalty_cos_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_cos[:, self.bond_angle_index_ref] - bond_angle_cos[:, self.bond_angle_index_target],2).mean(dim=-1).to(device=self.device)
-        harmonic_penalty_bond_length = torch.tensor(0.0, device=self.device)    if not self.freeze_bond_length else torch.pow(real_bond_length[:, self.bond_length_index_ref] - bond_length[:, self.bond_length_index_target],2).mean(dim=-1).to(device=self.device)
+        # Grab DoF values of interest using our values
+        torsion_sin = torch.gather(
+            torsion_sin.unsqueeze(1).expand(-1, self.PARAMS["protein_len"], -1),
+            -1,
+            self.torsion_index.expand(torsion_sin.shape[0], -1, -1),
+        )
+        torsion_cos = torch.gather(
+            torsion_cos.unsqueeze(1).expand(-1, self.PARAMS["protein_len"], -1),
+            -1,
+            self.torsion_index.expand(torsion_cos.shape[0], -1, -1),
+        )
+        print(bond_angle_sin)
+        print(bond_angle_sin[0])
+        bond_angle_sin = torch.where(
+            self.bond_dof_index.expand(bond_angle_sin.shape[0], -1, -1) != -1,
+            torch.gather(
+                bond_angle_sin.unsqueeze(1).expand(-1, self.PARAMS["protein_len"], -1),
+                -1,
+                self.bond_dof_index.expand(bond_angle_sin.shape[0], -1, -1).clamp(min=0),
+            ),
+            torch.tensor(0),
+        )
+        bond_angle_cos = torch.where(
+            self.bond_dof_index.expand(bond_angle_cos.shape[0], -1, -1) != -1,
+            torch.gather(
+                bond_angle_cos.unsqueeze(1).expand(-1, self.PARAMS["protein_len"], -1),
+                -1,
+                self.bond_dof_index.expand(bond_angle_cos.shape[0], -1, -1).clamp(min=0),
+            ),
+            torch.tensor(0),
+        )
+        bond_length = torch.where(
+            self.bond_dof_index.expand(bond_length.shape[0], -1, -1) != -1,
+            torch.gather(
+                bond_length.unsqueeze(1).expand(-1, self.PARAMS["protein_len"], -1),
+                -1,
+                self.bond_dof_index.expand(bond_length.shape[0], -1, -1).clamp(min=0),
+            ),
+            torch.tensor(0),
+        )
+        # print(torch.pow(real_t_sin.unsqueeze(0).expand(torsion_sin.shape[0], torsion_sin.shape[1], -1) - torsion_sin,2).mean(dim=-1))
+        # print(torch.pow(real_ba_sin.unsqueeze(0).expand(bond_angle_sin.shape[0], bond_angle_sin.shape[1], -1) - bond_angle_sin,2).mean(dim=-1))
+        real_ba_sin = torch.where(real_ba_sin.unsqueeze(0).expand(bond_angle_sin.shape[0], bond_angle_sin.shape[1], -1))
+        real_ba_cos = real_ba_cos.unsqueeze(0).expand(bond_angle_cos.shape[0], bond_angle_cos.shape[1], -1)
+        real_bond_length = real_bond_length.unsqueeze(0).expand(bond_length.shape[0], bond_length.shape[1], -1)
+
+        # Compute the harmoinc difference
+        # harmonic_penalty_sin_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_sin.unsqueeze(0).expand(torsion_sin.shape[0], torsion_sin.shape[1], -1) - torsion_sin,2).mean(dim=-1).to(device=self.device)
+        # harmonic_penalty_cos_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_cos.unsqueeze(0).expand(torsion_sin.shape[0], torsion_sin.shape[1], -1) - torsion_cos,2).mean(dim=-1).to(device=self.device)
+        # harmonic_penalty_sin_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_sin.unsqueeze(0).expand(bond_angle_sin.shape[0], bond_angle_sin.shape[1], -1) - bond_angle_sin,2).mean(dim=-1).to(device=self.device)
+        # harmonic_penalty_cos_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else torch.pow(real_ba_cos.unsqueeze(0).expand(bond_angle_sin.shape[0], bond_angle_sin.shape[1], -1) - bond_angle_cos,2).mean(dim=-1).to(device=self.device)
+        # harmonic_penalty_bond_length = torch.tensor(0.0, device=self.device)    if not self.freeze_bond_length else torch.pow(real_bond_length.unsqueeze(0).expand(bond_length.shape[0], bond_length.shape[1], -1) - bond_length,2).mean(dim=-1).to(device=self.device)
+        harmonic_penalty_sin_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_sin.unsqueeze(0).expand(torsion_sin.shape[0], torsion_sin.shape[1], -1) - torsion_sin,2).mean(dim=-1).to(device=self.device)
+        harmonic_penalty_cos_torsion = torch.tensor(0.0, device=self.device)    if not self.freeze_torsion     else torch.pow(real_t_cos.unsqueeze(0).expand(torsion_sin.shape[0], torsion_sin.shape[1], -1) - torsion_cos,2).mean(dim=-1).to(device=self.device)
+        real_ba_sin = real_ba_sin.unsqueeze(0).expand(bond_angle_sin.shape[0], bond_angle_sin.shape[1], -1)
+        real_ba_cos = real_ba_cos.unsqueeze(0).expand(bond_angle_cos.shape[0], bond_angle_cos.shape[1], -1)
+        real_bond_length = real_bond_length.unsqueeze(0).expand(bond_length.shape[0], bond_length.shape[1], -1)
+        print("REAL BA SIN")
+        print(real_ba_sin)
+        print((real_ba_sin == 0).sum(dim=-1))
+        print((bond_angle_sin == 0).sum(dim=-1))
+        harmonic_penalty_sin_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else (torch.pow(real_ba_sin - bond_angle_sin,2).sum(dim=-1)/ (real_ba_sin != 0).sum(dim=-1)).to(device=self.device)
+        harmonic_penalty_cos_bond_angle = torch.tensor(0.0, device=self.device) if not self.freeze_bond_angle  else (torch.pow(real_ba_cos - bond_angle_cos,2).sum(dim=-1)/ (real_ba_cos != 0).sum(dim=-1)).to(device=self.device)
+        harmonic_penalty_bond_length = torch.tensor(0.0, device=self.device)    if not self.freeze_bond_length else (torch.pow(real_bond_length - bond_length,2).sum(dim=-1)/ (real_bond_length != 0).sum(dim=-1)).to(device=self.device)
         harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
         # harmonic_loss /= torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
-        return harmonic_loss
+
+        # Compare and pick residues based on output
+        # print(harmonic_loss)
+        print(harmonic_loss.min())
+        mask = harmonic_loss <= self.inpaint_dist
+        print(mask.sum())
+        match_res = self.residue_index.unsqueeze(0).expand(mask.shape[0], -1, -1)[mask]
+        # print(match_res)
+        harmonic_out = harmonic_loss[mask]
+        print(harmonic_out)
+
+        return harmonic_out, match_res
 
     def inpainting(self, B: int, random_no_reference: bool = False, interface_dict = None,
                    terminal = True, motif_dofs = None):
@@ -704,11 +750,12 @@ class EnergyPath:
             )
 
         # input information
-        real_t_sin = torch.sin(motif_dofs[0])
-        real_t_cos = torch.cos(motif_dofs[0])
-        real_ba_sin = torch.sin(motif_dofs[1])
-        real_ba_cos = torch.cos(motif_dofs[1])
-        real_bond_length = motif_dofs[2] 
+        if args.freeze_residues != None:
+            real_t_sin = torch.sin(motif_dofs[0])
+            real_t_cos = torch.cos(motif_dofs[0])
+            real_ba_sin = torch.sin(motif_dofs[1])
+            real_ba_cos = torch.cos(motif_dofs[1])
+            real_bond_length = motif_dofs[2] 
         # real_t_sin = torch.sin(torch.deg2rad(self.start_point[:, :self.ORIG_PARAMS["torsion_main_n"]]))
         # real_t_cos = torch.cos(torch.deg2rad(self.start_point[:, :self.ORIG_PARAMS["torsion_main_n"]]))
         # real_ba_sin = torch.sin(torch.deg2rad(self.start_point[:, self.ORIG_PARAMS["bond_angle_main_n"]:self.ORIG_PARAMS["bond_angle_main_n"]*2]))
@@ -753,29 +800,43 @@ class EnergyPath:
             # energy_ref = energy_all[:, -1]
             ######### REMOVE SECTION LATER
 
-            # Distance Check
-            harmonic_loss = self.harmonic_diff_inpaint(
-                real_t_sin,
-                real_t_cos,
-                real_ba_sin,
-                real_ba_cos,
-                real_bond_length,
-                torsion_sin,
-                torsion_cos,
-                bond_angle_sin,
-                bond_angle_cos,
-                bond_length,
-            )
 
-            #### Testing NoClash Input
             # term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
-            term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, _, coordinates = self.term_bond.terminal_peptide_loss(
+            term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                 dof_inputs = out,
                 real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                 params = self.PARAMS,
                 foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                 device = out.device,
             )
+
+            if args.freeze_residues != None:
+                HNCO_sin, HNCO_cos = torch.sin(HNCO), torch.cos(HNCO)
+                #NOTE: ADD CONCAT -> FIX THIS PORITION
+                torsion_sin = torch.cat(
+                    (
+                        torsion_sin,
+                        HNCO_sin,
+                    ), dim=-1,
+                )
+                torsion_cos = torch.cat(
+                    (
+                        torsion_cos,
+                        HNCO_cos,
+                    ), dim=-1,
+                )
+                harmonic_loss = self.harmonic_diff_inpaint(
+                    real_t_sin,
+                    real_t_cos,
+                    real_ba_sin,
+                    real_ba_cos,
+                    real_bond_length,
+                    torsion_sin,
+                    torsion_cos,
+                    bond_angle_sin,
+                    bond_angle_cos,
+                    bond_length,
+                )
 
             #########
             # Interface calculate
@@ -1651,26 +1712,23 @@ class EnergyPath:
                      interface_full_dict = None, interface_cb_dict = None,
                      motif_dofs = None):
         """Model Eval Loop for GDS"""
-        if mcmc_minimize:
+        if start_points.size(0) == 1:
+            self.start_latent_point = self.encoder(start_points).detach()
+            start_range = 0
+            self.path = torch.zeros((start_points.size(0),self.steps), device=self.device)
+            self.energy_path = torch.zeros(start_points.size(0), self.steps,  device=self.device)
+            self.dof_traj = torch.zeros((start_points.size(0), self.steps, self.dof_size - self.energy_n), dtype=torch.float64, device=self.device)
+        elif mcmc_minimize:
             self.steps = minimize_steps
-            start_range = 1
-            self.path = torch.zeros((self.start_latent_point.size(0),self.steps), device=self.device)
-            self.energy_path = torch.zeros(self.start_latent_point.size(0), self.steps,  device=self.device)
-            # generate holding tensor and input the beginning traj
-            print("MCMC MINIMIZE")
-            self.dof_traj = torch.zeros((self.start_latent_point.size(0), self.steps, self.start_point_scaled.size(-1) - self.energy_n), dtype=torch.float64, device=self.device)
-        elif start_points == None:
-            self.start_latent_point = self.encoder(self.start_point_scaled).detach()
-
-            print("LATENT POINT: ", self.start_latent_point)
-            start_range = 1
+            start_range = 0
+            self.path = torch.zeros((start_points.size(0),self.steps), device=self.device)
+            self.energy_path = torch.zeros(start_points.size(0), self.steps,  device=self.device)
+            self.dof_traj = torch.zeros((start_points.size(0), self.steps, self.dof_size - self.energy_n), dtype=torch.float64, device=self.device)
         else:
-            print("ELSE")
             self.start_latent_point = start_points.to(self.device)
             self.path = torch.zeros((start_points.size(0), self.steps), dtype=torch.float32, device=self.device)
             self.energy_path = torch.zeros((start_points.size(0), self.steps), device=self.device)
             # generate holding tensor and input the beginning traj
-            print("start point:", start_points.size(0), self.steps, self.start_point_scaled.size(-1))
             # self.dof_traj = torch.zeros((start_points.size(0), self.steps, self.start_point_scaled.size(-1) - self.energy_n), dtype=torch.float64, device=self.device)
             self.dof_traj = torch.zeros((start_points.size(0), self.steps, self.dof_size - self.energy_n), dtype=torch.float64, device=self.device)
             start_range = 0
@@ -1698,15 +1756,15 @@ class EnergyPath:
         #         control = True,
         #     )
 
-        if self.sample_energy.size(0) == 3:
-            print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[1].item()}, Ref2015+Solvent: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
-        else:
-            print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
-        # add energy path
-        if self.sample_energy.size(-1) == 1:
-            self.energy_path[0] = self.sample_energy
-        else:
-            self.energy_path[0] = self.sample_energy[1]
+        # if self.sample_energy.size(0) == 3:
+        #     print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[1].item()}, Ref2015+Solvent: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
+        # else:
+        #     print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
+        # # add energy path
+        # if self.sample_energy.size(-1) == 1:
+        #     self.energy_path[0] = self.sample_energy
+        # else:
+        #     self.energy_path[0] = self.sample_energy[1]
 
         while minimize_still: 
             original_point = self.start_latent_point.clone()
@@ -2154,6 +2212,7 @@ class EnergyPath:
         score: bool = False,
         output_path: str = "./", 
         random_outputs: bool = False,
+        minimize_pose: bool = False,
         ) -> int:
         """Output the GDS trajectory"""
         # file name
@@ -2180,14 +2239,19 @@ class EnergyPath:
                        )
 
         # Now thread and place our DoFs back in the context we took it from
-        thread_data = {'x': self.dof_traj[:, -1, :],
-                       'params': self.PARAMS,}
+        if self.dof_traj.size(0) == 1:
+            thread_data = {'x': self.dof_traj[0, :, :],
+                           'params': self.PARAMS,}
+        else:
+            thread_data = {'x': self.dof_traj[:, -1, :],
+                           'params': self.PARAMS,}
         dofsummary.thread_dofs_to_poses(
             thread_data,
             silentfile = silentfile,
             score_outputs = score,
             output_path = output_path,
             random_outputs = random_outputs,
+            minmize_pose = minimize_pose,
         )
 
         return 0
@@ -2204,11 +2268,12 @@ if __name__ == "__main__":
     p.add_argument("--score-outputs", action="store_true", help="Score each Model output and save in \
                         SilentFile (not implemented yet to save score to separate file when Silent not set).")
     p.add_argument("--output-path", type=str, default="./", help="Determines location PDBs/SilentFile are saved.")
-    p.add_argument("--start-point", type=int, default=14, help="This will be updated to take a pdb in the future")
+    p.add_argument("--extract-minimize-input", action="store_true", help="Minimize a given input only")
+    # p.add_argument("--start-point", type=int, default=14, help="This will be updated to take a pdb in the future")
     p.add_argument("--weights-load", type=str, help="Specify Model Weights To Use")
     p.add_argument("--out-size", type=int, help="Specify the output size")
     p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate")
-    p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use")
+    # p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use")
     p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
     p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search")
     p.add_argument("--latent-dim", type=int, default=3, help="Latent Size of the model")
@@ -2256,10 +2321,10 @@ if __name__ == "__main__":
     energySearch = EnergyPath(
         steps = args.steps, 
         minima = args.minima, 
-        start_point = torch.tensor(args.start_point), 
+        # start_point = torch.tensor(args.start_point), 
         weight_passed = args.weights_load, 
         lr=args.lr,
-        dataset = args.dataset, 
+        # dataset = args.dataset, 
         cutoff = args.cutoff, 
         cutoff_true = args.cutoff_true,
         partial_optimization = args.partial_optimization,
@@ -2393,10 +2458,5 @@ if __name__ == "__main__":
                             score = args.score_outputs,
                             output_path = args.output_path,
                             random_outputs = args.random_sample,
+                            minimize_pose = args.extract_minimize_input,
                             )
-
-
-
-
-
-
