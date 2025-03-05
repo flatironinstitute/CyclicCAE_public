@@ -20,6 +20,9 @@ import pyrosetta.rosetta.core.io.silent as silent
 import torch
 import os
 
+# Import termina bond
+from terminal_error import TerminalPeptide
+
 
 #### Class
 class DoFSummary:
@@ -45,6 +48,7 @@ class DoFSummary:
         self.ignore_virtualatoms = ignore_virtualatoms
         self.prefix = prefix
         self.extract_minimize_input = extract_minimize_input
+        self.term_bond = TerminalPeptide()
 
         # create list of current DOF types in Rosetta
         dof_types = [
@@ -177,6 +181,7 @@ class DoFSummary:
         pose: Pose,
         dof_type: int,
         residues_of_interest: torch.Tensor,
+        key: torch.Tensor,
         ) -> torch.Tensor:
         """
         Extract a specific type of DoF from the passed pose
@@ -188,6 +193,8 @@ class DoFSummary:
             to etract
         :residues_of_interest: Tensor of size (M) which indexes the residues
             we are interested to extract (1-indexed)
+        :key: Our specific residue/residues of interest idx for extracting the
+            information that we need N-CA-C-O-H
 
         RETURNS
         -------
@@ -198,6 +205,8 @@ class DoFSummary:
         # init our tensor as a list since we don't have a determined size yet
         # And store our atom tree
         dof_tensor = list()
+        # bond_length_list = list()
+        # bond_angle_list = list()
         atom_tree = pose.atom_tree()
 
         # Loop through our residues of interest and extract DoF info
@@ -211,26 +220,71 @@ class DoFSummary:
                     ]
                 )
         else:
-            for ir in residues_of_interest:
-                for ia in range(1, pose.residue(ir.item()).natoms()+1):
-                    kinatom = atom_tree.atom( core.id.AtomID(ia, ir.item()) )
+            for ir in range(1, pose.total_residue()+1):
+                for ia in range(1, pose.residue(ir).natoms()+1):
+                    kinatom = atom_tree.atom( core.id.AtomID(ia, ir) )
                     if not kinatom.is_jump():
                         dof_tensor.append(
                             pose.dof(
                                 core.id.DOF_ID(
-                                    core.id.AtomID(ia, ir.item()),
+                                    core.id.AtomID(ia, ir),
                                     self.dof_int_to_type[dof_type],
                                 )
                             )
                         )
-        dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)
+            # if dof_type == 3:
+            #     bond_length_list.extend(torch.tensor(dof_tensor)[key].tolist())
+            # elif dof_type == 2:
+            #     bond_angle_list.extend(torch.tensor(dof_tensor)[key].tolist())
+            # # Clear the dof tensor list
+            # dof_tensor.clear()
+
         # DoF Types 1 and 2 are in radians FYI
         if dof_type == 1:
+            dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)
             dof_tensor = torch.deg2rad(dof_tensor)
+        elif dof_type == 2:
+            dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
+        else:
+            dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
+
+        #     # Add in padding to DoFs
+        #     dof_tensor = torch.cat(
+        #         (
+        #             dof_tensor,
+        #             torch.zeros(len(residues_of_interest)*9 - dof_tensor.shape[0]),
+        #         ), dim=-1,
+        #     )
         #### NOTE: WE NEED TO CALCULATE THE DIHEDRAL OMEGA FOR THE LAST RESIDUE
         #### YOU CAN USE pyrosetta.toolbox.numpy_utils.calc_dihedral(c)
         #### Where c is a np.ndarray of coordinates of four points in space ( atoms)
         return dof_tensor.unsqueeze(0)
+
+    def n_to_c_distance(self, pose: Pose) -> bool:
+        """
+        Check the distance between the chain, if it is within 2A then count it as
+        a cyclic peptide. If not then don't apply cyclic peptide changes to it.
+
+        PARAMS
+        -------
+        :pose: Rosetta pose object of our peptide/protein
+
+        RETURNS
+        -------
+        :bool: True it is a cyclic peptide, False it is not
+        """
+        # Grab the first residue
+        n_termini = pose.atom_tree().atom(
+            core.id.AtomID(1, 1)
+        )
+        c_termini = pose.atom_tree().atom(
+            core.id.AtomID(3, pose.total_residue())
+        )
+        distance = n_termini.distance(c_termini)
+        if distance > 2:
+            return False
+        else:
+            return True
 
     def extract_dof_from_pose(
         self,
@@ -256,8 +310,10 @@ class DoFSummary:
         :motif_bondlength_dofs: a Tensor of size (1, M*A). Where our dihedrals are
             stored from the extracted pose
         """
-        # Make sure our structure is cyclic
-        self.full_cyclize_native(pose)
+        cyclic_peptide = self.n_to_c_distance(pose)
+        if cyclic_peptide:
+            # Make sure our structure is cyclic
+            self.full_cyclize_native(pose)
 
         # If this is True, then we want all of the DoFs and Residue information
         if self.extract_minimize_input:
@@ -279,18 +335,24 @@ class DoFSummary:
 
         pose.update_residue_neighbors()
 
-        self.full_cyclize_pose(pose)
+        if cyclic_peptide:
+            self.full_cyclize_pose(pose)
 
-        print("Full Cyclize")
-        atom_tree = pose.atom_tree()
-        for ir in range(1, pose.total_residue()+1):
-            for ia in range(1, pose.residue_type(ir).natoms()+1):
-                print('Residue:', ir, 'Atom:', ia)
+        # grab our dof indexing tensors
+        bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(
+            pose.total_atoms(),
+            L = pose.total_residue(),
+            root = pose.fold_tree().root(),
+        )
+
+        # index our bond angle/length indices by the residues we want
+        residues_of_interest_angle_indices = bond_angle_idx.view(-1, 5)[residues_of_interest]
+        residues_of_interest_length_indices = bond_length_idx.view(-1, 5)[residues_of_interest]
 
         # Extract DoFs of interest
-        motif_torsion_dofs = self.dof_extract(pose, 1, residues_of_interest) if self.include_mainchain_torsions else None
-        motif_bondangle_dofs = self.dof_extract(pose, 2, residues_of_interest) if self.include_mainchain_bondangles else None
-        motif_bondlength_dofs = self.dof_extract(pose, 3, residues_of_interest) if self.include_mainchain_bondlengths else None
+        motif_torsion_dofs = self.dof_extract(pose, 1, residues_of_interest, None) if self.include_mainchain_torsions else None
+        motif_bondangle_dofs = self.dof_extract(pose, 2, residues_of_interest, residues_of_interest_angle_indices.view(-1)) if self.include_mainchain_bondangles else None
+        motif_bondlength_dofs = self.dof_extract(pose, 3, residues_of_interest, residues_of_interest_length_indices.view(-1)) if self.include_mainchain_bondlengths else None
 
         return motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs
 

@@ -548,8 +548,11 @@ def interface_loss(
     #     print(sigma_interface)
     #     print(interface_atoms.size(-1))
     # else:
-    S = torch.add(sigma_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
-    E = torch.sqrt(epsilon_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
+    # S = torch.add(sigma_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
+    # E = torch.sqrt(epsilon_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
+    ### MADE A CHANGE FROM ABOVE TO INCLUDE THE NUMBER OF ATOMS IN OUR INPUT NOT JUST ONE
+    S = torch.add(sigma_peptide[:recomputed_xyz.size(1)].unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
+    E = torch.sqrt(epsilon_peptide[:recomputed_xyz.size(1)].unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
     S = S.repeat(B, 1, 1)
     E = E.repeat(B, 1, 1)
 
@@ -893,7 +896,9 @@ def kabsch_rigid_transform(P_point: torch.Tensor, Q_point: torch.Tensor):
 
     return P_aligned, t, R
 
-def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slice(None)):
+def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, 
+                    motif_output: torch.Tensor = slice(None),
+                    motif_input: torch.Tensor = slice(None)):
     """Perform the kabsch algorithm to find the optimal rotation matrix
     that aligns P to points Q
 
@@ -903,8 +908,10 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slic
         Predicted DoF XYZ points
     Q: Tensor (N, 3)
         PDB Peptide Heavy atom XYZ Points
-    motif: Tensor (A)
-        atom indexs 
+    motif_output: Tensor (N, A)
+        atom index for model outputs
+    motif_input: Tensor (M, A)
+        atom index for input PDB
 
     RETURNS
     -------
@@ -912,8 +919,9 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slic
         Aligned DoF XYZ points
     """
     # Calc Translation
-    P_point = P[:, motif, :] # N atom of 4th residue root
-    Q_point = Q[motif, :] # Same N atom
+    # P_point = P[:, motif, :] # N atom of 4th residue root
+    P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
+    Q_point = Q[motif_input, :] # Same N atom
 
 
     # Compute centroids
@@ -956,7 +964,7 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slic
     # rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
     # print("RSMD Whole:", rmsd.mean().item())
     
-    diff_motif = P_aligned - Q[motif, :].unsqueeze(0)
+    diff_motif = P_aligned - Q[motif_input, :].unsqueeze(0)
     rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
     print("RSMD Motif:", rmsd_motif.mean().item())
 
@@ -964,7 +972,7 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slic
 
     # torch.save({"paligned": P_aligned, "control": Q}, "paligned.pt")
 
-    if motif == slice(None):
+    if motif_input == slice(None):
         return P_aligned, t, R
     else:
         return P_total

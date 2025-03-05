@@ -7,6 +7,7 @@
 #### Import
 import torch
 import os
+from typing import Tuple
 
 #### Functions
 def compute_motif_indices(
@@ -68,8 +69,6 @@ def compute_motif_indices(
         True,
     )
     phi_psi_true = torch.gather(phi_psi_idx, -1, phi_psi_selection) # (B, M*2)
-    print(bond_angle_idx.shape)
-    print(bond_length_idx.shape)
     # Extract out Omega
     #### NOTE: OMEGA is not provided for residue 8, this needs to be grabbed from
     ####    the coordinates extraction script. Therefore, I am going to expand the
@@ -90,9 +89,14 @@ def compute_motif_indices(
     ).view(pep_len, -1)
 
     # Extract relevant dof information for bond angles/lengths
-    bond_angle_dofs, bond_length_dofs = find_atom_indices(residue_idx, pep_len, root_pos, dof_len)
+    bond_angle_dofs, bond_length_dofs = find_atom_indices(residue_idx, 
+                                                          pep_len, 
+                                                          root_pos, 
+                                                          dof_len,
+                                                          bond_angle_idx,
+                                                          bond_length_idx)
 
-    return torsions_true, bond_angle_dof, bond_length_dofs, residue_idx
+    return torsions_true, bond_angle_dofs, bond_length_dofs, residue_idx
 
 def find_atom_indices(
     residue_tensor: torch.Tensor,
@@ -133,64 +137,107 @@ def find_atom_indices(
     dof_bond_angle = dof_angle_reshape[residue_reshape]
     dof_bond_length = dof_length_reshape[residue_reshape]
 
-    return dofs_bond_angle.view(-1, M*5), dof_bond_length.view(-1, M*5)
+    return dof_bond_angle.view(-1, M*5), dof_bond_length.view(-1, M*5)
 
-# def find_atom_indices(
-#     residue_tensor: torch.Tensor,
-#     pep_len: int,
-#     root_pos: int,
-#     dof_len: int,
-#     ) -> torch.Tensor:
-#     """
-#     Fill a tensor with bond angle/length indices
-#
-#     PARAMS
-#     ------
-#     :residue_tensor: A tensor of motif indexes (pep_len, motif_len)
-#     :pep_len: The length of our input peptide
-#     :root_pos: Root residue of our pose
-#     :dof_len: Length of our dof vector
-#
-#     RETURNS
-#     -------
-#     :dof_tensor: A tensor filled with atom indices and -1 are kept for non-used
-#         values
-#     """
-#     # generate our holding tensor
-#     dofs_tensor = torch.ones(pep_len, residue_tensor.shape[1]*9, dtype=torch.long) * -1
-#
-#     # Generate a dict for placement
-#     atom_add = dict()
-#     # fill the dict with the number of atoms that are needed to be placed
-#     for ir in range(1, pep_len+1):
-#         if ir == pep_len:
-#             atom_add[ir] = torch.arange(9, dtype=torch.long)
-#         elif ir == root_pos:
-#             atom_add[ir] = torch.arange(6, dtype=torch.long)
-#         elif ir == 1:
-#             atom_add[ir] = torch.arange(8, dtype=torch.long)
-#         else:
-#             atom_add[ir] = torch.arange(7, dtype=torch.long)
-#
-#     # iter through residue_index
-#     row = list()
-#     final_value = 0
-#     for idx in range(0, residue_tensor.shape[0]):
-#         for ir in residue_tensor[idx]:
-#             curratoms = atom_add[ir.item()+1]
-#             if len(row) != 0:
-#                 row.extend((curratoms + row[-1]+1).tolist())
-#             else:
-#                 row.extend((curratoms + final_value).tolist())
-#                 final_value = row[-1]+1
-#         grab_out = torch.tensor(row, dtype=torch.long)
-#         row.clear()
-#         dofs_tensor[idx, :grab_out.shape[0]] = grab_out
-#
-#     # Correct and cyclize the tensor
-#     dofs_tensor = cyclize_tensor(dofs_tensor, dof_len, False)
-#
-#     return dofs_tensor
+def calculate_motif_numbering_for_kabsch(
+    motif_match: torch.Tensor,
+    pep_len: int,
+    motif_length: int,
+    motif_positions: torch.Tensor,
+    dof_minimize: bool = False,
+    ) -> torch.Tensor:
+    """
+    Compute the motif atom indexing per input that passes our 
+    harmonic function
+
+    PARAMS
+    ------
+    :motif_match: An index tensor of size (M, 2). Where M is all of the
+        matches for our DoFs. The second dimensions:
+            - first number is the row/sample 
+            - last number is the residue number that matches (0-index).
+    :pep_len: The length of our output peptide
+    :motif_length: The length of our continuous motif (number of residues)
+    :motif_positions: The tensor of residue indexes from our pass PDB
+    :dof_minimize: True we are performing regression and motif_match only has 1
+        column and not 2.
+
+    RETURN
+    ------
+    :motif_kabsch: A tensor of size (M, 4) all of our motifs, but the atom indexing for
+        selecting the correct one.
+    :motif_input: A tensor of size (motif_len*4) which is our index for the atoms form
+        our input
+    """
+    # index generate
+    positions = torch.arange(pep_len*4).view(pep_len, 4)
+    input_positions = torch.arange((motif_positions.max()+1)*4).view(motif_positions.max()+1, 4)
+    
+    # motifs
+    if dof_minimize:
+        motif_residues = (motif_match.view(-1, 1) + torch.arange(motif_length, dtype=torch.long).unsqueeze(0)).view(-1, 1)
+    else:
+        motif_residues = (motif_match[:, -1].view(-1, 1) + torch.arange(motif_length, dtype=torch.long).unsqueeze(0)).view(-1, 1)
+    motif_residues_cyclic = cyclize_tensor(motif_residues, pep_len, False)
+
+    # Index our tensor correctly
+    motif_kabsch = positions[motif_residues]
+
+    # Motif residues of passed PDB
+    motif_input = input_positions[motif_positions.view(-1, 1)]
+
+    return motif_kabsch.view(motif_match.shape[0], 4*motif_length), motif_input.view(-1)
+
+def extract_dof_of_interest_minimize(
+    motif_length: int,
+    torsion_sin: torch.Tensor,
+    torsion_cos: torch.Tensor,
+    bond_angle_sin: torch.Tensor,
+    bond_angle_cos: torch.Tensor,
+    bond_length: torch.Tensor,
+    torsion_index: torch.Tensor,
+    bond_angle_index: torch.Tensor,
+    bond_length_index: torch.Tensor,
+    match_res_mask: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Take in our model outputs and correctly index the residues that we determined
+    match our motif from matched_res_mask. These DoFs will only be returned and not
+    the cyclic permutation based approach from `inpaint`
+
+    PARAMS
+    ------
+    :motif_length: Number of residues within our motif
+    :torsion_sin: The entire phi/psi/omega sin DoFs for our outputs (B, DoFSize)
+    :torsion_cos: The entire phi/psi/omega cos DoFs for our outputs (B, DoFSize)
+    :bond_angle_sin: The entire bond_angle sin DoFs for our outputs (B, DoFSize)
+    :bond_angle_cos: The entire bond_angle sin DoFs for our outputs (B, DoFSize)
+    :bond_length: The entire bond lenght DoFs for our outputs (B, DoFSize)
+    :torsion_index: The indexing for phi/psi/omega values (L, 3*motif_len)
+    :bond_angle_index: The indexing for bond angle values (L, 5*motif_len)
+    :bond_length_index: The indexing for bond length values (L, 5*motif_len)
+    :match_res_mask: The matrix associated with which beginning residue we are
+        tracking throughout this minimize process
+
+    RETURNS
+    -------
+    torsion_sin, torsion_cos, bond_angle_sin, bond_angle_cos, bond_length
+    However, the specific DoFs of the residues of interest for that particular
+    output are returned
+    """
+    # generate our indexing tensors
+    torsion_slice = torsion_index[match_res_mask]
+    bond_angle_slice = bond_angle_index[match_res_mask]
+    bond_length_slice = bond_length_index[match_res_mask]
+
+    torsion_sin = torch.gather(torsion_sin, -1, torsion_slice)
+    torsion_cos = torch.gather(torsion_cos, -1, torsion_slice)
+    bond_angle_sin = torch.gather(bond_angle_sin, -1, bond_angle_slice)
+    bond_angle_cos = torch.gather(bond_angle_cos, -1, bond_angle_slice)
+    bond_length = torch.gather(bond_length, -1, bond_length_slice)
+
+    return torsion_sin, torsion_cos, bond_angle_sin, bond_angle_cos, bond_length
+
 
 def cyclize_tensor(
     non_cyclic_tensor: torch.Tensor,
