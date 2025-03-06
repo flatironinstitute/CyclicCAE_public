@@ -1759,31 +1759,15 @@ class EnergyPath:
         # Set our while minimize term
         minimize_still = True
         redo = 0
-
-        # # Define optimizer you want
-        # if self.adam_optim:
-        #     optimizer = torch.optim.AdamW([self.start_latent_point], lr=self.lr)
-        # elif self.sgd_optim:
-        #     optimizer = torch.optim.SGD([self.start_latent_point], lr=self.lr, momentum=0.9)
-        # if not self.contiguous:
-        #     _, _, _, _, _, _, ref_coordinates = self.term_bond.terminal_peptide_loss(
-        #         dof_inputs = self.start_point_dof.unsqueeze(0).to(self.device),
-        #         real_term = torch.ones(1, device=out.device, dtype=out.dtype) * 1.4,
-        #         params = self.ORIG_PARAMS,
-        #         foldtree_root = self.term_bond.calculate_root(self.ORIG_PARAMS["protein_len"]),
-        #         device = self.device,
-        #         control = True,
-        #     )
-
-        # if self.sample_energy.size(0) == 3:
-        #     print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[1].item()}, Ref2015+Solvent: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
-        # else:
-        #     print(f"Step: 0, QM: {self.sample_energy[0].item()}, Ref2015: {self.sample_energy[-1].item()}, Data Taken Straight From Input")
-        # # add energy path
-        # if self.sample_energy.size(-1) == 1:
-        #     self.energy_path[0] = self.sample_energy
-        # else:
-        #     self.energy_path[0] = self.sample_energy[1]
+        # Calculate motif numbering
+        # HERE
+        self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
+            self.match_res_mask,
+            self.PARAMS["protein_len"],
+            self.freeze_residues.shape[0],
+            self.freeze_residues,
+            True,
+        )
 
         while minimize_still: 
             original_point = self.start_latent_point.clone()
@@ -1922,47 +1906,8 @@ class EnergyPath:
 
 
                     dist = torch.norm(original_point - self.start_latent_point, dim=-1)
-                        # harmonic_loss = self.harmonic_diff_inpaint(
-                        # real_t_sin,
-                        # real_t_cos,
-                        # real_ba_sin,
-                        # real_ba_cos,
-                        # real_bond_length,
-                        # torsion_sin,
-                        # torsion_cos,
-                        # bond_angle_sin,
-                        # bond_angle_cos,
-                        # bond_length,
-                        # )
 
-                    # elif self.retain_structure and (not self.partial_optimization):
-                    #     harmonic_loss = self.harmonic_diff_inpaint(
-                    #     real_t_sin,
-                    #     real_t_cos,
-                    #     real_ba_sin,
-                    #     real_ba_cos,
-                    #     real_bond_length,
-                    #     torsion_sin,
-                    #     torsion_cos,
-                    #     bond_angle_sin,
-                    #     bond_angle_cos,
-                    #     bond_length,
-                    #     )
-
-
-                    # if step >= int(self.steps*0.8):
-                    # N-C Terminal Peptide Bond Loss
-                    # term_bond_loss = self.term_bond.terminal_peptide_loss(
-                    #     dof_inputs = out,
-                    #     real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
-                    #     params = self.PARAMS,
-                    #     foldtree_root = 4,
-                    #     device = out.device,
-                    # )
-                    # # else: term_bond_loss = torch.tensor([0.0], dtype=torch.float64, device=self.device)
-                    # term_bond_coeff = 10 if step >= int(self.steps*0.5) else 1
-                    #
-                    # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss).mean()
+                    # Compute coordinates first for HNCO calculation
                     term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                         dof_inputs = out,
                         real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
@@ -2001,15 +1946,6 @@ class EnergyPath:
                             bond_length,
                             True,
                         )
-                        # Calculate motif numbering
-                        # HERE
-                        self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
-                            self.match_res_mask,
-                            self.PARAMS["protein_len"],
-                            self.freeze_residues.shape[0],
-                            self.freeze_residues,
-                            True,
-                        )
                     else:
                         harmonic_loss = torch.tensor([0.0], device=self.device)
 
@@ -2026,7 +1962,6 @@ class EnergyPath:
 
                         ), dim = 2,
                     )
-
 
                     # Align points
                     coord_B, coord_L, coord_A, coord_D = coords_inter.shape
@@ -2049,16 +1984,7 @@ class EnergyPath:
                         else:
                             interface_dict = interface_cb_dict 
 
-
-
-                        # interface_dict = interface_cb_dict if (step < self.steps//4) and (self.ramp_constraint) else interface_full_dict
-                        # if step == start_range:
-                            # aligned_coordinates = kabsch_algorithm(P = coords, Q = interface_dict["peptide"].double())
-                            # print(interface_dict["peptide"].shape)
-                            # print("coords:", coords.shape)
                         peptide_nonhydrogen_mask = interface_dict["epsilon_peptide"] != 0.901681
-                        # print("MASK HYDROGENS:", peptide_nonhydrogen_mask)
-                        # print("SUM MASK:", peptide_nonhydrogen_mask.sum())
                         if not self.contiguous:
                             aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                                   motif = self.regions_atoms[0],
@@ -2239,28 +2165,28 @@ class EnergyPath:
         minimize_pose: bool = False,
         ) -> int:
         """Output the GDS trajectory"""
-        # file name
-        if (len(self.dof_traj.shape) == 3) & (not random_outputs) & (not skip_individual):
-            for sample in range(self.dof_traj.size(0)):
-                file = f"finalstep{self.outstep}-{datetime.date.today()}-sample{sample}-trajectories.pt"
-                out = self.dof_traj[sample]
-                torch.save(out, 
-                           os.path.join(output_path, file)
-                           )
-            file = f"finalstep{self.outstep}-{datetime.date.today()}-sampleall-trajectories.pt"
-            torch.save(self.dof_traj[:, -1, :], 
-                       os.path.join(output_path, file)
-                       )
-        elif random_outputs or skip_individual:
-            file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
-            torch.save(self.dof_traj[:, -1, :], 
-                       os.path.join(output_path, file)
-                       )
-        else:
-            file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
-            torch.save(self.dof_traj, 
-                       os.path.join(output_path, file)
-                       )
+        # # file name
+        # if (len(self.dof_traj.shape) == 3) & (not random_outputs) & (not skip_individual):
+        #     for sample in range(self.dof_traj.size(0)):
+        #         file = f"finalstep{self.outstep}-{datetime.date.today()}-sample{sample}-trajectories.pt"
+        #         out = self.dof_traj[sample]
+        #         torch.save(out, 
+        #                    os.path.join(output_path, file)
+        #                    )
+        #     file = f"finalstep{self.outstep}-{datetime.date.today()}-sampleall-trajectories.pt"
+        #     torch.save(self.dof_traj[:, -1, :], 
+        #                os.path.join(output_path, file)
+        #                )
+        # elif random_outputs or skip_individual:
+        #     file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
+        #     torch.save(self.dof_traj[:, -1, :], 
+        #                os.path.join(output_path, file)
+        #                )
+        # else:
+        #     file = f"finalstep{self.outstep}-{datetime.date.today()}-trajectories.pt"
+        #     torch.save(self.dof_traj, 
+        #                os.path.join(output_path, file)
+        #                )
 
         # Now thread and place our DoFs back in the context we took it from
         if self.dof_traj.size(0) == 1:
@@ -2276,6 +2202,7 @@ class EnergyPath:
             output_path = output_path,
             random_outputs = random_outputs,
             minimize_pose = minimize_pose,
+            residue_start = self.match_res_mask,
         )
 
         return 0
@@ -2291,13 +2218,15 @@ if __name__ == "__main__":
                         if not specified then individual PDBs are produced.")
     p.add_argument("--score-outputs", action="store_true", help="Score each Model output and save in \
                         SilentFile (not implemented yet to save score to separate file when Silent not set).")
+    p.add_argument("--apply-minmover-outputs", action="store_true", help="Apply the MinMover with ref2015 score to \
+                        our threaded poses.")
+    p.add_argument("--desired-motif-start-position", default=2, type=int, help="Specifies where the Moitf will start \
+                        on CyclicCAE outputs.")
     p.add_argument("--output-path", type=str, default="./", help="Determines location PDBs/SilentFile are saved.")
     p.add_argument("--extract-minimize-input", action="store_true", help="Minimize a given input only")
-    # p.add_argument("--start-point", type=int, default=14, help="This will be updated to take a pdb in the future")
     p.add_argument("--weights-load", type=str, help="Specify Model Weights To Use")
     p.add_argument("--out-size", type=int, help="Specify the output size")
     p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate")
-    # p.add_argument("--dataset", type=str, default="./binary_import/dof_vectors2024-04-10torch_tensor.pt", help="Dataset to use")
     p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
     p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search")
     p.add_argument("--latent-dim", type=int, default=3, help="Latent Size of the model")
@@ -2326,10 +2255,12 @@ if __name__ == "__main__":
     p.add_argument("--minimize-steps", type=int, default=1000, help="Number of energy minimization steps to take when using --minimize-mcmc")
     p.add_argument("--mcmc-steps", type=int, default=0, help="MCMC Steps")
     p.add_argument("--mcmc-paths", type=int, default=10, help="MCMC Number of Paths when doing inpainting")
-    p.add_argument("--pdb-interface", type=str, default=None, help="Pass a pdb with the Target (Chain A) and Peptide (Chain B)")
+    p.add_argument("--pdb-input", type=str, default=None, help="Pass a pdb with the Target (Chain A) and Peptide/Binder (Chain B)")
     p.add_argument("--random-sample", action="store_true", help="Sample latent space randomly, without a refernce.")
     p.add_argument("--skip-individual", action="store_true", help="For skipping individual construct trajectory outputting during inpainting")
     p.add_argument("--interface-cutoff", type=float, default=20.0, help="Metric for accepting a not clashing peptide [10.0 for compact pockets, 20.0 for others] ")
+    p.add_argument("--treat-input-binder-as-cyclic", action="store_true", help="Apply Cyclic updates to our Motif Chain (--peptide-chain) \
+                    Only specify this if your passed PDB contains a cyclic peptide.")
     p.add_argument("--peptide-chain", type=int, default=2, help="Chain Index (1-index) that contains our motif of interest")
     p.add_argument("--interface-distance-cutoff", type=float, default=15.0, help="Atoms within this distance cutoff of the target will be considered \
                         when gradient-marching peptide")
@@ -2376,7 +2307,11 @@ if __name__ == "__main__":
     )
 
     # Init dofsummary which is used in both the beginning and end of the script
-    dofsummary = DoFSummary(prefix=args.prefix_outfile)
+    dofsummary = DoFSummary(
+        prefix = args.prefix_outfile,
+        extract_minimize_input = args.extract_minimize_input,
+        is_cyclic = args.treat_input_binder_as_cyclic,
+    )
 
     # generate our output path if not yet created
     if not os.path.exists(args.output_path):
@@ -2384,8 +2319,8 @@ if __name__ == "__main__":
 
     # Search And Output
     # if args.energy_search:
-    #     if args.pdb_interface != None:
-    #         atomdict = extract_pdb_xyz(args.pdb_interface)
+    #     if args.pdb_input != None:
+    #         atomdict = extract_pdb_xyz(args.pdb_input)
     #         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
     #         interface, mask = grab_interface(target, peptide, dist_cutoff = 10.0)
     #         interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface,
@@ -2413,13 +2348,13 @@ if __name__ == "__main__":
     ## Inpainting Task 
     if args.inpaint:
         # Checks before proceeding
-        assert args.pdb_interface != None, "You did not pass a PDB File for inpainting. \
-               Please Provide a path to one with `--pdb-interface`"
+        assert args.pdb_input != None, "You did not pass a PDB File for inpainting. \
+               Please Provide a path to one with `--pdb-input`"
 
         #### Here we are using our custom functions to extract Target and PDB
         #### information for inpainting and gradient-marching
         # All atoms are Extracted within cutoff distance
-        atomdict = extract_pdb_xyz(args.pdb_interface, full=True)
+        atomdict = extract_pdb_xyz(args.pdb_input, full=True)
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         # torch.save(color_target[mask], "interface_color.pt")
@@ -2428,7 +2363,7 @@ if __name__ == "__main__":
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
                           "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
         # Cb Pocket Context Extract
-        atomdict = extract_pdb_xyz(args.pdb_interface, full=False)
+        atomdict = extract_pdb_xyz(args.pdb_input, full=False)
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
@@ -2438,7 +2373,7 @@ if __name__ == "__main__":
         #### Here we are extracting the DoFs needed for Harmonic DoF Inpainting Regression
         #### these are taken from our passed PDB
         motif_dofs = dofsummary.extract_pdb_pose_and_dof(
-            input_pdb = args.pdb_interface,
+            input_pdb = args.pdb_input,
             peptide_chain = args.peptide_chain,
             residues_of_interest = torch.tensor(args.freeze_residues),
             include_torsion = args.freeze_torsion if args.partial_optimization else True,
@@ -2482,5 +2417,5 @@ if __name__ == "__main__":
                             score = args.score_outputs,
                             output_path = args.output_path,
                             random_outputs = args.random_sample,
-                            minimize_pose = args.extract_minimize_input,
+                            minimize_pose = args.apply_minmover_outputs,
                             )

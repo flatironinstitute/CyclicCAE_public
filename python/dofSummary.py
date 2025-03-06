@@ -31,6 +31,8 @@ class DoFSummary:
         ignore_virtualatoms: bool = False,
         prefix: str = 'test',
         extract_minimize_input: bool = False,
+        is_cyclic: bool = False,
+        pose_motif_location: int = 2,
         ):
         """
         Either extract DoFs from a PDB's pose for input into the model or
@@ -44,11 +46,17 @@ class DoFSummary:
         :prefix: Prefix for the outputs of your PDBs/SilentFile. 
         :extract_minimize_input: True/False if True then the entire input peptides
             DoFs are extracted and minimized using CyclicCAE.
+        :is_cyclic: True the input PDB binder/peptide is treated as a cyclic peptide
+            False it isn't modified.
+        :pose_motif_location: The location that our motifs will be placed in our
+            ouputted poses.
         """
         self.ignore_virtualatoms = ignore_virtualatoms
         self.prefix = prefix
         self.extract_minimize_input = extract_minimize_input
         self.term_bond = TerminalPeptide()
+        self.is_cyclic = is_cyclic
+        self.consistent_motif_resi = pose_motif_location
 
         # create list of current DOF types in Rosetta
         dof_types = [
@@ -77,9 +85,82 @@ class DoFSummary:
 
 
 #### Functions
+    def rotate_pose(
+        self,
+        pose: Pose,
+        residue_start: int,
+        ) -> Pose:
+        """
+        Take a pose and place the motif along a consitent set of residues
+        This is important for downstream applications where we need to
+        specify resi numbers and for consistency in design tasks
+
+        PARAMS
+        ------
+        :pose: Rosetta Pose that has it's DoFs threaded already and the
+            motif residues were added
+        :residue_start: The start resi position of our motif (0-index)
+
+        RETURNS
+        -------
+        :rotated_pose: A pose where motifs are placed at a consistent resi
+            specified by `self.consistent_motif_resi`
+        """
+        # First check if our pose is already what we want
+        if self.consistent_motif_resi == residue_start + 1:
+            return pose.clone()
+
+        # clone our pose and empty it
+        rotated_pose = pose.clone()
+        rotated_pose.clear()
+
+        assert True == rotated_pose.empty(), "This pose is not empty and needs to be fixed"
+
+        # Compute start residue of our new pose
+        # negative is left and positive is right rotation
+        direction = self.consistent_motif_resi - (residue_start + 1)
+        residue_amount_before_motif = self.consistent_motif_resi - 1
+        # Moves left as it is to the right 
+        if direction < 0:
+            first_new_residue_pos = (residue_start + 1) - residue_amount_before_motif
+        # Move right as it is to the left
+        else:
+            first_new_residue_pos = (residue_start + 1) - residue_amount_before_motif
+            first_new_residue_pos += 8
+
+        for newpos, ir in enumerate(range(first_new_residue_pos, pose.total_residue()+1)):
+            if newpos == 0:
+                rotated_pose.append_residue_by_bond(pose.residue(ir))
+            else:
+                rotated_pose.append_polymer_residue_after_seqpos(
+                    pose.residue(ir),
+                    newpos,
+                    False,
+                )
+
+        # Now prepend the remaining residues that were before the start position
+        # position = [1] + [i for i in range(pose.total_residue(), 1, -1)]
+        if direction < 0:
+            for ir in range(1, first_new_residue_pos):
+                rotated_pose.append_polymer_residue_after_seqpos(
+                    pose.residue(ir),
+                    rotated_pose.total_residue(),
+                    False,
+                )
+        else:
+            for ir in range(residue_start+1, pose.total_residue()-(residue_start+1).item()+1):
+                rotated_pose.append_polymer_residue_after_seqpos(
+                    pose.residue(ir),
+                    rotated_pose.total_residue(),
+                    False,
+                )
+
+        return rotated_pose
+
     def mutate_gly_to_orginial_residue(
         self,
         pose: Pose,
+        residue_start: int,
         ) -> int:
         """
         Take residue information stored in `self.motif_residue_info`
@@ -91,6 +172,7 @@ class DoFSummary:
         ------
         :pose: a cloned pose of our poly-glycine structre that has the
             DoFs threaded onto it.
+        :residue_start: The start resi position of our motif (0-index)
 
         RETURNS
         -------
@@ -99,10 +181,13 @@ class DoFSummary:
         """
         # iter through our original residue information
         # Mutate GlY -> Original Residue
-        for ir in list(self.motif_residue_info.keys()):
+        for ele, ir in enumerate(list(self.motif_residue_info.keys())):
             mutateResidue = sm.MutateResidue()
             # mutateResidue.preserve_atom_coords()
-            mutateResidue.set_target(ir)
+            residue_number = residue_start.item() + 1 + ele
+            if residue_number > pose.total_residue():
+                residue_number = residue_number - pose.total_residue()
+            mutateResidue.set_target(residue_number)
             mutateResidue.set_res_name(self.motif_residue_info[ir].name())
             mutateResidue.apply(pose)
 
@@ -111,13 +196,15 @@ class DoFSummary:
             for ichi in range(1, self.motif_residue_info[ir].nchi()+1):
                 pose.set_chi(
                     ichi,
-                    ir, 
+                    residue_number, 
                     self.motif_residue_info[ir].chi(ichi),
                 )
 
         # Fix some output stuff
         self.remove_nme(pose)
-        self.declare_terminal_bond(pose)
+        self.remove_all_terminal_types(pose)
+        # self.declare_terminal_bond(pose)
+        # self.full_cyclize_pose(pose)
         return 0
 
 
@@ -310,8 +397,8 @@ class DoFSummary:
         :motif_bondlength_dofs: a Tensor of size (1, M*A). Where our dihedrals are
             stored from the extracted pose
         """
-        cyclic_peptide = self.n_to_c_distance(pose)
-        if cyclic_peptide:
+        # cyclic_peptide = self.n_to_c_distance(pose)
+        if self.is_cyclic:
             # Make sure our structure is cyclic
             self.full_cyclize_native(pose)
 
@@ -335,8 +422,9 @@ class DoFSummary:
 
         pose.update_residue_neighbors()
 
-        if cyclic_peptide:
-            self.full_cyclize_pose(pose)
+        if self.is_cyclic:
+            self.full_cyclize_pose_withoutbond(pose)
+            self.declare_terminal_bond(pose)
 
         # grab our dof indexing tensors
         bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(
@@ -459,6 +547,32 @@ class DoFSummary:
         pose.update_residue_neighbors()
         return 0
 
+    def remove_all_terminal_types(self, pose: Pose) -> int:
+        """
+        Removes all terminal types that are on the pose currently
+
+        PARAMS
+        ------
+        :pose: Pose that has terminal variants
+        """
+        # Modify the variant types
+        modifyvariant_nterm = sm.ModifyVariantTypeMover()
+        modifyvariant_nterm.set_additional_type_to_remove("CUTPOINT_UPPER")
+        modifyvariant_nterm.set_additional_type_to_remove("LOWER_TERMINUS_VARIANT")
+        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_VARIANT")
+        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_CONNECTION_VARIANT")
+        modifyvariant_nterm.set_residue_selector(select.TrueResidueSelector())
+        modifyvariant_nterm.apply(pose)
+
+        modifyvariant_cterm = sm.ModifyVariantTypeMover()
+        modifyvariant_cterm.set_additional_type_to_remove("CUTPOINT_LOWER")
+        modifyvariant_cterm.set_additional_type_to_remove("UPPER_TERMINUS_VARIANT")
+        modifyvariant_cterm.set_additional_type_to_remove("DIMETHYLATED_CTERMINUS_VARIANT")
+        modifyvariant_cterm.set_residue_selector(select.TrueResidueSelector())
+        modifyvariant_cterm.apply(pose)
+        return 0
+
+
     def full_cyclize_native(self, pose: Pose) -> int:
         """
         Cyclize the native PDB pose using a Rosetta based method
@@ -496,7 +610,7 @@ class DoFSummary:
         return 0
 
 
-    def full_cyclize_pose(self, pose: Pose) -> int:
+    def full_cyclize_pose_withoutbond(self, pose: Pose) -> int:
         """
         Cyclize the pose using a Rosetta based method
 
@@ -515,16 +629,16 @@ class DoFSummary:
         modifyvariant_cterm.set_residue_selector(select.ResidueIndexSelector(pose.total_residue()))
         modifyvariant_cterm.apply(pose)
 
-        # Fix termini, though this isn't that important
-        declarebond = sm.DeclareBond()
-        declarebond.set(
-            res1 = pose.total_residue(),
-            atom1 = 'C',
-            res2 = 1,
-            atom2 ='N',
-            add_termini = True,
-        )
-        declarebond.apply(pose)
+        # # Fix termini, though this isn't that important
+        # declarebond = sm.DeclareBond()
+        # declarebond.set(
+        #     res1 = pose.total_residue(),
+        #     atom1 = 'C',
+        #     res2 = 1,
+        #     atom2 ='N',
+        #     add_termini = True,
+        # )
+        # declarebond.apply(pose)
         pose.update_residue_neighbors()
         return 0
 
@@ -558,8 +672,8 @@ class DoFSummary:
         ft.reorder(root)
         gly_pose.fold_tree(ft)
 
-        # Cyclize the pose
-        self.full_cyclize_pose(gly_pose)
+        # Cyclize the pose (but don't declare a bond yet)
+        self.full_cyclize_pose_withoutbond(gly_pose)
         return gly_pose
 
     def dof_index_generate(self, N: int, dof_params: torch.Tensor) -> dict:
@@ -598,6 +712,7 @@ class DoFSummary:
     def minimize_pose(
         self,
         pose: Pose,
+        residue_start: int,
         ) -> int:
         """
         Apply a minmover to the pose for scoring
@@ -612,13 +727,16 @@ class DoFSummary:
         """
         pose_before = pose.clone()
 
+        residue_range = [i for i in range(residue_start + 1, residue_start + 1 + len(list(self.motif_residue_info.keys())))]
+
         # Set up a movemap
         mm = core.kinematics.MoveMap()
         mm.set_bb(True)
         mm.set_chi(True)
         if self.peptide_native != None:
             for ir in range(1, pose.total_residue()+1):
-                if ir in list(self.motif_residue_info.keys()):
+                if ir in residue_range:
+                # if ir in list(self.motif_residue_info.keys()):
                     mm.set_bb(ir, False)
                     mm.set_chi(ir, False)
 
@@ -655,7 +773,9 @@ class DoFSummary:
 
         # specify selectors
         motif_selector = select.ResidueIndexSelector()
-        motif_selector.set_index(",".join([str(i) for i in self.motif_residue_info.keys()]))
+        motif_selector.set_index(",".join([str(i) for i in range(self.consistent_motif_resi, self.consistent_motif_resi + len(self.motif_residue_info.keys()))]))
+
+
 
         # add our residues selections
         rmsd_motif.set_residue_selector(motif_selector)
@@ -693,6 +813,7 @@ class DoFSummary:
         score_outputs: bool,
         random_outputs: bool,
         minimize_pose: bool,
+        residue_start: int,
         ) -> Pose:
         """
         Thread a singular DoF vector onto a pose
@@ -706,6 +827,8 @@ class DoFSummary:
             or placed back in a Target context.
         :minimize_pose: Use MinMover to minimize the pose slightly in Rosetta's
             ref2015 scorefunction
+        :residue_start: A tensor of size (N, 2) where the residue_start[:, 1]
+            is the start location of our residue (0-index)
 
         RETURNS
         -------
@@ -752,12 +875,15 @@ class DoFSummary:
 
         # Mutate Residues back to their original types if applicable
         if not random_outputs:
-            self.mutate_gly_to_orginial_residue(pose)
+            self.mutate_gly_to_orginial_residue(pose, residue_start)
+            pose = self.rotate_pose(pose, residue_start)
+            self.full_cyclize_pose_withoutbond(pose)
+            self.declare_terminal_bond(pose)
             # After this place back in PDB alignment, but that isn't necessary yet
             # pose = self.align_to_native_motif_positions(pose.clone())
 
         if minimize_pose:
-            self.minimize_pose(pose)
+            self.minimize_pose(pose, residue_start)
             if (self.peptide_native != None) and (not self.extract_minimize_input):
                 self.calculate_rmsd_between_native(pose, self.peptide_native)
 
@@ -773,6 +899,7 @@ class DoFSummary:
         output_path: str = "./",
         random_outputs: bool = False,
         minimize_pose: bool = True,
+        residue_start: torch.Tensor = None,
         ) -> None:
         """
         Take a DoF vector output from CyclicCAE and apply each row to 
@@ -863,6 +990,7 @@ class DoFSummary:
                 score_outputs = score_outputs,
                 random_outputs = random_outputs,
                 minimize_pose = minimize_pose,
+                residue_start = residue_start[s],
             )
             if not silentfile:
                 updated_pose.dump_pdb(
