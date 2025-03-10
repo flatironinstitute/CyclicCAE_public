@@ -28,6 +28,7 @@ from inference_utils import (
     extract_pdb_xyz, gen_xyz_tensor, geometric_center, grab_interface, 
     interface_loss, kabsch_algorithm, kabsch_rootatom, size_help, 
     split_motif_atoms, discontig_motif_loss, kabsch_rigid_transform,
+    homochiral_loss,
 )
 from dofSummary import DoFSummary
 from motif_functions import (
@@ -307,7 +308,7 @@ class EnergyPath:
 
             ### Gonna try terminal index functions
             root = self.term_bond.calculate_root(self.PARAMS["protein_len"])
-            phi_psi_idx, omega_idx = self.term_bond.torsion_extract(self.PARAMS["torsion_main_n"], self.PARAMS["protein_len"], root)
+            self.phi_psi_idx, self.omega_idx = self.term_bond.torsion_extract(self.PARAMS["torsion_main_n"], self.PARAMS["protein_len"], root)
             bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(self.PARAMS["bond_angle_main_n"], root=root, L=self.PARAMS["protein_len"])
             # phi_psi_true = phi_psi_idx[torch.cat(((self.freeze_residues * 2).view(-1, 1), (self.freeze_residues * 2).view(-1, 1) + 1), dim=-1).view(-1)]
             # phi_psi_true = phi_psi_idx[((self.freeze_residues * 2).view(-1, 1) + torch.tensor([0, 1])).view(-1)]
@@ -340,8 +341,8 @@ class EnergyPath:
                 self.PARAMS["torsion_main_n"],
                 self.freeze_residues.shape[0],
                 root,
-                phi_psi_idx,
-                omega_idx,
+                self.phi_psi_idx,
+                self.omega_idx,
                 bond_angle_idx,
                 bond_length_idx,
             )
@@ -712,7 +713,7 @@ class EnergyPath:
 
 
     def inpainting(self, B: int, random_no_reference: bool = False, interface_dict = None,
-                   terminal = True, motif_dofs = None):
+                   terminal = True, motif_dofs = None, l_homochiral: bool = False,):
         """given frozen residues search for scaffolds to hold motif residues
 
         PARAMS
@@ -730,6 +731,7 @@ class EnergyPath:
                 the latent space
             motif_dofs: tuple (torsion, bondangle, bondlength)
                 DoFs of the Motif provided that were extracted from the passed PDB.
+            :l_homochiral: True a homochiral loss term is added/ if not then it always zero.
 
         RETURNS
         -------
@@ -803,13 +805,19 @@ class EnergyPath:
 
 
             # term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
-            term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
+            term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, ncaco_loss, NCaCO, coordinates = self.term_bond.terminal_peptide_loss(
                 dof_inputs = out,
                 real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                 params = self.PARAMS,
                 foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                 device = out.device,
             )
+
+            # THis is for homochiral
+            torsion_angles = torch.cat((torch.rad2deg(torch.atan2(torsion_sin, torsion_cos)), HNCO), dim=-1)
+            omega_idx = torch.cat((self.omega_idx, torch.tensor([torsion_angles.shape[-1]-1])), dim=-1)
+            index = torch.cat((self.phi_psi_idx.view(-1, 2), omega_idx.view(-1, 1)), dim=-1).view(-1)
+            torsion_angles = torsion_angles[:, index]
 
             if args.freeze_residues != None:
                 # Add in the terminal peptide bond HNCO radian, as it isn't a part
@@ -901,6 +909,21 @@ class EnergyPath:
             else:
                 interface_total_loss = torch.zeros(out.size(0), dtype=torch.bool, device=self.device)
 
+            if l_homochiral:
+                l_homochiral_loss, homochiral_mask = homochiral_loss(
+                    torsion_dofs = torsion_angles,
+                    space = 1,
+                    device = self.device,
+                )
+                print("HOMOCHIRAL LOSS:", l_homochiral_loss)
+                print(l_homochiral_loss.min().item(), l_homochiral_loss.mean().item())
+                print(l_homochiral_loss[homochiral_mask])
+                print(l_homochiral_loss[homochiral_mask].shape)
+                # print(torsion_angles[homochiral_mask, ::3])
+                # time.wait()
+            else:
+                l_homochiral_loss = torch.zeros(out.shape[0], dtype=torch.float32, device=self.device)
+
             if random_no_reference:
                 if terminal:
                     # Determine which points are within the latent space cutoff
@@ -932,6 +955,7 @@ class EnergyPath:
                 hnc_mask = hnc_loss[match_res_mask[:, 0]].view(-1) < 0.5
                 nco_mask = nco_loss[match_res_mask[:, 0]].view(-1) < 0.5
                 harm_mask = harmonic_loss <= self.inpaint_dist
+                l_homochiral_mask = homochiral_mask[match_res_mask[:, 0]].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
                 # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
                 if self.contiguous:
                     mask = torch.logical_and(
@@ -939,11 +963,25 @@ class EnergyPath:
                             hnc_mask.view(-1, 1), torch.logical_and(
                                 nco_mask.view(-1, 1), torch.logical_and(
                                     harm_mask.view(-1,1), torch.logical_and(
-                                        int_mask.view(-1,1), terminal_mask.view(-1, 1)
-                                    )
+                                        int_mask.view(-1,1), torch.logical_and(
+                                            terminal_mask.view(-1, 1), l_homochiral_mask.view(-1, 1),
+                                            ),
+                                        ),
+                                    ),
                                 ),
                             ),
-                        )).view(-1)
+                        ).view(-1) #).view(-1)
+                # if self.contiguous:
+                #     mask = torch.logical_and(
+                #         ocnh_mask.view(-1, 1), torch.logical_and(
+                #             hnc_mask.view(-1, 1), torch.logical_and(
+                #                 nco_mask.view(-1, 1), torch.logical_and(
+                #                     harm_mask.view(-1,1), torch.logical_and(
+                #                         int_mask.view(-1,1), terminal_mask.view(-1, 1)
+                #                     )
+                #                 ),
+                #             ),
+                #         )).view(-1)
                 #### Need to rework this method
                 #### Might be beneficial to take the residue spacing for this one and check all (i, j, k) pairs and not just the specific
                 #### residue we are starting with
@@ -1021,6 +1059,7 @@ class EnergyPath:
             self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1]
             return scaffolds[:self.scaffold_number], points[:self.scaffold_number]
         else:
+            self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1]
             return scaffolds, points
 
     def metropolis_hastings(self, B: int, sigma: torch.float, start_points: torch.Tensor = None, mcmc_steps = 0):
@@ -1729,7 +1768,7 @@ class EnergyPath:
 
     def energy_steps(self, start_points: torch.Tensor = None, mcmc_minimize: bool = False, minimize_steps: int = 1000,
                      interface_full_dict = None, interface_cb_dict = None,
-                     motif_dofs = None):
+                     motif_dofs = None, l_homochiral: bool = False):
         """Model Eval Loop for GDS"""
         if start_points.size(0) == 1:
             self.start_latent_point = self.encoder(start_points).detach()
@@ -1908,13 +1947,19 @@ class EnergyPath:
                     dist = torch.norm(original_point - self.start_latent_point, dim=-1)
 
                     # Compute coordinates first for HNCO calculation
-                    term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
+                    term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, HNCO, NCaCO, l_chiral_loss, coordinates = self.term_bond.terminal_peptide_loss(
                         dof_inputs = out,
                         real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                         params = self.PARAMS,
                         foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                         device = out.device,
                     )
+
+                    # THis is for homochiral
+                    torsion_angles = torch.cat((torch.rad2deg(torch.atan2(torsion_sin, torsion_cos)), HNCO), dim=-1)
+                    omega_idx = torch.cat((self.omega_idx, torch.tensor([torsion_angles.shape[-1]-1])), dim=-1)
+                    index = torch.cat((self.phi_psi_idx.view(-1, 2), omega_idx.view(-1, 1)), dim=-1).view(-1)
+                    torsion_angles = torsion_angles[:, index]
 
                     if self.freeze_residues != None:
                         # Add in the terminal peptide bond HNCO radian, as it isn't a part
@@ -2016,6 +2061,14 @@ class EnergyPath:
                     else:
                         interface_total_loss = torch.zeros(1, device=energy.device)
 
+                    if l_homochiral:
+                        l_homochiral_loss, homochiral_mask = homochiral_loss(
+                            torsion_dofs = torsion_angles,
+                            space = 1,
+                            device = self.device,
+                        )
+                    else:
+                        l_homochiral_loss = torch.zeros(out.shape[0], dtype=torch.float32, device=self.device)
 
                     # Clone terms
                     energy_pred = energy.clone()
@@ -2049,13 +2102,23 @@ class EnergyPath:
                     if redo == 0:
                         # loss = (energy_pred + 0*dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*10*bah_loss_term + term_bond_coeff*10*ahd_loss_term + interface_total_loss + 0*clash_penalty).mean()
                         # loss = (energy_pred + 0*dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*100*ocnh_loss_term + term_bond_coeff*100*combo_angles + interface_total_loss + 0*clash_penalty).mean()
-                        loss = (energy_pred + self.lambda_2*harmonic_loss + term_bond_coeff*discontig_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*combo_angles + interface_total_loss).mean()
+                        # loss = (self.lambda_2*l_homochiral_loss).mean()
+                        loss = (
+                            energy_pred + \
+                            self.lambda_2*harmonic_loss + \
+                            term_bond_coeff*discontig_loss + \
+                            term_bond_coeff*term_bond_loss_term + \
+                            term_bond_coeff*combo_angles + \
+                            interface_total_loss + \
+                            self.lambda_2*l_homochiral_loss
+                        ).mean()
                         # loss = (energy_pred + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*ocnh_loss_term + term_bond_coeff*interface_total_loss + 0*clash_penalty).mean()
                     else:
                         loss = (term_bond_coeff*term_bond_loss_term + interface_total_loss*(redo+1)).mean()
                     # loss = (energy + dist + (term_bond_coeff*100)*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + 0*ocnh_loss + 0*ncaco_loss + 0*clash_penalty).mean()
                     # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + term_bond_coeff*bah_loss + term_bond_coeff*ahd_loss + term_bond_coeff*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
                     # loss = (energy + dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss + 2*bah_loss + 2*ahd_loss + 2*ocnh_loss + torch.tensor(0.0)*ncaco_loss).mean()
+                    # l_homochiral_loss = l_chiral_loss.sum(-1)
 
 
                     if mcmc_minimize:
@@ -2074,13 +2137,14 @@ class EnergyPath:
                         self.energy_path[total_mask, step] = energy.detach().to(torch.float32)
                         # self.path[:, step] = dist.detach()
                         # self.energy_path[:, step] = energy.detach()
-                        print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Discontig Loss: {discontig_loss.mean().item()} Terminal Bond: {term_bond_loss.mean().item()}, OCNH Plane: {ocnh_loss_term.mean().item()} AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, Interface Loss: {interface_total_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
+                        print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, L-homochiral: {l_homochiral_loss.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Discontig Loss: {discontig_loss.mean().item()} Terminal Bond: {term_bond_loss.mean().item()}, OCNH Plane: {ocnh_loss_term.mean().item()} AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, Interface Loss: {interface_total_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
                         # print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, AHD: {ahd_loss.mean().item()}, BAH: {bah_loss.mean().item()}, HNCO Planar: {ocnh_loss.mean().item()}, LJ Loss: {clash_penalty.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()}, Loss: {loss.item()}")
                         # print(f"Step: {step}, QM: {energies[:, 0].mean().item()}, Ref2015: {energies[:, -1].mean().item()}, Dist: {dist.mean().item()}, Harmonic Penalty: {harmonic_loss.mean().item()}, Terminal Bond: {term_bond_loss.mean().item()}, Lowest Harmonic Penalty: {harmonic_loss.min().item()} Loss: {loss.item()}")
 
                 # back prop
                 loss.backward()
                 optimizer.step()
+
 
                 # if (step == self.steps-1) and (sum(interface_total_loss >=10) == 0):
                 #     minimize_still = False
@@ -2233,6 +2297,7 @@ if __name__ == "__main__":
     p.add_argument("--partial-optimization", action="store_true", help="Apply partial optimization to a structure")
     p.add_argument("--freeze-residues", nargs="+", type=int, help="Used wth partial-optimization. If no sub freeze flags specified all are frozen \
                         Specify residues in a whitespace manner to freeze (e.g. 1 2 3)")
+    p.add_argument("--l-homochiral", action="store_true", help="Generate only L-homochiral outputs")
     p.add_argument("--freeze-torsion", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-angle", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-length", action="store_true", help="Use with partial-optimization")
@@ -2384,19 +2449,19 @@ if __name__ == "__main__":
         #### Based on Target Information perform inpainting
         if args.fullpocket_minimize:
             scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_full_dict,
-                                                               motif_dofs = motif_dofs)
+                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral)
         else:
             scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict,
-                                                               motif_dofs = motif_dofs)
+                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral)
 
         #### Take either inpaint output and use for MCMC/Gradient-march or just graident-march
         if args.mcmc_steps >= 1:
             latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
             energySearch.energy_steps(latent_traj[:, 0, :], interface_full_dict = interface_full_dict, interface_cb_dict = interface_cb_dict,
-                                      motif_dofs = motif_dofs)
+                                      motif_dofs = motif_dofs, l_homochiral = args.l_homochiral)
         elif args.mcmc_steps < 1:
             energySearch.energy_steps(latent_points, interface_full_dict = interface_full_dict, interface_cb_dict = interface_cb_dict,
-                                      motif_dofs = motif_dofs)
+                                      motif_dofs = motif_dofs, l_homochiral = args.l_homochiral)
 
     #### Here we are just randomly sampling the latent space to get constructs.
     #### There are no conditions being applied

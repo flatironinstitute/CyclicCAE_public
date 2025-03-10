@@ -5,6 +5,7 @@
 
 ######## IMPORT 
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
 from collections import defaultdict
 import re
@@ -491,6 +492,86 @@ def build_exclusion_mask(
     # you can do that explicitly outside or pass it in if you prefer.
     
     return adj
+
+def homochiral_loss(
+    torsion_dofs: torch.Tensor,
+    space: int,
+    s: float = 0.05,
+    a: float = 0.1, # 0.05
+    b: float = 0.0,
+    device: str = 'cpu',
+    ) -> torch.Tensor:
+    """
+    Simple Function for computing a torsional degrees of freedom based loss term
+    that is linear when the correct chirality and becomes quadratic when it crosses
+    over zero to the other chirality of the ramachandran (phi).
+
+    PARAMS
+    ------
+    :torsional_dofs: A tensor of size (B, L*2) where B is the batch size and L is
+        the number of residues
+    :space: The homochiral space (1: L-chiral, 2: D-chiral)
+    :s: slope float value for our linear term
+    :a: Our scaling term for the quadratic term
+    :b: linear intercept
+    :device: Location of tensors generated
+    
+    RETURNS
+    -------
+    :loss: The computed loss term based on DoFs radians
+    """
+    assert space in [1,2], f"A space of {space} is not recognized"
+
+    # center term
+    # center = torch.deg2rad(torch.tensor(90 if space == 1 else -90, dtype=torch.float64))
+    phi_target = torch.tensor(-60, dtype=torch.float64)
+    psi_target = torch.tensor(-50, dtype=torch.float64)
+    # center = torch.tensor(90 if space == 1 else -90, dtype=torch.float64)
+
+    # grab the phi angle
+    # phi = torch.deg2rad(torsion_dofs[:, ::3])
+    phi, psi = torch.deg2rad(torsion_dofs[:, ::3]), torch.deg2rad(torsion_dofs[:, 1::3])
+    mask = (phi <= 0).sum(-1) >= phi.shape[-1]-1
+    print((phi <= 0).sum(-1))
+    # print("MASK:", mask)
+
+    # first define our function
+    # linear_term = s * phi + s * center + b
+    # quadratic_term = a * phi.pow(2) + s * phi + (center * s + b)
+
+    # Apply piecewise
+    # loss = torch.where(phi <= 0, linear_term, quadratic_term)
+    # transition = torch.sigmoid(10.0 * phi)
+    # loss = (1 - transition) * linear_term + transition * quadratic_term
+    # loss = (torch.maximum(torch.zeros_like(phi), phi).pow(2) + torch.maximum(torch.zeros_like(phi), (-1 * phi) - 180).pow(2)).sum(-1)
+    # loss = (F.softplus(phi).pow(2) + F.softplus(180.0 - phi).pow(2)).sum(-1)
+    # loss = torch.pow(torch.sin(torch.deg2rad(phi)) - torch.sin(torch.deg2rad(torch.tensor(-90.))), 2) + \
+    #     torch.pow(torch.cos(torch.deg2rad(phi)) - torch.cos(torch.deg2rad(torch.tensor(-90.))), 2)
+
+
+    # local_loss = F.softplus(phi).pow(2)
+    mu = torch.deg2rad(torch.tensor(90.))
+    sigma = torch.deg2rad(torch.tensor(30.))
+    diff = torch.atan2(torch.sin(phi - mu), torch.cos(phi - mu))
+    local_loss = torch.exp(-0.5 * (diff.pow(2) / sigma**2)) / (sigma * torch.sqrt(torch.tensor(2)*torch.pi)) * 100
+    # print("LOCAL:", local_loss)
+    # global_loss = (phi.mean(-1).unsqueeze(1) - torch.ones_like(phi, device=device, dtype=torch.float64)*-60).pow(2)
+    # global_loss = (phi.mean(-1) + 60)
+    # print("GLOBAL:", global_loss)
+    # print(local_loss.shape, global_loss.shape)
+    # loss = (local_loss + global_loss.unsqueeze(-1)).sum(-1)
+    loss = local_loss.sum(-1)
+    # loss = torch.pow(torch.exp(-0.5 * ((phi - 90).pow(2) / 90)) / (90**2 * torch.sqrt(torch.tensor(2)*torch.pi)), 1/12) * 1000
+    # loss = torch.where(phi <= 0, loss.pow(2), loss).sum(-1)
+    # delta_phi = torch.minimum(torch.abs(phi - phi_target), 360 - torch.abs(phi - phi_target))
+    # delta_psi = torch.minimum(torch.abs(psi - psi_target), 360 - torch.abs(psi - psi_target))
+    #
+    # loss = delta_phi.pow(2) + delta_psi.pow(2)
+    # print("LOSS MIN:", loss.min())
+
+    # return loss.mean(dim=-1).to(device) * 800, mask
+    return loss, mask
+
 
 def interface_loss(
     interface_atoms: torch.Tensor,
