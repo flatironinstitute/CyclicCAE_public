@@ -126,7 +126,7 @@ class DoFSummary:
         # Move right as it is to the left
         else:
             first_new_residue_pos = (residue_start + 1) - residue_amount_before_motif
-            first_new_residue_pos += 8
+            first_new_residue_pos += pose.total_residue()
 
         for newpos, ir in enumerate(range(first_new_residue_pos, pose.total_residue()+1)):
             if newpos == 0:

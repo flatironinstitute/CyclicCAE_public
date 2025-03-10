@@ -21,14 +21,15 @@ import gc
 import matplotlib.pyplot as plt
 
 # import model and functions
-from test_case import ConvCase4
+# from test_case import ConvCase4
+from model_house import CyclicCAE
 from model_functions import scale, ScaleOutputs
 from terminal_error import TerminalPeptide
 from inference_utils import (
     extract_pdb_xyz, gen_xyz_tensor, geometric_center, grab_interface, 
     interface_loss, kabsch_algorithm, kabsch_rootatom, size_help, 
     split_motif_atoms, discontig_motif_loss, kabsch_rigid_transform,
-    homochiral_loss,
+    homochiral_loss, load_weights,
 )
 from dofSummary import DoFSummary
 from motif_functions import (
@@ -65,11 +66,8 @@ class EnergyPath:
     def __init__(
         self,
         steps: int,
-        minima: float,
-        # start_point: torch.Tensor,
         weight_passed: str,
         lr: float,
-        # dataset: str,
         cutoff: float,
         cutoff_true: bool,
         partial_optimization: bool,
@@ -101,8 +99,6 @@ class EnergyPath:
         ------
             steps: int
                 Number of steps for the search to take
-            minima: float
-                Cutoff for energy minima to descend too
             start_point: torch.Tensor
                 DoF Vector to use as a starting point
             weight_passed: str
@@ -155,7 +151,6 @@ class EnergyPath:
         """
         # Pull up points
         self.steps = steps
-        self.minima = minima
         self.outstep = steps
         self.lr = lr
         self.lambda_2 = lambda_partial
@@ -216,7 +211,6 @@ class EnergyPath:
         # print("MIN:", X[:, -self.energy_n:].min(dim=0).values)
         # print("MAX:", X[:, -self.energy_n:].max(dim=0).values)
 
-        # self.minima_energy = X[:, -self.energy_n:].min(dim=0).values
 
         # start point select without pdb input
         # self.start_point_dof = X[start_point, :]
@@ -237,7 +231,8 @@ class EnergyPath:
         # self.sample_energy = self.start_point_dof[-self.energy_n:]
 
         # init the model and eval mode
-        self.model = ConvCase4(
+        # self.model = ConvCase4(
+        self.model = CyclicCAE(
             encoder_layers    = 3,
             decoder_layers    = 3,
             latent_space_dim  = self.latent_dim,
@@ -252,7 +247,8 @@ class EnergyPath:
         # ).to("cuda" if torch.cuda.is_available() else "cpu").double()
         ).to(device).double()
         # weights = torch.load(weight_passed, map_location="cuda" if torch.cuda.is_available() else "cpu")
-        weights = torch.load(self.weight_passed, map_location=self.device)
+        # weights = torch.load(self.weight_passed, map_location=self.device)
+        weights = load_weights(self.PARAMS["protein_len"], self.device)
         self.model.load_state_dict(weights["model_state_dict"])
         self.model.eval()
 
@@ -770,7 +766,9 @@ class EnergyPath:
             scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
 
             if self.PARAMS["protein_len"] == 6:
-                scatter_latent.uniform_(-0.7400, 0.7400) # This is set up for model 7731
+                scatter_latent.uniform_(-0.7400, 0.7400) # This is set up for model 
+            elif self.PARAMS["protein_len"] == 7:
+                scatter_latent.uniform_(-0.7400, 0.7400) # This is set up for model 
             elif self.PARAMS["protein_len"] == 8:
                 scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
             elif self.PARAMS["protein_len"] == 9:
@@ -805,7 +803,7 @@ class EnergyPath:
 
 
             # term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
-            term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, ncaco_loss, NCaCO, coordinates = self.term_bond.terminal_peptide_loss(
+            term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                 dof_inputs = out,
                 real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                 params = self.PARAMS,
@@ -814,8 +812,12 @@ class EnergyPath:
             )
 
             # THis is for homochiral
+            print('PRE HNCO:', torsion_sin.shape)
             torsion_angles = torch.cat((torch.rad2deg(torch.atan2(torsion_sin, torsion_cos)), HNCO), dim=-1)
+            print('POST HNCO:', torsion_angles.shape)
             omega_idx = torch.cat((self.omega_idx, torch.tensor([torsion_angles.shape[-1]-1])), dim=-1)
+            print('OMEGA IDX BEFORE + AFTER:', omega_idx, self.omega_idx.shape, omega_idx.shape)
+            print("PHI PSI IDX:", self.phi_psi_idx, self.phi_psi_idx.shape)
             index = torch.cat((self.phi_psi_idx.view(-1, 2), omega_idx.view(-1, 1)), dim=-1).view(-1)
             torsion_angles = torsion_angles[:, index]
 
@@ -923,6 +925,7 @@ class EnergyPath:
                 # time.wait()
             else:
                 l_homochiral_loss = torch.zeros(out.shape[0], dtype=torch.float32, device=self.device)
+                homochiral_mask = torch.ones(out.size(0),dtype=torch.bool, device=out.device)
 
             if random_no_reference:
                 if terminal:
@@ -1093,8 +1096,6 @@ class EnergyPath:
         # # Harmonic Constrain Loss
         # H = torch.zeros((B, 2, 1), dtype=torch.double)
 
-        # minima structures
-        # self.minima_structures = torch.zeros((B, self.start_point.size(-1)-self.energy_n), dtype=torch.float64)
 
         if start_points == None:
             F = 1
@@ -1947,7 +1948,7 @@ class EnergyPath:
                     dist = torch.norm(original_point - self.start_latent_point, dim=-1)
 
                     # Compute coordinates first for HNCO calculation
-                    term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, HNCO, NCaCO, l_chiral_loss, coordinates = self.term_bond.terminal_peptide_loss(
+                    term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                         dof_inputs = out,
                         real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
                         params = self.PARAMS,
@@ -2288,7 +2289,7 @@ if __name__ == "__main__":
                         on CyclicCAE outputs.")
     p.add_argument("--output-path", type=str, default="./", help="Determines location PDBs/SilentFile are saved.")
     p.add_argument("--extract-minimize-input", action="store_true", help="Minimize a given input only")
-    p.add_argument("--weights-load", type=str, help="Specify Model Weights To Use")
+    p.add_argument("--weights-load", type=str, default=None, help="Specify Model Weights To Use. Only needs to be specified for custom weights.")
     p.add_argument("--out-size", type=int, help="Specify the output size")
     p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate")
     p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
@@ -2340,11 +2341,8 @@ if __name__ == "__main__":
     # init the start path with X tensor 14 
     energySearch = EnergyPath(
         steps = args.steps, 
-        minima = args.minima, 
-        # start_point = torch.tensor(args.start_point), 
         weight_passed = args.weights_load, 
         lr=args.lr,
-        # dataset = args.dataset, 
         cutoff = args.cutoff, 
         cutoff_true = args.cutoff_true,
         partial_optimization = args.partial_optimization,

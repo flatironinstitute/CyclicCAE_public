@@ -622,6 +622,7 @@ class TerminalPeptide:
         """
         # Make full index tensor
         indices = torch.arange(L)
+        # print("INDICES:", indices)
 
         # Specify Presets
         start_residue_natoms = 8
@@ -644,9 +645,9 @@ class TerminalPeptide:
         psi_post = indices[root_index::gly_default_natoms].tolist()
         omega_post = indices[root_index+1::gly_default_natoms].tolist()
         # phi_post = phi_post[:-1]
-        if pep_len % 2 == 0:
-            psi_post = psi_post[:-1]
-            omega_post = omega_post[:-1]
+        # if pep_len % 2 == 0:
+        psi_post = psi_post[:-1]
+        omega_post = omega_post[:-1]
         # print("phi, psi, omega", phi_post, psi_post, omega_post)
 
         # phi/psi/omega pre root
@@ -660,6 +661,7 @@ class TerminalPeptide:
         torsion_pre = sorted(psi_pre + phi_pre) 
         torsion_post = sorted(psi_post + phi_post)
         psi_end = (L - end_residue_natoms) + 4
+        # print(psi_end)
         # phi_1 = start_residue_natoms - 1
         phi_1 = 4
         torsion_idx = [phi_1] + torsion_pre + torsion_post + [psi_end]
