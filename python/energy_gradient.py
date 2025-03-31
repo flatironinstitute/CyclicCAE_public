@@ -273,7 +273,6 @@ class EnergyPath:
         score_terms = torch.tensor([2]) if self.energy_n == 1 else torch.arange(self.energy_n)
         self.energy_scale = ScaleOutputs(None, train=False, score_terms=score_terms, protein_len=self.PARAMS["protein_len"])
 
-        if self.freeze_residues != None:
             # # Set up atoms to start with per residue
             # freeze_one = freeze_residues == 0
             # # Generate for both our reference and our constructs
@@ -302,10 +301,10 @@ class EnergyPath:
 
 
 
-            ### Gonna try terminal index functions
-            root = self.term_bond.calculate_root(self.PARAMS["protein_len"])
-            self.phi_psi_idx, self.omega_idx = self.term_bond.torsion_extract(self.PARAMS["torsion_main_n"], self.PARAMS["protein_len"], root)
-            bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(self.PARAMS["bond_angle_main_n"], root=root, L=self.PARAMS["protein_len"])
+        ### Gonna try terminal index functions
+        root = self.term_bond.calculate_root(self.PARAMS["protein_len"])
+        self.phi_psi_idx, self.omega_idx = self.term_bond.torsion_extract(self.PARAMS["torsion_main_n"], self.PARAMS["protein_len"], root)
+        bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(self.PARAMS["bond_angle_main_n"], root=root, L=self.PARAMS["protein_len"])
             # phi_psi_true = phi_psi_idx[torch.cat(((self.freeze_residues * 2).view(-1, 1), (self.freeze_residues * 2).view(-1, 1) + 1), dim=-1).view(-1)]
             # phi_psi_true = phi_psi_idx[((self.freeze_residues * 2).view(-1, 1) + torch.tensor([0, 1])).view(-1)]
             #### NOTE to Andrew: OMEGA_idx only has 7 elements, since the terminal omega DoF isn't available in the data
@@ -332,6 +331,7 @@ class EnergyPath:
             # self.bond_length_index_ref     = bond_angle_true.to(torch.long)
             # self.bond_angle_index_target   = bond_angle_true.to(torch.long) #- self.PARAMS["torsion_main_n"]
             # self.bond_length_index_target  = bond_angle_true.to(torch.long)# - (self.PARAMS["torsion_main_n"]*2)
+        if self.freeze_residues != None:
             self.torsion_index, self.bond_angle_dofs, self.bond_length_dofs, self.residue_index = compute_motif_indices(
                 self.PARAMS["protein_len"],
                 self.PARAMS["torsion_main_n"],
@@ -811,16 +811,6 @@ class EnergyPath:
                 device = out.device,
             )
 
-            # THis is for homochiral
-            print('PRE HNCO:', torsion_sin.shape)
-            torsion_angles = torch.cat((torch.rad2deg(torch.atan2(torsion_sin, torsion_cos)), HNCO), dim=-1)
-            print('POST HNCO:', torsion_angles.shape)
-            omega_idx = torch.cat((self.omega_idx, torch.tensor([torsion_angles.shape[-1]-1])), dim=-1)
-            print('OMEGA IDX BEFORE + AFTER:', omega_idx, self.omega_idx.shape, omega_idx.shape)
-            print("PHI PSI IDX:", self.phi_psi_idx, self.phi_psi_idx.shape)
-            index = torch.cat((self.phi_psi_idx.view(-1, 2), omega_idx.view(-1, 1)), dim=-1).view(-1)
-            torsion_angles = torsion_angles[:, index]
-
             if args.freeze_residues != None:
                 # Add in the terminal peptide bond HNCO radian, as it isn't a part
                 # of the DoFs
@@ -850,14 +840,20 @@ class EnergyPath:
                     bond_angle_cos,
                     bond_length,
                 )
+                if match_res_mask.shape == 0:
+                    print("No Scaffolds Match Your inpaint-dist. If this happens many times, \
+                    you may want to relax the threshold slightly. It is too strict.")
+                    continue
                 # Calculate motif numbering
                 # HERE
+                print(match_res_mask)
                 self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
                     match_res_mask,
                     self.PARAMS["protein_len"],
                     self.freeze_residues.shape[0],
                     self.freeze_residues,
                 )
+                print(self.motif)
 
             coords_inter = torch.cat(
                 (
@@ -912,6 +908,12 @@ class EnergyPath:
                 interface_total_loss = torch.zeros(out.size(0), dtype=torch.bool, device=self.device)
 
             if l_homochiral:
+                # THis is for homochiral
+                torsion_angles = torch.cat((torch.rad2deg(torch.atan2(torsion_sin, torsion_cos)), HNCO), dim=-1)
+                # omega_idx = torch.cat((self.omega_idx, torch.tensor([torsion_angles.shape[-1]-1])), dim=-1)
+                # index = torch.cat((self.phi_psi_idx.view(-1, 2), omega_idx.view(-1, 1)), dim=-1).view(-1)
+                torsion_angles = torsion_angles[:, self.phi_psi_idx]
+
                 l_homochiral_loss, homochiral_mask = homochiral_loss(
                     torsion_dofs = torsion_angles,
                     space = 1,
@@ -934,10 +936,13 @@ class EnergyPath:
                     ocnh_mask = ocnh_loss < 0.5
                     hnc_mask = hnc_loss < 0.5
                     nco_mask = nco_loss < 0.5
+                    l_homochiral_mask = homochiral_mask # <= 100#homochiral_mask[match_res_mask[:, 0]]
                     mask = torch.logical_and(
                         ocnh_mask.view(-1, 1), torch.logical_and(
                             hnc_mask.view(-1, 1), torch.logical_and(
-                                nco_mask.view(-1, 1), terminal_mask.view(-1, 1)
+                                nco_mask.view(-1, 1), torch.logical_and(
+                                    terminal_mask.view(-1, 1), l_homochiral_mask.view(-1,1),
+                                ),
                             ),
                         )
                     ).view(-1)
@@ -1016,10 +1021,11 @@ class EnergyPath:
 
 
             # Grab out specific points that only pass
-            preds = preds[match_res_mask[:, 0]]
-            scatter_latent = scatter_latent[match_res_mask[:, 0]]
-            # concat onto self.match_res
-            self.match_res_mask = torch.cat((self.match_res_mask, match_res_mask[mask]), dim=0)
+            if self.freeze_residues != None:
+                preds = preds[match_res_mask[:, 0]]
+                scatter_latent = scatter_latent[match_res_mask[:, 0]]
+                # concat onto self.match_res
+                self.match_res_mask = torch.cat((self.match_res_mask, match_res_mask[mask]), dim=0)
             # add to set of scaffolds
             if not torch.is_tensor(scaffolds):
                 scaffolds = preds[mask, :-3].detach()
@@ -1801,13 +1807,14 @@ class EnergyPath:
         redo = 0
         # Calculate motif numbering
         # HERE
-        self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
-            self.match_res_mask,
-            self.PARAMS["protein_len"],
-            self.freeze_residues.shape[0],
-            self.freeze_residues,
-            True,
-        )
+        if self.freeze_residues != None:
+            self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
+                self.match_res_mask,
+                self.PARAMS["protein_len"],
+                self.freeze_residues.shape[0],
+                self.freeze_residues,
+                True,
+            )
 
         while minimize_still: 
             original_point = self.start_latent_point.clone()
@@ -1833,26 +1840,14 @@ class EnergyPath:
                 bond_angle_cos = bond_angle[:, self.PARAMS["bond_angle_main_n"]:]
                 bond_length = out[:, self.PARAMS["bond_angle_main_n"]*2*2:-3]
                 preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["bond_angle_main_n"]*2*2:-3]), dim=-1)
-                # torsion = out[:, :116]
-                # torsion_sin = torsion[:, :58]
-                # torsion_cos = torsion[:, 58:]
-                # bond_angle = out[:, 116:116*2]
-                # bond_angle_sin = bond_angle[:, :58]
-                # bond_angle_cos = bond_angle[:, 58:]
-                # bond_length = out[:, 116*2:-3]
-                # preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
 
-                # Real Information
-                real_t_sin = torch.sin(motif_dofs[0])
-                real_t_cos = torch.cos(motif_dofs[0])
-                real_ba_sin = torch.sin(motif_dofs[1])
-                real_ba_cos = torch.cos(motif_dofs[1])
-                real_bond_length = motif_dofs[2] 
-                # real_t_sin = torch.sin(torch.deg2rad(self.start_point[:, :self.ORIG_PARAMS["torsion_main_n"]]))
-                # real_t_cos = torch.cos(torch.deg2rad(self.start_point[:, :self.ORIG_PARAMS["torsion_main_n"]]))
-                # real_ba_sin = torch.sin(torch.deg2rad(self.start_point[:, self.ORIG_PARAMS["bond_angle_main_n"]:2*self.ORIG_PARAMS["bond_angle_main_n"]]))
-                # real_ba_cos = torch.cos(torch.deg2rad(self.start_point[:, self.ORIG_PARAMS["bond_angle_main_n"]:2*self.ORIG_PARAMS["bond_angle_main_n"]]))
-                # real_bond_length = self.start_point[:, self.ORIG_PARAMS["bond_angle_main_n"]*2:]
+                if self.freeze_residues != None:
+                    # Real Information
+                    real_t_sin = torch.sin(motif_dofs[0])
+                    real_t_cos = torch.cos(motif_dofs[0])
+                    real_ba_sin = torch.sin(motif_dofs[1])
+                    real_ba_cos = torch.cos(motif_dofs[1])
+                    real_bond_length = motif_dofs[2] 
 
                 # grab the energies (ref2015 score)
                 # energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
@@ -1956,12 +1951,6 @@ class EnergyPath:
                         device = out.device,
                     )
 
-                    # THis is for homochiral
-                    torsion_angles = torch.cat((torch.rad2deg(torch.atan2(torsion_sin, torsion_cos)), HNCO), dim=-1)
-                    omega_idx = torch.cat((self.omega_idx, torch.tensor([torsion_angles.shape[-1]-1])), dim=-1)
-                    index = torch.cat((self.phi_psi_idx.view(-1, 2), omega_idx.view(-1, 1)), dim=-1).view(-1)
-                    torsion_angles = torsion_angles[:, index]
-
                     if self.freeze_residues != None:
                         # Add in the terminal peptide bond HNCO radian, as it isn't a part
                         # of the DoFs
@@ -2061,8 +2050,16 @@ class EnergyPath:
 
                     else:
                         interface_total_loss = torch.zeros(1, device=energy.device)
+                        discontig_loss = torch.zeros(1, device=self.device)
 
                     if l_homochiral:
+                        # THis is for homochiral
+                        torsion_angles = torch.cat((torch.rad2deg(torch.atan2(torsion_sin, torsion_cos)), HNCO), dim=-1)
+                        # omega_idx = torch.cat((self.omega_idx, torch.tensor([torsion_angles.shape[-1]-1])), dim=-1)
+                        # index = torch.cat((self.phi_psi_idx.view(-1, 2), omega_idx.view(-1, 1)), dim=-1).view(-1)
+                        torsion_angles = torsion_angles[:, self.phi_psi_idx]
+                        # torsion_angles = torsion_angles[:, index]
+
                         l_homochiral_loss, homochiral_mask = homochiral_loss(
                             torsion_dofs = torsion_angles,
                             space = 1,
@@ -2080,22 +2077,6 @@ class EnergyPath:
                     ncaco_loss_term = ncaco_loss.clone()
                     term_bond_loss_term = term_bond_loss.clone()
 
-                    # Set terms to zero if necessary
-                    # energy_pred[energy_mask] *= 0.0
-                    # print(energy_pred)
-                    # ahd_loss_term[energy_mask, :] *= 0.0
-                    # bah_loss_term[energy_mask, :] *= 0.0
-                    # term_bond_loss_term[energy_mask, :] *= 0.0
-                    # clash_penalty = interface_loss(aligned_coordinates, aligned_coordinates, d_min = 1.0, d_max = 10.0) #/ aligned_coordinates.size(1)
-
-                    # if step == start_range:
-                    #     interface_total_loss, previous_distances = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates, previous_distances = None, alpha = 1.0, beta=2.0, d_min = 2.5, d_max = 9.0, sigma=4) #/ interface_dict["interface_atoms"].size(0)
-                    #     # interface_total_loss = interface_total_loss / interface_dict["interface_atoms"].size(0)
-                    # else:
-                    #     interface_total_loss, previous_distances = interface_loss(interface_atoms = interface_dict["interface_atoms"].double(), recomputed_xyz = aligned_coordinates, previous_distances = previous_distances, alpha = 1.0, beta=2.0, d_min = 2.5, d_max = 9.0, sigma=4) #/ interface_dict["interface_atoms"].size(0)
-                    #     # interface_total_loss = interface_total_loss / interface_dict["interface_atoms"].size(0)
-                    # print('INTERFACE LOSS SHAPE:', interface_total_loss.shape)
-                    # clash_penalty = interface_loss(aligned_coordinates, aligned_coordinates, d_min = 1.0, d_max = 10.0) #/ aligned_coordinates.size(1)
 
                     combo_angles = ahd_loss_term + bah_loss_term + ncaco_loss_term + ocnh_loss_term
 
@@ -2277,7 +2258,6 @@ class EnergyPath:
 if __name__ == "__main__":
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--steps", type=int, default=1000, help="Search Steps Max")
-    p.add_argument("--minima", type=float, default=-4.775, help="Minima energy to search for")
     p.add_argument("--prefix-outfile", type=str, default="test", help="PDB/SilentFile prefix")
     p.add_argument("--silentfile", action="store_true", help="Save Model outputs in a SilentFile format \
                         if not specified then individual PDBs are produced.")
@@ -2322,7 +2302,7 @@ if __name__ == "__main__":
     p.add_argument("--mcmc-steps", type=int, default=0, help="MCMC Steps")
     p.add_argument("--mcmc-paths", type=int, default=10, help="MCMC Number of Paths when doing inpainting")
     p.add_argument("--pdb-input", type=str, default=None, help="Pass a pdb with the Target (Chain A) and Peptide/Binder (Chain B)")
-    p.add_argument("--random-sample", action="store_true", help="Sample latent space randomly, without a refernce.")
+    p.add_argument("--random-sample", action="store_true", help="Sample latent space randomly, without a reference.")
     p.add_argument("--skip-individual", action="store_true", help="For skipping individual construct trajectory outputting during inpainting")
     p.add_argument("--interface-cutoff", type=float, default=20.0, help="Metric for accepting a not clashing peptide [10.0 for compact pockets, 20.0 for others] ")
     p.add_argument("--treat-input-binder-as-cyclic", action="store_true", help="Apply Cyclic updates to our Motif Chain (--peptide-chain) \
@@ -2378,7 +2358,7 @@ if __name__ == "__main__":
 
     # generate our output path if not yet created
     if not os.path.exists(args.output_path):
-        os.mkdir(args.output_path)
+        os.makedirs(args.output_path)
 
     # Search And Output
     # if args.energy_search:
@@ -2464,13 +2444,14 @@ if __name__ == "__main__":
     #### Here we are just randomly sampling the latent space to get constructs.
     #### There are no conditions being applied
     elif args.random_sample:
+        print("RANDOM!")
         if args.mcmc_steps < 1:
-            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample)
-            energySearch.energy_steps(latent_points)
+            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, l_homochiral = args.l_homochiral)
+            energySearch.energy_steps(latent_points, l_homochiral = args.l_homochiral)
         else: 
-            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample)
+            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, l_homochiral = args.l_homochiral)
             latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
-            energySearch.energy_steps(latent_points)
+            energySearch.energy_steps(latent_points, l_homochiral = args.l_homochiral)
 
 
     # Write our outputs out to this location

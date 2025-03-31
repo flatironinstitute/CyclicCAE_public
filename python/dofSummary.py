@@ -727,13 +727,12 @@ class DoFSummary:
         """
         pose_before = pose.clone()
 
-        residue_range = [i for i in range(residue_start + 1, residue_start + 1 + len(list(self.motif_residue_info.keys())))]
-
         # Set up a movemap
         mm = core.kinematics.MoveMap()
         mm.set_bb(True)
         mm.set_chi(True)
         if self.peptide_native != None:
+            residue_range = [i for i in range(residue_start + 1, residue_start + 1 + len(list(self.motif_residue_info.keys())))]
             for ir in range(1, pose.total_residue()+1):
                 if ir in residue_range:
                 # if ir in list(self.motif_residue_info.keys()):
@@ -881,11 +880,18 @@ class DoFSummary:
             self.declare_terminal_bond(pose)
             # After this place back in PDB alignment, but that isn't necessary yet
             # pose = self.align_to_native_motif_positions(pose.clone())
+        else:
+            self.full_cyclize_pose_withoutbond(pose)
+            self.declare_terminal_bond(pose)
 
         if minimize_pose:
             self.minimize_pose(pose, residue_start)
             if (self.peptide_native != None) and (not self.extract_minimize_input):
                 self.calculate_rmsd_between_native(pose, self.peptide_native)
+            # Calculate internal hbonds
+            hbond_set = pose.get_hbonds(exclude_sc=True, exclude_scb=True, exclude_bsc=True)
+            pose.scores["bb_hbonds"] = hbond_set.nhbonds()
+
 
         if score_outputs:
             self.scorefxn(pose)
@@ -921,7 +927,7 @@ class DoFSummary:
             ref2015 scorefunction
         """
         # set a scorefunction
-        if score_outputs:
+        if score_outputs or minimize_pose:
             self.scorefxn = core.scoring.get_score_function(is_fullatom = True)
             self.scorefxn.set_weight(core.scoring.hbond_lr_bb, 11.7)
             self.scorefxn.set_weight(core.scoring.hbond_sr_bb, 11.7)
@@ -990,7 +996,7 @@ class DoFSummary:
                 score_outputs = score_outputs,
                 random_outputs = random_outputs,
                 minimize_pose = minimize_pose,
-                residue_start = residue_start[s],
+                residue_start = residue_start[s] if not random_outputs else None,
             )
             if not silentfile:
                 updated_pose.dump_pdb(

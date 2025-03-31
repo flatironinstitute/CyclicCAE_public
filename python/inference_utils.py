@@ -530,7 +530,9 @@ def homochiral_loss(
 
     # grab the phi angle
     # phi = torch.deg2rad(torsion_dofs[:, ::3])
-    phi, psi = torch.deg2rad(torsion_dofs[:, ::3]), torch.deg2rad(torsion_dofs[:, 1::3])
+    # phi, psi = torch.deg2rad(torsion_dofs[:, ::3]), torch.deg2rad(torsion_dofs[:, 1::3])
+    phi, psi = torch.deg2rad(torsion_dofs[:, ::2]), torch.deg2rad(torsion_dofs[:, 1::2])
+    print('PHI SHAPE:', phi.shape)
     mask = (phi <= 0).sum(-1) >= phi.shape[-1]-1
     print((phi <= 0).sum(-1))
     # print("MASK:", mask)
