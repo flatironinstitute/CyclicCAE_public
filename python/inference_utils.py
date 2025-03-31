@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from collections import defaultdict
 import re
+import os
 import ast
 import matplotlib.pyplot as plt
 from typing import Union
@@ -1312,19 +1313,40 @@ def kabsch_test():
     print("L2 R: {}".format(l2_R.mean()))
     return 0
 
+def find_weights(weights: str) -> str:
+    """
+    Find the correct path to the weights file should work for 
+    either relative or google colab file path search
+
+    PARAMS
+    ------
+    :weights: The relative path to our file.
+
+    RETURNS
+    -------
+    :path: The true path to our weights
+    """
+    path_prefix = ["../", "/content/conformational_autoencoder/"]
+    for prefix in path_prefix:
+        p = os.path.join(prefix, weights)
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError(f"Seems that our weights {weights} cannot be found")
+    
+
 def load_weights(size: int, device: str) -> torch.Tensor:
     """Load in weights for a specific size"""
     if size == 6:
-        return torch.load("../weights/6mer/model_1610_current_weights.pt",
+        return torch.load(find_weights("weights/6mer/model_1610_current_weights.pt"),
                           map_location = device)
     elif size == 7:
-        return torch.load("../weights/7mer/model_8811_best_weights.pt",
+        return torch.load(find_weights("weights/7mer/model_8811_best_weights.pt"),
                           map_location = device)
     elif size == 8:
-        return torch.load("../weights/8mer/model_7731_best_weights.pt",
+        return torch.load(find_weights("weights/8mer/model_7731_best_weights.pt"),
                           map_location = device)
     else:
-        return torch.load("../weights/9mer/model_9890_current_weights.pt",
+        return torch.load(find_weights("weights/9mer/model_9890_current_weights.pt"),
                           map_location = device)
 
 def size_help(size: int, params: dict) -> Union[dict, int]:

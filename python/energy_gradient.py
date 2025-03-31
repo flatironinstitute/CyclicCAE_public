@@ -846,14 +846,12 @@ class EnergyPath:
                     continue
                 # Calculate motif numbering
                 # HERE
-                print(match_res_mask)
                 self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
                     match_res_mask,
                     self.PARAMS["protein_len"],
                     self.freeze_residues.shape[0],
                     self.freeze_residues,
                 )
-                print(self.motif)
 
             coords_inter = torch.cat(
                 (
@@ -919,10 +917,10 @@ class EnergyPath:
                     space = 1,
                     device = self.device,
                 )
-                print("HOMOCHIRAL LOSS:", l_homochiral_loss)
-                print(l_homochiral_loss.min().item(), l_homochiral_loss.mean().item())
-                print(l_homochiral_loss[homochiral_mask])
-                print(l_homochiral_loss[homochiral_mask].shape)
+                # print("HOMOCHIRAL LOSS:", l_homochiral_loss)
+                # print(l_homochiral_loss.min().item(), l_homochiral_loss.mean().item())
+                # print(l_homochiral_loss[homochiral_mask])
+                # print(l_homochiral_loss[homochiral_mask].shape)
                 # print(torsion_angles[homochiral_mask, ::3])
                 # time.wait()
             else:
@@ -2444,7 +2442,6 @@ if __name__ == "__main__":
     #### Here we are just randomly sampling the latent space to get constructs.
     #### There are no conditions being applied
     elif args.random_sample:
-        print("RANDOM!")
         if args.mcmc_steps < 1:
             scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, l_homochiral = args.l_homochiral)
             energySearch.energy_steps(latent_points, l_homochiral = args.l_homochiral)
