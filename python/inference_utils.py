@@ -1315,16 +1315,16 @@ def kabsch_test():
 def load_weights(size: int, device: str) -> torch.Tensor:
     """Load in weights for a specific size"""
     if size == 6:
-        return torch.load("/mnt/ceph/users/apowers/size-weights/6mer/full/virtualatoms/model_weights/model_1610_best_weights.pt",
+        return torch.load("../weights/6mer/model_1610_current_weights.pt",
                           map_location = device)
     elif size == 7:
-        return torch.load("/mnt/ceph/users/apowers/size-weights/7mer/full/virtualatoms/model_weights/model_8811_best_weights.pt",
+        return torch.load("../weights/7mer/model_8811_best_weights.pt",
                           map_location = device)
     elif size == 8:
-        return torch.load("/mnt/ceph/users/apowers/outputs_old/model_weights/model_7731_best_weights.pt",
+        return torch.load("../weights/8mer/model_7731_best_weights.pt",
                           map_location = device)
     else:
-        return torch.load("/mnt/ceph/users/apowers/size-weights/9mer/full/virtualatoms/model_weights/model_9890_current_weights.pt",
+        return torch.load("../weights/9mer/model_9890_current_weights.pt",
                           map_location = device)
 
 def size_help(size: int, params: dict) -> Union[dict, int]:
