@@ -19,6 +19,7 @@ import pyrosetta.rosetta.core.io.silent as silent
 # Import numpy
 import torch
 import os
+import warnings
 
 # Import termina bond
 from terminal_error import TerminalPeptide
@@ -91,7 +92,7 @@ class DoFSummary:
         residue_start: int,
         ) -> Pose:
         """
-        Take a pose and place the motif along a consitent set of residues
+        Take a pose and place the motif along a consistent residue idx
         This is important for downstream applications where we need to
         specify resi numbers and for consistency in design tasks
 
@@ -712,7 +713,6 @@ class DoFSummary:
     def minimize_pose(
         self,
         pose: Pose,
-        residue_start: int,
         ) -> int:
         """
         Apply a minmover to the pose for scoring
@@ -725,6 +725,7 @@ class DoFSummary:
         -------
         :pose: minimized version of this pose
         """
+        # Clone our pose
         pose_before = pose.clone()
 
         # Set up a movemap
@@ -732,10 +733,11 @@ class DoFSummary:
         mm.set_bb(True)
         mm.set_chi(True)
         if self.peptide_native != None:
-            residue_range = [i for i in range(residue_start + 1, residue_start + 1 + len(list(self.motif_residue_info.keys())))]
+            residue_range = [i for i in range(
+                self.consistent_motif_resi,
+                self.consistent_motif_resi + len(list(self.motif_residue_info.keys())))]
             for ir in range(1, pose.total_residue()+1):
                 if ir in residue_range:
-                # if ir in list(self.motif_residue_info.keys()):
                     mm.set_bb(ir, False)
                     mm.set_chi(ir, False)
 
@@ -762,27 +764,30 @@ class DoFSummary:
         """
         # init selectors
         rmsd_motif = core.simple_metrics.metrics.RMSDMetric(native_pose)
-        rmsd_fullbb = core.simple_metrics.metrics.RMSDMetric(native_pose)
 
         # set heavy backbone atoms
         rmsd_motif.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
-        rmsd_fullbb.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
         rmsd_motif.set_run_superimpose(True)
-        rmsd_fullbb.set_run_superimpose(True)
 
         # specify selectors
         motif_selector = select.ResidueIndexSelector()
         motif_selector.set_index(",".join([str(i) for i in range(self.consistent_motif_resi, self.consistent_motif_resi + len(self.motif_residue_info.keys()))]))
-
+        # Native motif
+        native_selector = select.ResidueIndexSelector()
+        native_selector.set_index(",".join([str(i) for i in self.motif_residue_info.keys()]))
 
 
         # add our residues selections
         rmsd_motif.set_residue_selector(motif_selector)
-        rmsd_motif.set_residue_selector_reference(motif_selector)
+        rmsd_motif.set_residue_selector_reference(native_selector)
 
         # perform RMSD calculation
         rmsd_motif.apply(curpose, "motif_bbHeavy_RMSD")
-        rmsd_fullbb.apply(curpose, "full_bbHeavy_RMSD")
+        if native_pose.total_residue() == curpose.total_residue():
+            rmsd_fullbb = core.simple_metrics.metrics.RMSDMetric(native_pose)
+            rmsd_fullbb.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
+            rmsd_fullbb.set_run_superimpose(True)
+            rmsd_fullbb.apply(curpose, "full_bbHeavy_RMSD")
         return 0
 
     def align_to_native_motif_positions(
@@ -885,7 +890,7 @@ class DoFSummary:
             self.declare_terminal_bond(pose)
 
         if minimize_pose:
-            self.minimize_pose(pose, residue_start)
+            self.minimize_pose(pose)
             if (self.peptide_native != None) and (not self.extract_minimize_input):
                 self.calculate_rmsd_between_native(pose, self.peptide_native)
             # Calculate internal hbonds
@@ -926,6 +931,10 @@ class DoFSummary:
         :minimize_pose: Use MinMover to minimize the pose slightly in Rosetta's
             ref2015 scorefunction
         """
+        # Add Output that you are adding to a File
+        if os.path.isfile(os.path.join(output_path, f'{self.prefix}.silent')):
+            warnings.warn(f"You are appending onto {self.prefix}.silent, as it is already in {output_path}")
+
         # set a scorefunction
         if score_outputs or minimize_pose:
             self.scorefxn = core.scoring.get_score_function(is_fullatom = True)
