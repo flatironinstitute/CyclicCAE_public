@@ -332,8 +332,13 @@ class DoFSummary:
             dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)
             dof_tensor = torch.deg2rad(dof_tensor)
         elif dof_type == 2:
+            # DEBUG LINE
+            print(torch.tensor(dof_tensor, dtype=torch.float64),torch.tensor(dof_tensor, dtype=torch.float64).shape)
+            print(key)
             dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
         else:
+            print(torch.tensor(dof_tensor, dtype=torch.float64),torch.tensor(dof_tensor, dtype=torch.float64).shape)
+            print(key)
             dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
 
         #     # Add in padding to DoFs
@@ -426,17 +431,26 @@ class DoFSummary:
         if self.is_cyclic:
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
+        else:
+            self.full_cyclize_pose_withoutbond(pose)
 
         # grab our dof indexing tensors
+        print(pose.total_atoms())
         bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(
-            pose.total_atoms(),
+            pose.total_atoms()-1, # Root atom has no dofs
             L = pose.total_residue(),
             root = pose.fold_tree().root(),
         )
 
+        # DEBUG LINE
+        print(bond_angle_idx.shape, bond_angle_idx.view(-1, 5).shape)
+        print(bond_length_idx.shape, bond_length_idx.view(-1, 5).shape)
         # index our bond angle/length indices by the residues we want
-        residues_of_interest_angle_indices = bond_angle_idx.view(-1, 5)[residues_of_interest]
-        residues_of_interest_length_indices = bond_length_idx.view(-1, 5)[residues_of_interest]
+        residues_of_interest_angle_indices = bond_angle_idx.view(-1, 5)[residues_of_interest-1]
+        residues_of_interest_length_indices = bond_length_idx.view(-1, 5)[residues_of_interest-1]
+        # DEBUG LINE
+        print(bond_angle_idx.view(-1, 5))
+        print(residues_of_interest_angle_indices.view(-1))
 
         # Extract DoFs of interest
         motif_torsion_dofs = self.dof_extract(pose, 1, residues_of_interest, None) if self.include_mainchain_torsions else None
