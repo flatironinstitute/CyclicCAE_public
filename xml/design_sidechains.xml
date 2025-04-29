@@ -15,6 +15,7 @@
             <ScoreFunction name="ref_cart" weights="ref2015_cart.wts">
                   <Reweight scoretype="hbond_lr_bb" weight="11.7"/>
                   <Reweight scoretype="hbond_sr_bb" weight="11.7"/>
+                  <Reweight scoretype="chainbreak" weight="10.0"/>
                   <Reweight scoretype="coordinate_constraint" weight="1"/>
                   <Reweight scoretype="atom_pair_constraint" weight="1.0"/>
                   <Reweight scoretype="dihedral_constraint" weight="1.0"/>
@@ -30,6 +31,7 @@
                   <Reweight scoretype="dihedral_constraint" weight="1.0"/>
                   <Reweight scoretype="angle_constraint" weight="1.0"/>
                   <Reweight scoretype="aa_composition" weight="1.0"/>
+                  <Reweight scoretype="chainbreak" weight="10.0"/>
             </ScoreFunction>
 
       </SCOREFXNS>
@@ -112,6 +114,8 @@
       </MOVERS>
 
       <FILTERS>
+            <!--Check that our proline position isn't involved in a Hbond-->
+            <HbondsToResidue name="hbond_proline" scorefxn="default"
             <!--Count the number of proline residues that are present in the peptide-->
             <ResidueCount name="pro_count" residue_types="PRO,DPR"
                   min_residue_count="0" residue_selector="ChainA"/>

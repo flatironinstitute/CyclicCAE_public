@@ -76,7 +76,7 @@ class TerminalPeptide:
         omega = torsion_degree[:, omega_idx]
 
         # Extract bond angles
-        bond_angle_idx, bond_length_idx = self.extract_bond_angles(bond_angle_degree.size(-1), L=params["protein_len"], root=foldtree_root)
+        bond_angle_idx, bond_length_idx = self.extract_bond_angles(bond_angle_degree.size(-1)-1, L=params["protein_len"], root=foldtree_root)
         bond_angles = bond_angle_degree[:, bond_angle_idx]
         bond_length_subset = bond_length[:, bond_length_idx]
 
@@ -416,21 +416,20 @@ class TerminalPeptide:
         """
         # Generate a dof number array
         dofs = torch.arange(dof_length)
+        print("DEBUG DOFS:", dofs.shape)
 
         for resi in range(L):
 
             if resi+1 == 1:
-                # bond_angle_idx = torch.tensor([dofs[-1]-9+3, 0, 1, 3, 6]).unsqueeze(0)
-                bond_angle_idx = torch.tensor([dofs[-1]-3, 0, 1, 3, 5]).unsqueeze(0)
+                # Bond angle order: N-Ca, Ca-C, C-N, C=0, N-H
+                # changed this from -3 to -2 for the first element
+                # Even though I think it seems like I need to calculate this number actually (based on xyz coords)
+#                 bond_angle_idx = torch.tensor([dofs[-1]-2, 0, 1, 3, 5]).unsqueeze(0)
+                bond_angle_idx = torch.tensor([dof_length-1, 0, 1, 3, 5]).unsqueeze(0)
                 # Bond order N-Ca, Ca-C, C-N, C=O, N-H
                 bond_length_idx = torch.tensor([0, 1, 2, 3, 5]).unsqueeze(0)
             elif (resi+1 < root) and (resi+1 != 2):
                 # Update residue values
-                # N = bond_angle_idx[0, -1]-4  if resi+1==2 else bond_angle_idx[-1, -1]-4
-                # Ca = bond_angle_idx[0, -1]+2 if resi+1==2 else bond_angle_idx[-1, -1]+1
-                # C = bond_angle_idx[0, -1]+3  if resi+1==2 else bond_angle_idx[-1, -1]+2
-                # O = bond_angle_idx[0, -1]+5  if resi+1==2 else bond_angle_idx[-1, -1]+4
-                # H = bond_angle_idx[0, -1]+8  if resi+1==2 else bond_angle_idx[-1, -1]+7
                 N = bond_angle_idx[-1, -1]-2
                 Ca = bond_angle_idx[-1, -1]+3
                 C = bond_angle_idx[-1, -1]+4
@@ -453,15 +452,8 @@ class TerminalPeptide:
                         torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
                     ), dim=0,
                 )
-                # print("residue ", resi+1, bond_angle_idx)
-                # print("residue ", resi+1, bond_length_idx)
             elif resi+1 == 2:
                 # Update residue values
-                # N = bond_angle_idx[0, -1]-4  if resi+1==2 else bond_angle_idx[-1, -1]-4
-                # Ca = bond_angle_idx[0, -1]+2 if resi+1==2 else bond_angle_idx[-1, -1]+1
-                # C = bond_angle_idx[0, -1]+3  if resi+1==2 else bond_angle_idx[-1, -1]+2
-                # O = bond_angle_idx[0, -1]+5  if resi+1==2 else bond_angle_idx[-1, -1]+4
-                # H = bond_angle_idx[0, -1]+8  if resi+1==2 else bond_angle_idx[-1, -1]+7
                 N = bond_angle_idx[-1, -1]-3
                 Ca = bond_angle_idx[-1, -1]+3
                 C = bond_angle_idx[-1, -1]+4
@@ -487,16 +479,12 @@ class TerminalPeptide:
                 # print("residue after 1", resi+1, bond_angle_idx)
             elif resi+1 == root:
                 # Update Residues
-                # N = bond_angle_idx[-1, -1]-4
-                # Ca = bond_angle_idx[-1, -1]+2
-                # C = bond_angle_idx[-1, -1]+7
-                # O = bond_angle_idx[-1, -1]+3
-                # H = bond_angle_idx[-1, -1]+6
+                print("Before Root Last:", bond_angle_idx[-1,-1])
                 N = bond_angle_idx[-1, -1]-2
                 Ca = bond_angle_idx[-1, -1]+4
                 C = bond_angle_idx[-1, -1]+9
                 O = bond_angle_idx[-1, -1]+5
-                H = bond_angle_idx[-1, -1]+6
+                H = bond_angle_idx[-1, -1]+8 # 6 (This was what it was originally, but is wrong)
                 bond_angle_idx = torch.cat(
                     (
                         bond_angle_idx,
@@ -514,20 +502,14 @@ class TerminalPeptide:
                         torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
                     ), dim=0,
                 )
-                # print("root-residue ", resi+1, bond_angle_idx)
-                # print("root-residue ", resi+1, bond_length_idx)
             elif resi+1 == L:
                 # Update Residues
-                N = bond_angle_idx[-1, -1]+8
-                Ca = bond_angle_idx[-1, -1]+5
-                C = bond_angle_idx[-1, -1]+7 # Based upon first residue N
-                O = bond_angle_idx[-1, -1]+6
-                H = bond_angle_idx[-1, -1]+9
-                # N = bond_angle_idx[-1, -1]+2
-                # Ca = bond_angle_idx[-1, -1]+3
-                # C = 0 # Based upon first residue N
-                # O = bond_angle_idx[-1, -1]+4
-                # H = bond_angle_idx[-1, -1]+7
+                ### DEBUG
+                N = bond_angle_idx[-1, -1]+2 #8 original before DEBUG
+                Ca = bond_angle_idx[-1, -1]+3 #5 original
+                C = dof_length-1 # Based upon first residue N (Therefore needs to be computed)
+                O = bond_angle_idx[-1, -1]+4 #6
+                H = bond_angle_idx[-1, -1]+7 #9
                 bond_angle_idx = torch.cat(
                     (
                         bond_angle_idx,
@@ -536,7 +518,7 @@ class TerminalPeptide:
                 )
                 NCa = bond_length_idx[-1, -1]+4
                 CaC = bond_length_idx[-1, -1]+5
-                CN  = bond_length_idx[-1, -1]+7
+                CN  = bond_length_idx[-1, -1]+7 
                 OH  = bond_length_idx[-1, -1]+6
                 NH  = bond_length_idx[-1, -1]+9
                 bond_length_idx = torch.cat(
@@ -545,20 +527,13 @@ class TerminalPeptide:
                         torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
                     ), dim=0,
                 )
-                # print("Last residue ", resi+1, bond_angle_idx)
-                # print("Last residue ", resi+1, bond_length_idx)
             else:
                 # Update Residues
-                N = bond_angle_idx[-1, -1]+4
-                Ca = bond_angle_idx[-1, -1]+5
-                C = bond_angle_idx[-1, -1]+10 #25 + = 
-                O = bond_angle_idx[-1, -1]+6
+                N = bond_angle_idx[-1, -1]+2 #4 Original
+                Ca = bond_angle_idx[-1, -1]+3 # 5 Original
+                C = bond_angle_idx[-1, -1]+8 #10 Original
+                O = bond_angle_idx[-1, -1]+4 #6 Original
                 H = bond_angle_idx[-1, -1]+7
-                # N = bond_angle_idx[-1, -1]+2
-                # Ca = bond_angle_idx[-1, -1]+3
-                # C = bond_angle_idx[-1, -1]+8
-                # O = bond_angle_idx[-1, -1]+4
-                # H = bond_angle_idx[-1, -1]+7
                 bond_angle_idx = torch.cat(
                     (
                         bond_angle_idx,
@@ -576,8 +551,6 @@ class TerminalPeptide:
                         torch.tensor([NCa, CaC, CN, OH, NH]).unsqueeze(0),
                     ), dim=0,
                 )
-                # print("after-root residue ", resi+1, bond_angle_idx)
-                # print("after-root residue ", resi+1, bond_length_idx)
 
         return bond_angle_idx.view(-1), bond_length_idx.view(-1)
 
@@ -878,16 +851,6 @@ class TerminalPeptide:
 
         # Real Omega
         omega = torch.deg2rad(omega) 
-        # omega = torch.cat(
-        #     (
-        #         # torch.deg2rad(torch.tensor(-91.3)).unsqueeze(0).repeat(omega.size(0), 1),
-        #         omega,
-        #         torch.tensor(torch.pi, dtype=torch.float64, device=device).unsqueeze(0).repeat(omega.size(0), 1), # Add Extra Pi omega for loop
-        #     ), dim=-1,
-        # )
-        # Ideal Omega
-        # omega = torch.tensor(torch.pi).unsqueeze(0).repeat(bond_angles.size(0), torsion.size(1)//2)
-        
 
         # Number of residues within the peptides
         n = torsion.size(1)//2
@@ -911,7 +874,8 @@ class TerminalPeptide:
             # if i == root_idx - 1:
             if i == 0:
                 # bond angles
-                NR   = bond_angles[:, index_pos[0]] #torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_angles[:, index_pos[0]]
+#                 NR   = bond_angles[:, index_pos[0]] #torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))#bond_angles[:, index_pos[0]]
+                NR   = torch.deg2rad(torch.tensor(121.7, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))
                 CaR  = bond_angles[:, index_pos[1]]
                 CR   = bond_angles[:, index_pos[2]]
                 COR  = bond_angles[:, index_pos[3]] #torch.deg2rad(torch.tensor(123.0, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))
@@ -946,7 +910,7 @@ class TerminalPeptide:
                 # bond angles
                 NR   = bond_angles[:, index_pos[0]]
                 CaR  = bond_angles[:, index_pos[1]]
-                CR   = bond_angles[:, index_pos[2]]
+                CR   = torch.deg2rad(torch.tensor(116.2, dtype=torch.float64, device=device)).repeat(bond_angles.size(0))
                 COR  = bond_angles[:, index_pos[3]]
                 NHR  = bond_angles[:, index_pos[4]]
             #     # Bond Lengths

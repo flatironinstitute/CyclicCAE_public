@@ -11,6 +11,8 @@ import datetime
 import argparse
 import ast
 import time
+from datetime import timedelta
+from decorators import timeit
 
 # import torch
 import torch
@@ -708,6 +710,7 @@ class EnergyPath:
     
 
 
+    # @timeit
     def inpainting(self, B: int, random_no_reference: bool = False, interface_dict = None,
                    terminal = True, motif_dofs = None, l_homochiral: bool = False,):
         """given frozen residues search for scaffolds to hold motif residues
@@ -840,7 +843,7 @@ class EnergyPath:
                     bond_angle_cos,
                     bond_length,
                 )
-                if match_res_mask.shape == 0:
+                if match_res_mask.numel() == 0:
                     print("No Scaffolds Match Your inpaint-dist. If this happens many times, \
                     you may want to relax the threshold slightly. It is too strict.")
                     continue
@@ -1045,6 +1048,8 @@ class EnergyPath:
             # Report run statistics
             if random_no_reference:
                 print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, SCAFFOLDS FOUND: {points.size(0)}')
+            elif match_res_mask.numel() == 0:
+                print("None Found. Match Res Mask Number: 0")
             else:
                 print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, BATCH LOW: {harmonic_loss.min().item():.2f}, BATCH MEAN: {harmonic_loss.mean().item():.2f}, CUTOFF: {self.inpaint_dist}, SCAFFOLDS FOUND: {points.size(0)}')
 
@@ -1771,6 +1776,7 @@ class EnergyPath:
     #                 }, f"termbond_original_vs_minimze_data_{B}_{datetime.date.today()}.pt"
     #             )
 
+    # @timeit
     def energy_steps(self, start_points: torch.Tensor = None, mcmc_minimize: bool = False, minimize_steps: int = 1000,
                      interface_full_dict = None, interface_cb_dict = None,
                      motif_dofs = None, l_homochiral: bool = False):
@@ -2198,6 +2204,7 @@ class EnergyPath:
                         self.dof_traj[:, step] = preds
 
 
+    # @timeit
     def output_GDS(
         self, 
         dofsummary: DoFSummary,
@@ -2252,8 +2259,8 @@ class EnergyPath:
         return 0
 
         
-
 if __name__ == "__main__":
+    start_time = time.perf_counter()
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--steps", type=int, default=1000, help="Search Steps Max")
     p.add_argument("--prefix-outfile", type=str, default="test", help="PDB/SilentFile prefix")
@@ -2460,3 +2467,4 @@ if __name__ == "__main__":
                             random_outputs = args.random_sample,
                             minimize_pose = args.apply_minmover_outputs,
                             )
+    print("TOTAL CyclicCAE RUNTIME:", timedelta(minutes=time.perf_counter() - start_time))
