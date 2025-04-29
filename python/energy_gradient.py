@@ -843,7 +843,7 @@ class EnergyPath:
                     bond_angle_cos,
                     bond_length,
                 )
-                if match_res_mask.shape == 0:
+                if match_res_mask.numel() == 0:
                     print("No Scaffolds Match Your inpaint-dist. If this happens many times, \
                     you may want to relax the threshold slightly. It is too strict.")
                     continue
@@ -1048,6 +1048,8 @@ class EnergyPath:
             # Report run statistics
             if random_no_reference:
                 print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, SCAFFOLDS FOUND: {points.size(0)}')
+            elif match_res_mask.numel() == 0:
+                print("None Found. Match Res Mask Number: 0")
             else:
                 print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, BATCH LOW: {harmonic_loss.min().item():.2f}, BATCH MEAN: {harmonic_loss.mean().item():.2f}, CUTOFF: {self.inpaint_dist}, SCAFFOLDS FOUND: {points.size(0)}')
 

@@ -986,7 +986,6 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
     P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
     Q_point = Q[motif_input, :] # Same N atom
 
-
     # Compute centroids
     centroid_P = P_point.mean(dim=1) # (B, N, 3) -> (B, 3)
     centroid_Q = Q_point.mean(dim=0,keepdim=True) # (N, 3) -> (1, 3)

@@ -332,13 +332,8 @@ class DoFSummary:
             dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)
             dof_tensor = torch.deg2rad(dof_tensor)
         elif dof_type == 2:
-            # DEBUG LINE
-            print(torch.tensor(dof_tensor, dtype=torch.float64),torch.tensor(dof_tensor, dtype=torch.float64).shape)
-            print(key)
             dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
         else:
-            print(torch.tensor(dof_tensor, dtype=torch.float64),torch.tensor(dof_tensor, dtype=torch.float64).shape)
-            print(key)
             dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
 
         #     # Add in padding to DoFs
@@ -407,6 +402,8 @@ class DoFSummary:
         if self.is_cyclic:
             # Make sure our structure is cyclic
             self.full_cyclize_native(pose)
+        else:
+            self.remove_all_terminal_types(pose)
 
         # If this is True, then we want all of the DoFs and Residue information
         if self.extract_minimize_input:
@@ -435,7 +432,6 @@ class DoFSummary:
             self.full_cyclize_pose_withoutbond(pose)
 
         # grab our dof indexing tensors
-        print(pose.total_atoms())
         bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(
             pose.total_atoms()-1, # Root atom has no dofs
             L = pose.total_residue(),
@@ -443,14 +439,14 @@ class DoFSummary:
         )
 
         # DEBUG LINE
-        print(bond_angle_idx.shape, bond_angle_idx.view(-1, 5).shape)
-        print(bond_length_idx.shape, bond_length_idx.view(-1, 5).shape)
+#         print(bond_angle_idx.shape, bond_angle_idx.view(-1, 5).shape)
+#         print(bond_length_idx.shape, bond_length_idx.view(-1, 5).shape)
         # index our bond angle/length indices by the residues we want
         residues_of_interest_angle_indices = bond_angle_idx.view(-1, 5)[residues_of_interest-1]
         residues_of_interest_length_indices = bond_length_idx.view(-1, 5)[residues_of_interest-1]
-        # DEBUG LINE
-        print(bond_angle_idx.view(-1, 5))
-        print(residues_of_interest_angle_indices.view(-1))
+#         # DEBUG LINE
+#         print(bond_angle_idx.view(-1, 5))
+#         print(residues_of_interest_angle_indices.view(-1))
 
         # Extract DoFs of interest
         motif_torsion_dofs = self.dof_extract(pose, 1, residues_of_interest, None) if self.include_mainchain_torsions else None
@@ -583,6 +579,7 @@ class DoFSummary:
         modifyvariant_cterm.set_additional_type_to_remove("CUTPOINT_LOWER")
         modifyvariant_cterm.set_additional_type_to_remove("UPPER_TERMINUS_VARIANT")
         modifyvariant_cterm.set_additional_type_to_remove("DIMETHYLATED_CTERMINUS_VARIANT")
+        modifyvariant_cterm.set_additional_type_to_remove("CTERM_AMIDATION")
         modifyvariant_cterm.set_residue_selector(select.TrueResidueSelector())
         modifyvariant_cterm.apply(pose)
         return 0
@@ -887,6 +884,7 @@ class DoFSummary:
                 # Done with this atom. Update to the next element within our dof vector
                 if not kinatom.is_jump():
                     ele+= 1 
+
 
         # Update our pose after all DoFs are placed
         pose.update_residue_neighbors()
