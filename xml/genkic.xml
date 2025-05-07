@@ -1,8 +1,8 @@
 <ROSETTASCRIPTS>
 
     <SCOREFXNS>
-      <!--Peptide ref2015 Scoring-->
-      <ScoreFunction name="high_hbond" weights="ref2015.wts">
+      <!--Peptide ref2015 Scoring; _cart added for the MinMover 05-06-2025-->
+      <ScoreFunction name="high_hbond" weights="ref2015_cart.wts">
         <Reweight scoretype="coordinate_constraint" weight="1"/>
         <Reweight scoretype="atom_pair_constraint" weight="1"/>
         <Reweight scoretype="dihedral_constraint" weight="1"/>
@@ -32,6 +32,7 @@
     </SIMPLE_METRICS>
 
     <FILTERS>
+      <Time name="timer"/>
     </FILTERS>
 
     <MOVERS>
@@ -93,12 +94,13 @@
     </MOVERS>
 
     <PROTOCOLS>
+      <Add filter="timer"/>
       <Add mover="extension"/>
       <Add mover="set_omega_torsion"/>
-      <!-- <Add mover="savepdb"/> -->
       <Add mover="close"/>
       <Add mover="genkic"/>
       <Add mover="minmover"/>
+      <Add filter="timer"/>
     </PROTOCOLS>
     <OUTPUT scorefxn="default"/>
 

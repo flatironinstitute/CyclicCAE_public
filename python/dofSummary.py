@@ -19,6 +19,7 @@ import pyrosetta.rosetta.core.io.silent as silent
 # Import numpy
 import torch
 import os
+import warnings
 
 # Import termina bond
 from terminal_error import TerminalPeptide
@@ -91,7 +92,7 @@ class DoFSummary:
         residue_start: int,
         ) -> Pose:
         """
-        Take a pose and place the motif along a consitent set of residues
+        Take a pose and place the motif along a consistent residue idx
         This is important for downstream applications where we need to
         specify resi numbers and for consistency in design tasks
 
@@ -401,6 +402,8 @@ class DoFSummary:
         if self.is_cyclic:
             # Make sure our structure is cyclic
             self.full_cyclize_native(pose)
+        else:
+            self.remove_all_terminal_types(pose)
 
         # If this is True, then we want all of the DoFs and Residue information
         if self.extract_minimize_input:
@@ -425,17 +428,25 @@ class DoFSummary:
         if self.is_cyclic:
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
+        else:
+            self.full_cyclize_pose_withoutbond(pose)
 
         # grab our dof indexing tensors
         bond_angle_idx, bond_length_idx = self.term_bond.extract_bond_angles(
-            pose.total_atoms(),
+            pose.total_atoms()-1, # Root atom has no dofs
             L = pose.total_residue(),
             root = pose.fold_tree().root(),
         )
 
+        # DEBUG LINE
+#         print(bond_angle_idx.shape, bond_angle_idx.view(-1, 5).shape)
+#         print(bond_length_idx.shape, bond_length_idx.view(-1, 5).shape)
         # index our bond angle/length indices by the residues we want
-        residues_of_interest_angle_indices = bond_angle_idx.view(-1, 5)[residues_of_interest]
-        residues_of_interest_length_indices = bond_length_idx.view(-1, 5)[residues_of_interest]
+        residues_of_interest_angle_indices = bond_angle_idx.view(-1, 5)[residues_of_interest-1]
+        residues_of_interest_length_indices = bond_length_idx.view(-1, 5)[residues_of_interest-1]
+#         # DEBUG LINE
+#         print(bond_angle_idx.view(-1, 5))
+#         print(residues_of_interest_angle_indices.view(-1))
 
         # Extract DoFs of interest
         motif_torsion_dofs = self.dof_extract(pose, 1, residues_of_interest, None) if self.include_mainchain_torsions else None
@@ -568,6 +579,7 @@ class DoFSummary:
         modifyvariant_cterm.set_additional_type_to_remove("CUTPOINT_LOWER")
         modifyvariant_cterm.set_additional_type_to_remove("UPPER_TERMINUS_VARIANT")
         modifyvariant_cterm.set_additional_type_to_remove("DIMETHYLATED_CTERMINUS_VARIANT")
+        modifyvariant_cterm.set_additional_type_to_remove("CTERM_AMIDATION")
         modifyvariant_cterm.set_residue_selector(select.TrueResidueSelector())
         modifyvariant_cterm.apply(pose)
         return 0
@@ -712,7 +724,6 @@ class DoFSummary:
     def minimize_pose(
         self,
         pose: Pose,
-        residue_start: int,
         ) -> int:
         """
         Apply a minmover to the pose for scoring
@@ -725,6 +736,7 @@ class DoFSummary:
         -------
         :pose: minimized version of this pose
         """
+        # Clone our pose
         pose_before = pose.clone()
 
         # Set up a movemap
@@ -732,10 +744,11 @@ class DoFSummary:
         mm.set_bb(True)
         mm.set_chi(True)
         if self.peptide_native != None:
-            residue_range = [i for i in range(residue_start + 1, residue_start + 1 + len(list(self.motif_residue_info.keys())))]
+            residue_range = [i for i in range(
+                self.consistent_motif_resi,
+                self.consistent_motif_resi + len(list(self.motif_residue_info.keys())))]
             for ir in range(1, pose.total_residue()+1):
                 if ir in residue_range:
-                # if ir in list(self.motif_residue_info.keys()):
                     mm.set_bb(ir, False)
                     mm.set_chi(ir, False)
 
@@ -762,27 +775,30 @@ class DoFSummary:
         """
         # init selectors
         rmsd_motif = core.simple_metrics.metrics.RMSDMetric(native_pose)
-        rmsd_fullbb = core.simple_metrics.metrics.RMSDMetric(native_pose)
 
         # set heavy backbone atoms
         rmsd_motif.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
-        rmsd_fullbb.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
         rmsd_motif.set_run_superimpose(True)
-        rmsd_fullbb.set_run_superimpose(True)
 
         # specify selectors
         motif_selector = select.ResidueIndexSelector()
         motif_selector.set_index(",".join([str(i) for i in range(self.consistent_motif_resi, self.consistent_motif_resi + len(self.motif_residue_info.keys()))]))
-
+        # Native motif
+        native_selector = select.ResidueIndexSelector()
+        native_selector.set_index(",".join([str(i) for i in self.motif_residue_info.keys()]))
 
 
         # add our residues selections
         rmsd_motif.set_residue_selector(motif_selector)
-        rmsd_motif.set_residue_selector_reference(motif_selector)
+        rmsd_motif.set_residue_selector_reference(native_selector)
 
         # perform RMSD calculation
         rmsd_motif.apply(curpose, "motif_bbHeavy_RMSD")
-        rmsd_fullbb.apply(curpose, "full_bbHeavy_RMSD")
+        if native_pose.total_residue() == curpose.total_residue():
+            rmsd_fullbb = core.simple_metrics.metrics.RMSDMetric(native_pose)
+            rmsd_fullbb.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
+            rmsd_fullbb.set_run_superimpose(True)
+            rmsd_fullbb.apply(curpose, "full_bbHeavy_RMSD")
         return 0
 
     def align_to_native_motif_positions(
@@ -869,6 +885,7 @@ class DoFSummary:
                 if not kinatom.is_jump():
                     ele+= 1 
 
+
         # Update our pose after all DoFs are placed
         pose.update_residue_neighbors()
 
@@ -885,7 +902,7 @@ class DoFSummary:
             self.declare_terminal_bond(pose)
 
         if minimize_pose:
-            self.minimize_pose(pose, residue_start)
+            self.minimize_pose(pose)
             if (self.peptide_native != None) and (not self.extract_minimize_input):
                 self.calculate_rmsd_between_native(pose, self.peptide_native)
             # Calculate internal hbonds
@@ -926,6 +943,10 @@ class DoFSummary:
         :minimize_pose: Use MinMover to minimize the pose slightly in Rosetta's
             ref2015 scorefunction
         """
+        # Add Output that you are adding to a File
+        if os.path.isfile(os.path.join(output_path, f'{self.prefix}.silent')):
+            warnings.warn(f"You are appending onto {self.prefix}.silent, as it is already in {output_path}")
+
         # set a scorefunction
         if score_outputs or minimize_pose:
             self.scorefxn = core.scoring.get_score_function(is_fullatom = True)

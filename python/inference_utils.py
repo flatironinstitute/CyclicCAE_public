@@ -607,38 +607,25 @@ def interface_loss(
     loss: (B) float
         Computed loss given interface and recomputed_xyz using a smooth distance cutoff
     """
+    # Grab sizes
+    B, Atoms, _ = recomputed_xyz.shape
+    N = interface_atoms.shape[-2]
+
+    # Generate our metrics
+    sigma_peptide = torch.tensor([1.8025, 2.0118, 1.9167, 1.5406] * (Atoms // 4), dtype=torch.double, device=recomputed_xyz.device)
+    epsilon_peptide = torch.tensor([0.1617, 0.0626, 0.1418, 0.1424] * (Atoms // 4), dtype=torch.double, device=recomputed_xyz.device)
+
+    # check for size
+    if interface_atoms.dim() == 2:
+        interface_atoms = interface_atoms.unsqueeze(0).expand(B, -1, -1)
     # get pairwise distances
     pairwise_distances = torch.cdist(recomputed_xyz, interface_atoms, p=2)
-    # print("MIN DISTANCE:", pairwise_distances.min(-1)[0].min(-1).values)
-    B, N, _ = pairwise_distances.shape
-    # if self_peptide:
-    #     print(pairwise_distances.shape)
-    #     print(recomputed_xyz.shape)
-    #     print(interface_atoms.shape)
-    #     pairwise_distances = pairwise_distances * (1 - torch.eye(N, N, device=recomputed_xyz.device).repeat(B, 1, 1))
 
-    
-    # weight matrix
-    # w_ones = torch.ones_like(pairwise_distances, device=pairwise_distances.device)
-    # W = torch.where(pairwise_distances <= 0.5, torch.tensor(10), w_ones)
-
-    # Sigma & Espilon mats with the shape (Atoms, N)
-    # S = torch.add(sigma_peptide.unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
-    # E = torch.sqrt(epsilon_peptide.unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
-    # if self_peptide:
-    #     S = torch.add(sigma_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T, sigma_interface[interface_atoms.size(-1)].unsqueeze(0)) # Add together i + j
-    #     E = torch.sqrt(epsilon_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T @ epsilon_interface[interface_atoms.size(-1)].unsqueeze(0)) # sqrt(product of i * j)
-    #     print(S.shape)
-    #     print(sigma_interface)
-    #     print(interface_atoms.size(-1))
-    # else:
-    # S = torch.add(sigma_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
-    # E = torch.sqrt(epsilon_peptide[recomputed_xyz.size(-1)].unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
-    ### MADE A CHANGE FROM ABOVE TO INCLUDE THE NUMBER OF ATOMS IN OUR INPUT NOT JUST ONE
-    S = torch.add(sigma_peptide[:recomputed_xyz.size(1)].unsqueeze(0).T, sigma_interface.unsqueeze(0)) # Add together i + j
-    E = torch.sqrt(epsilon_peptide[:recomputed_xyz.size(1)].unsqueeze(0).T @ epsilon_interface.unsqueeze(0)) # sqrt(product of i * j)
-    S = S.repeat(B, 1, 1)
-    E = E.repeat(B, 1, 1)
+    # Compute LJ Terms
+    S = sigma_peptide.view(1, Atoms, 1) + sigma_interface.view(1, 1, N)
+    E = torch.sqrt(epsilon_peptide.view(1, Atoms, 1) * epsilon_interface.view(1, 1, N))
+    S = S.expand(B, -1, -1)
+    E = E.expand(B, -1, -1)
 
     # Linear Repulse Term
     m = 20 * E / S * (-(5/3)**12 + (5/3)**6)
@@ -657,17 +644,9 @@ def interface_loss(
             lj_term,
             torch.zeros_like(pairwise_distances, device=pairwise_distances.device)
         )
-    ) #* W
+    ) 
 
-    # if self_peptide:
-    #     #mask out bonded pairs
-    #     mask = build_exclusion_mask(N//4, 4)
-    #     loss = loss * ~mask.to(loss.device)
-    #     print(loss)
-    #     return loss.sum((-2, -1)), pairwise_distances.min(-1)[0].min(-1).values < 1.0
-    # else:
     return loss.sum((-2, -1)), pairwise_distances.min(-1)[0].min(-1).values < 1.0
-    # return repulse.sum(-1), pairwise_distances.clone().detach()
 
 # def interface_loss(
 #     interface_atoms: torch.Tensor,
@@ -1006,7 +985,6 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
     # P_point = P[:, motif, :] # N atom of 4th residue root
     P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
     Q_point = Q[motif_input, :] # Same N atom
-
 
     # Compute centroids
     centroid_P = P_point.mean(dim=1) # (B, N, 3) -> (B, 3)
