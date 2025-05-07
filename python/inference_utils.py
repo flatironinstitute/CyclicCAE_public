@@ -1243,19 +1243,26 @@ def split_motif_atoms(residue_index: torch.Tensor) -> list:
     -------
     :regions (List[torch.Tensor]): Each region's index in their own tensor
     """
+    # Init variables
     regions = list()
     p = 0
     l = 0
+    count = 0 # As we are setup for only 2 discontiguous motifs at the moment
     for i in range(1, residue_index.shape[0]):
         check = residue_index[p]+1 != residue_index[i]
         if check:
             regions.append(residue_index[l:i])
             l = i
         p+=1
+        count+=1
         if (i+1 == residue_index.shape[0]) and (check):
             regions.append(residue_index[-1].unsqueeze(0))
+            count+=1
         elif (i+1 == residue_index.shape[0]) and (not check):
             regions.append(residue_index[l:])
+            count+=1
+    # make sure that we are only taking into account 2 regions no more
+    assert count <= 2, "The current approach is only built for 2 discontinuous regions no more."
     return pdb_index_grab(regions), regions
 
 
