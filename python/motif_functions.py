@@ -68,7 +68,6 @@ def compute_motif_indices(
         pep_len,
         True,
     )
-    print(phi_psi_idx, phi_psi_selection)
     phi_psi_true = torch.gather(phi_psi_idx, -1, phi_psi_selection_cyclic) # (B, M*2)
     # Extract out Omega
     #### NOTE: OMEGA is not provided for residue 8, this needs to be grabbed from

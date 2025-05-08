@@ -39,6 +39,8 @@ from motif_functions import (
     extract_dof_of_interest_minimize,
 )
 
+from inpaint_funcs import extract_loss_and_matchres
+
 #############
 ##### Classes
 #############
@@ -750,6 +752,10 @@ class EnergyPath:
                 interface_dict["peptide"][self.regions_atoms[0]].unsqueeze(0),
                 interface_dict["peptide"][self.regions_atoms[1]].unsqueeze(0),
             )
+        else:
+            self.regions_atoms = None
+            self.t_native = None
+            self.R_native = None
 
         # input information
         if args.freeze_residues != None:
@@ -795,13 +801,13 @@ class EnergyPath:
             energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
 
             ######### REMOVE SECTION LATER
-            if energy_all.size(-1) == 1:
-                energy = torch.zeros(energy_all.size(0), 3)
-                energy[:, -2] = energy_all.squeeze(-1)
-                energy_all = energy
-
-            energy_ref = energy_all[:, -2]
-            # energy_ref = energy_all[:, -1]
+#             if energy_all.size(-1) == 1:
+#                 energy = torch.zeros(energy_all.size(0), 3)
+#                 energy[:, -2] = energy_all.squeeze(-1)
+#                 energy_all = energy
+# 
+#             energy_ref = energy_all[:, -2]
+# 
             ######### REMOVE SECTION LATER
 
 
@@ -813,48 +819,6 @@ class EnergyPath:
                 foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                 device = out.device,
             )
-
-            if args.freeze_residues != None:
-                # Add in the terminal peptide bond HNCO radian, as it isn't a part
-                # of the DoFs
-                HNCO_sin, HNCO_cos = torch.sin(HNCO), torch.cos(HNCO)
-                torsion_sin = torch.cat(
-                    (
-                        torsion_sin,
-                        HNCO_sin,
-                    ), dim=-1,
-                )
-                torsion_cos = torch.cat(
-                    (
-                        torsion_cos,
-                        HNCO_cos,
-                    ), dim=-1,
-                )
-                # Now compute which residues match our motif
-                harmonic_loss, match_res_mask = self.harmonic_diff_inpaint(
-                    real_t_sin,
-                    real_t_cos,
-                    real_ba_sin,
-                    real_ba_cos,
-                    real_bond_length,
-                    torsion_sin,
-                    torsion_cos,
-                    bond_angle_sin,
-                    bond_angle_cos,
-                    bond_length,
-                )
-                if match_res_mask.numel() == 0:
-                    print("No Scaffolds Match Your inpaint-dist. If this happens many times, \
-                    you may want to relax the threshold slightly. It is too strict.")
-                    continue
-                # Calculate motif numbering
-                # HERE
-                self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
-                    match_res_mask,
-                    self.PARAMS["protein_len"],
-                    self.freeze_residues.shape[0],
-                    self.freeze_residues,
-                )
 
             coords_inter = torch.cat(
                 (
@@ -872,24 +836,109 @@ class EnergyPath:
             if len(coords.shape) == 2:
                 coords = coords.unsqueeze(0)
 
+            # If we have a motif that we want to inpaint with then we need to extract some information
+            # Therefore, we traverse this logic
+            loss, match_res_mask, self.motif, self.motif_input, no_matches = extract_loss_and_matchres(
+                self.freeze_residues,
+                self.contiguous,
+                self.regions_atoms,
+                self.t_native,
+                self.R_native,
+                real_t_sin,
+                real_t_cos,
+                real_ba_sin,
+                real_ba_cos,
+                real_bond_length,
+                torsion_sin,
+                torsion_cos,
+                bond_angle_sin,
+                bond_angle_cos,
+                bond_length,
+                self.torsion_index,
+                self.bond_angle_dofs,
+                self.bond_length_dofs,
+                self.PARAMS,
+                self.freeze_torsion,
+                self.freeze_bond_angle,
+                self.freeze_bond_length,
+                self.inpaint_dist,
+                self.match_res_mask,
+                HNCO,
+                coords,
+                self.device,
+                )
+            if no_matches:
+                continue
+#             if args.freeze_residues != None:
+#                 # Add in the terminal peptide bond HNCO radian, as it isn't a part
+#                 # of the DoFs
+#                 HNCO_sin, HNCO_cos = torch.sin(HNCO), torch.cos(HNCO)
+#                 torsion_sin = torch.cat(
+#                     (
+#                         torsion_sin,
+#                         HNCO_sin,
+#                     ), dim=-1,
+#                 )
+#                 torsion_cos = torch.cat(
+#                     (
+#                         torsion_cos,
+#                         HNCO_cos,
+#                     ), dim=-1,
+#                 )
+# 
+#                 if not self.contiguous:
+#                     discontig_loss = discontig_motif_loss(
+#                         region1  = coords[:, self.regions_atoms[0], :].view(coords.shape[0], -1, 3),
+#                         region2  = coords[:, self.regions_atoms[1], :].view(coords.shape[0], -1, 3),
+#                         t_native = self.t_native,
+#                         R_native = self.R_native,
+#                     )
+#                     # For testing purposes
+#                     match_res_mask = torch.empty()
+#                 else:
+#                     # Now compute which residues match our motif
+#                     harmonic_loss, match_res_mask = self.harmonic_diff_inpaint(
+#                         real_t_sin,
+#                         real_t_cos,
+#                         real_ba_sin,
+#                         real_ba_cos,
+#                         real_bond_length,
+#                         torsion_sin,
+#                         torsion_cos,
+#                         bond_angle_sin,
+#                         bond_angle_cos,
+#                         bond_length,
+#                     )
+#                 if match_res_mask.numel() == 0:
+#                     print("No Scaffolds Match Your inpaint-dist. If this happens many times, \
+#                     you may want to relax the threshold slightly. It is too strict.")
+#                     continue
+#                 # Calculate motif numbering
+#                 # HERE
+#                 self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
+#                     match_res_mask,
+#                     self.PARAMS["protein_len"],
+#                     self.freeze_residues.shape[0],
+#                     self.freeze_residues,
+#                 )
+
             #########
             # Interface calculate
             #########
 
+
             if interface_dict != None:
                 peptide_nonhydrogen_mask = interface_dict["epsilon_peptide"] != 0.901681
                 if not self.contiguous:
+                    print(self.motif)
+                    print(self.motif_input)
+                    print(self.regions_atoms)
+                    print(self.regions_atoms[0])
                     aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
-                                                          # motif = torch.arange(12, 16),
-                                                          # motif = torch.tensor(12),
-                                                          motif = self.regions_atoms[0],
+#                                                           motif_input_ = self.regions_atoms[0],
+                                                          motif_input = self.regions_atoms[0].unsqueeze(0),
+                                                          motif_output = self.regions_atoms[0].unsqueeze(0),
                                                           )
-                    discontig_loss = discontig_motif_loss(
-                        region1  = aligned_coordinates[:, self.regions_atoms[0], :].view(aligned_coordinates.shape[0], -1, 3),
-                        region2  = aligned_coordinates[:, self.regions_atoms[1], :].view(aligned_coordinates.shape[0], -1, 3),
-                        t_native = self.t_native,
-                        R_native = self.R_native,
-                    )
                 else:
                     # Non contiguous indexing of our outputs
                     coords = coords[match_res_mask[:, 0]]
@@ -963,10 +1012,11 @@ class EnergyPath:
                 ocnh_mask = ocnh_loss[match_res_mask[:, 0]].view(-1) < 0.5
                 hnc_mask = hnc_loss[match_res_mask[:, 0]].view(-1) < 0.5
                 nco_mask = nco_loss[match_res_mask[:, 0]].view(-1) < 0.5
-                harm_mask = harmonic_loss <= self.inpaint_dist
+#                 harm_mask = harmonic_loss <= self.inpaint_dist
                 l_homochiral_mask = homochiral_mask[match_res_mask[:, 0]].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
                 # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
                 if self.contiguous:
+                    harm_mask = loss <= self.inpaint_dist
                     mask = torch.logical_and(
                         ocnh_mask.view(-1, 1), torch.logical_and(
                             hnc_mask.view(-1, 1), torch.logical_and(
@@ -980,45 +1030,19 @@ class EnergyPath:
                                 ),
                             ),
                         ).view(-1) #).view(-1)
-                # if self.contiguous:
-                #     mask = torch.logical_and(
-                #         ocnh_mask.view(-1, 1), torch.logical_and(
-                #             hnc_mask.view(-1, 1), torch.logical_and(
-                #                 nco_mask.view(-1, 1), torch.logical_and(
-                #                     harm_mask.view(-1,1), torch.logical_and(
-                #                         int_mask.view(-1,1), terminal_mask.view(-1, 1)
-                #                     )
-                #                 ),
-                #             ),
-                #         )).view(-1)
-                #### Need to rework this method
-                #### Might be beneficial to take the residue spacing for this one and check all (i, j, k) pairs and not just the specific
-                #### residue we are starting with
-                #### This would be a somewhat lengthy change, so not important for the moment.
                 else:
-                    # print("CA non-contiguous")
-                    # ca_motif_distance_mask = ca_distance_motif_initial <= 0.5
-                    ca_motif_distance_mask = discontig_loss <= 5.0
+                    ca_motif_distance_mask = loss <= 5.0
                     mask = torch.logical_and(
                         ocnh_mask.view(-1, 1), torch.logical_and(
                             hnc_mask.view(-1, 1), torch.logical_and(
                                 nco_mask.view(-1, 1), torch.logical_and(
-                                    harm_mask.view(-1,1), torch.logical_and(
+#                                     harm_mask.view(-1,1), torch.logical_and(
                                         int_mask.view(-1,1), torch.logical_and(
                                             terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
-                                    )
+#                                     )
                                 ),
                             ),
                         )).view(-1)
-                    # mask = torch.logical_and(
-                    #                 harm_mask.view(-1,1), torch.logical_and(
-                    #                     int_mask.view(-1,1), torch.logical_and(
-                    #                         terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
-                    #     )).view(-1)
-
-
-                # mask = torch.logical_and(torch.logical_and(int_mask.view(-1, 1), harm_mask.view(-1, 1)),terminal_mask.view(-1, 1)).view(-1),
-                # ),
 
 
             # Grab out specific points that only pass
@@ -1051,7 +1075,7 @@ class EnergyPath:
             elif match_res_mask.numel() == 0:
                 print("None Found. Match Res Mask Number: 0")
             else:
-                print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, BATCH LOW: {harmonic_loss.min().item():.2f}, BATCH MEAN: {harmonic_loss.mean().item():.2f}, CUTOFF: {self.inpaint_dist}, SCAFFOLDS FOUND: {points.size(0)}')
+                print(f'BATCH: {run}, FOUND SCAFFOLD START POINTS: {mask.sum().item()}, BATCH LOW: {loss.min().item():.2f}, BATCH MEAN: {loss.mean().item():.2f}, CUTOFF: {self.inpaint_dist}, SCAFFOLDS FOUND: {points.size(0)}')
 
             # If scaffolds found Stop While Loop
             run+=1
@@ -2279,7 +2303,7 @@ if __name__ == "__main__":
     p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate")
     p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
     p.add_argument("--cutoff", type=float, default=0.005, help="Specify Euclidean Distance Cutoff in Latent Space to Search")
-    p.add_argument("--latent-dim", type=int, default=3, help="Latent Size of the model")
+    p.add_argument("--latent-dim", type=int, default=6, help="Latent Size of the model")
     p.add_argument("--partial-optimization", action="store_true", help="Apply partial optimization to a structure")
     p.add_argument("--freeze-residues", nargs="+", type=int, help="Used wth partial-optimization. If no sub freeze flags specified all are frozen \
                         Specify residues in a whitespace manner to freeze (e.g. 1 2 3)")

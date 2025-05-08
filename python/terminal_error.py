@@ -416,7 +416,6 @@ class TerminalPeptide:
         """
         # Generate a dof number array
         dofs = torch.arange(dof_length)
-        print("DEBUG DOFS:", dofs.shape)
 
         for resi in range(L):
 
@@ -479,7 +478,6 @@ class TerminalPeptide:
                 # print("residue after 1", resi+1, bond_angle_idx)
             elif resi+1 == root:
                 # Update Residues
-                print("Before Root Last:", bond_angle_idx[-1,-1])
                 N = bond_angle_idx[-1, -1]-2
                 Ca = bond_angle_idx[-1, -1]+4
                 C = bond_angle_idx[-1, -1]+9
