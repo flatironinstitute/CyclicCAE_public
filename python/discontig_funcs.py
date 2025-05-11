@@ -7,8 +7,6 @@
 import torch
 from torch import Tensor
 from motif_functions import extract_dof_of_interest_minimize
-
-
 def harmonic_diff_inpaint(
     real_t_sin: Tensor, 
     real_t_cos: Tensor,

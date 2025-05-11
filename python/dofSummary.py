@@ -14,7 +14,10 @@ import pyrosetta.rosetta.protocols.simple_moves as sm
 # import pyrosetta.rosetta.protocols.cyclic_peptide as cp
 import pyrosetta.rosetta.core.select.residue_selector as select
 import pyrosetta.rosetta.core as core
+import pyrosetta.rosetta as rosetta
 import pyrosetta.rosetta.core.io.silent as silent
+from pyrosetta.rosetta.std import map_core_id_AtomID_core_id_AtomID
+from pyrosetta.rosetta.core.id import AtomID
 
 # Import numpy
 import torch
@@ -417,12 +420,28 @@ class DoFSummary:
 
         # Now mutate our residues to Glycine
         for ir in range(1, pose.total_residue()+1):
-            mutateResidue = sm.MutateResidue()
-            mutateResidue.preserve_atom_coords()
-            mutateResidue.set_target(ir)
-            mutateResidue.set_res_name("GLY")
-            mutateResidue.apply(pose)
-
+            try:
+                mutateResidue = sm.MutateResidue()
+                mutateResidue.preserve_atom_coords()
+                mutateResidue.set_target(ir)
+                mutateResidue.set_res_name("GLY")
+                mutateResidue.apply(pose)
+            except:
+                # Extract out important info
+                old_res = pose.residue(ir)
+                backbone_atoms = ["N", "CA", "C", "O"]
+                coords = {atom: old_res.xyz(atom) for atom in backbone_atoms}
+                # Create a new GLY residue
+                gly_res_type = pose.residue_type_set_for_pose().name_map("GLY")
+                gly_residue = core.conformation.ResidueFactory.create_residue(gly_res_type)
+                # Manually set the backbone atom positions to the saved coordinates
+                for atom in backbone_atoms:
+                    gly_residue.set_xyz(atom, coords[atom])
+                # Replace the residue without orienting the backbone (we already did it manually)
+                pose.replace_residue(ir, gly_residue, orient_backbone=False)
+#                 core.conformation.idealize_hydrogens(pose.residue(ir), pose.conformation())
+                core.conformation.idealize_position(ir, pose.conformation())
+# 
         pose.update_residue_neighbors()
 
         if self.is_cyclic:
@@ -493,6 +512,9 @@ class DoFSummary:
         self.include_mainchain_torsions = include_torsion
         self.include_mainchain_bondangles = include_bondangle
         self.include_mainchain_bondlengths = include_bondlength
+
+        # new test
+        self.residues_of_interest = residues_of_interest
 
         # extract only the peptide/binder pose
         peptide_pose = self.read_pdb_extract_peptide(input_pdb, peptide_chain)
@@ -764,6 +786,47 @@ class DoFSummary:
         pose.scores["MinMover_bbheavy_RMSD"] = rmsd
         return 0
 
+    def grab_atomid_map(
+            self,
+            pose_reference: core.pose.Pose,
+            pose_target: core.pose.Pose,
+            residue_anchors: list[int],
+            target_start_resi: int = 2,
+            ) -> map_core_id_AtomID_core_id_AtomID:
+        """Build an AtomID map for superimpose_pose call to function
+
+        PARAMS
+        ------
+        :pose_reference: The receptor or target we designed macrocycles for. This should have
+            the peptide or binder we used as a base/anchor for our peptide generation.
+        :pose_target: Our peptide/macrocycle byitself not in the context of the target
+        :residue_anchors: A list of residues that we want to align against (1-index)
+        :target_start_resi: The starting resi of the targets motif (1-index)
+
+        RETURNS
+        -------
+        :core_atomid_map: Our map of AtomIDs for superimpose_pose to function
+        """
+        # init our map id
+        atid_map = map_core_id_AtomID_core_id_AtomID()
+
+        # loop through our residues
+        for ir in range(0, len(residue_anchors)):
+            # Grab the residues
+            fzn_posit = ir+target_start_resi
+            nat_fzn_posit = ir+residue_anchors[0]
+            curres = pose_target.residue(fzn_posit)
+            refres = pose_reference.residue(nat_fzn_posit)
+
+            # Assert
+            assert curres.natoms() == refres.natoms(), "The number of atoms do not match"
+
+            # Loop through atoms
+            for ia in range(1, curres.natoms()+1):
+                if curres.atom_is_hydrogen( ia ): continue
+                atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
+        return atid_map
+
     def calculate_rmsd_between_native(self, curpose: Pose, native_pose: Pose) -> int:
         """
         Measure RMSD against native and current pose
@@ -773,27 +836,44 @@ class DoFSummary:
         :curpose: Threaded pose that was mutated
         :native_pose: PDB native peptide mutated
         """
-        # init selectors
-        rmsd_motif = core.simple_metrics.metrics.RMSDMetric(native_pose)
+        atom_map = self.grab_atomid_map(
+                native_pose,
+                curpose,
+                self.residues_of_interest,
+                )
+        core.scoring.superimpose_pose(
+                curpose,
+                native_pose,
+                atom_map,
+                )
 
-        # set heavy backbone atoms
-        rmsd_motif.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
-        rmsd_motif.set_run_superimpose(True)
-
-        # specify selectors
-        motif_selector = select.ResidueIndexSelector()
-        motif_selector.set_index(",".join([str(i) for i in range(self.consistent_motif_resi, self.consistent_motif_resi + len(self.motif_residue_info.keys()))]))
-        # Native motif
-        native_selector = select.ResidueIndexSelector()
-        native_selector.set_index(",".join([str(i) for i in self.motif_residue_info.keys()]))
-
-
-        # add our residues selections
-        rmsd_motif.set_residue_selector(motif_selector)
-        rmsd_motif.set_residue_selector_reference(native_selector)
-
-        # perform RMSD calculation
-        rmsd_motif.apply(curpose, "motif_bbHeavy_RMSD")
+        motif_specific_rmsd = core.scoring.rms_at_corresponding_atoms_no_super(
+                curpose,
+                native_pose,
+                atom_map,
+                )
+#         # init selectors
+#         rmsd_motif = core.simple_metrics.metrics.RMSDMetric(native_pose)
+# 
+#         # set heavy backbone atoms
+#         rmsd_motif.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
+# #         rmsd_motif.set_run_superimpose(True)
+# 
+#         # specify selectors
+#         motif_selector = select.ResidueIndexSelector()
+#         motif_selector.set_index(",".join([str(i) for i in range(self.consistent_motif_resi, self.consistent_motif_resi + len(self.motif_residue_info.keys()))]))
+#         # Native motif
+#         native_selector = select.ResidueIndexSelector()
+#         native_selector.set_index(",".join([str(i) for i in self.motif_residue_info.keys()]))
+# 
+# 
+#         # add our residues selections
+#         rmsd_motif.set_residue_selector(motif_selector)
+#         rmsd_motif.set_residue_selector_reference(native_selector)
+# 
+#         # perform RMSD calculation
+#         rmsd_motif.apply(curpose, "motif_bbHeavy_RMSD")
+        curpose.scores["motif_fullHeavy_RMSD"] = motif_specific_rmsd
         if native_pose.total_residue() == curpose.total_residue():
             rmsd_fullbb = core.simple_metrics.metrics.RMSDMetric(native_pose)
             rmsd_fullbb.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
