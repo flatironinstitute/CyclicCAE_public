@@ -312,7 +312,7 @@ def extract_pdb_xyz(input: str, full: bool = False):
 
     return atomdict
 
-def gen_xyz_tensor(atomdict: dict):
+def gen_xyz_tensor(atomdict: dict, peptide_chain: int,):
     """Convert the atomic dictionary to tensors
 
     PARAMS
@@ -365,16 +365,29 @@ def gen_xyz_tensor(atomdict: dict):
             # append list
             split_tensor_idx.append(k)
 
-    # target
-    target = full_xyz[:split_tensor_idx[0], :]
-    sigma_target = sigma_mat[:split_tensor_idx[0]]
-    epsilon_target = epsilon_mat[:split_tensor_idx[0]]
-    color_target = color_tensor[:split_tensor_idx[0]]
+    if peptide_chain == 2:
+        # target == chain 1
+        target = full_xyz[:split_tensor_idx[0], :]
+        sigma_target = sigma_mat[:split_tensor_idx[0]]
+        epsilon_target = epsilon_mat[:split_tensor_idx[0]]
+        color_target = color_tensor[:split_tensor_idx[0]]
 
-    # Peptide
-    peptide = full_xyz[split_tensor_idx[0]:, :]
-    sigma_peptide = sigma_mat[split_tensor_idx[0]:]
-    epsilon_peptide = epsilon_mat[split_tensor_idx[0]:]
+        # Peptide == chain 2
+        peptide = full_xyz[split_tensor_idx[0]:, :]
+        sigma_peptide = sigma_mat[split_tensor_idx[0]:]
+        epsilon_peptide = epsilon_mat[split_tensor_idx[0]:]
+    else:
+        # peptide == chain 1
+        peptide = full_xyz[:split_tensor_idx[0], :]
+        sigma_peptide = sigma_mat[:split_tensor_idx[0]]
+        epsilon_peptide = epsilon_mat[:split_tensor_idx[0]]
+
+        # Target == chain 2
+        target = full_xyz[split_tensor_idx[0]:, :]
+        sigma_target = sigma_mat[split_tensor_idx[0]:]
+        epsilon_target = epsilon_mat[split_tensor_idx[0]:]
+        color_target = color_tensor[split_tensor_idx[0]:]
+
 
 
     return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target

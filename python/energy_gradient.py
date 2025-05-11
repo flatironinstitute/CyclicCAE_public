@@ -2289,13 +2289,13 @@ if __name__ == "__main__":
     p.add_argument("--steps", type=int, default=1000, help="Search Steps Max")
     p.add_argument("--prefix-outfile", type=str, default="test", help="PDB/SilentFile prefix")
     p.add_argument("--silentfile", action="store_true", help="Save Model outputs in a SilentFile format \
-                        if not specified then individual PDBs are produced.")
+       if not specified then individual PDBs are produced.")
     p.add_argument("--score-outputs", action="store_true", help="Score each Model output and save in \
-                        SilentFile (not implemented yet to save score to separate file when Silent not set).")
+        SilentFile (not implemented yet to save score to separate file when Silent not set).")
     p.add_argument("--apply-minmover-outputs", action="store_true", help="Apply the MinMover with ref2015 score to \
-                        our threaded poses.")
+         our threaded poses.")
     p.add_argument("--desired-motif-start-position", default=2, type=int, help="Specifies where the Moitf will start \
-                        on CyclicCAE outputs.")
+          on CyclicCAE outputs.")
     p.add_argument("--output-path", type=str, default="./", help="Determines location PDBs/SilentFile are saved.")
     p.add_argument("--extract-minimize-input", action="store_true", help="Minimize a given input only")
     p.add_argument("--weights-load", type=str, default=None, help="Specify Model Weights To Use. Only needs to be specified for custom weights.")
@@ -2306,7 +2306,7 @@ if __name__ == "__main__":
     p.add_argument("--latent-dim", type=int, default=6, help="Latent Size of the model")
     p.add_argument("--partial-optimization", action="store_true", help="Apply partial optimization to a structure")
     p.add_argument("--freeze-residues", nargs="+", type=int, help="Used wth partial-optimization. If no sub freeze flags specified all are frozen \
-                        Specify residues in a whitespace manner to freeze (e.g. 1 2 3)")
+           Specify residues in a whitespace manner to freeze (e.g. 1 2 3)")
     p.add_argument("--l-homochiral", action="store_true", help="Generate only L-homochiral outputs")
     p.add_argument("--freeze-torsion", action="store_true", help="Use with partial-optimization")
     p.add_argument("--freeze-bond-angle", action="store_true", help="Use with partial-optimization")
@@ -2335,10 +2335,11 @@ if __name__ == "__main__":
     p.add_argument("--skip-individual", action="store_true", help="For skipping individual construct trajectory outputting during inpainting")
     p.add_argument("--interface-cutoff", type=float, default=20.0, help="Metric for accepting a not clashing peptide [10.0 for compact pockets, 20.0 for others] ")
     p.add_argument("--treat-input-binder-as-cyclic", action="store_true", help="Apply Cyclic updates to our Motif Chain (--peptide-chain) \
-                    Only specify this if your passed PDB contains a cyclic peptide.")
-    p.add_argument("--peptide-chain", type=int, default=2, help="Chain Index (1-index) that contains our motif of interest")
+            Only specify this if your passed PDB contains a cyclic peptide.")
+    p.add_argument("--peptide-chain", type=int, default=2, help="Chain Index (1-index) that contains our motif of interest. The model \
+            expects input PDBS to have two chains currently (target & binder/peptide.)")
     p.add_argument("--interface-distance-cutoff", type=float, default=15.0, help="Atoms within this distance cutoff of the target will be considered \
-                        when gradient-marching peptide")
+            when gradient-marching peptide")
     p.add_argument("--fullpocket-minimize", action="store_true", help="Specify if pocket context takes into account all non-hydrgoen bb and side-chain atoms \
                         or only bb-heavy + Cb atoms (which is default if you don't specify this flag)")
     p.add_argument("--ramp-interface-constraint", action="store_true", help="This sets the first 0.50 of the energy minimize steps to bb-heavy + Cb pocket context. \
@@ -2427,7 +2428,7 @@ if __name__ == "__main__":
         #### information for inpainting and gradient-marching
         # All atoms are Extracted within cutoff distance
         atomdict = extract_pdb_xyz(args.pdb_input, full=True)
-        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
+        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         # torch.save(color_target[mask], "interface_color.pt")
         # torch.save(interface, "interfacetensor.pt")
@@ -2436,7 +2437,7 @@ if __name__ == "__main__":
                           "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
         # Cb Pocket Context Extract
         atomdict = extract_pdb_xyz(args.pdb_input, full=False)
-        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
+        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
