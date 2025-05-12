@@ -786,6 +786,81 @@ class DoFSummary:
         pose.scores["MinMover_bbheavy_RMSD"] = rmsd
         return 0
 
+    def grab_heavybb_atomid_map(
+            self,
+            pose_reference: core.pose.Pose,
+            pose_target: core.pose.Pose,
+            residue_anchors: list[int],
+            target_start_resi: int = 2,
+            full_pose: bool = False,
+            ) -> map_core_id_AtomID_core_id_AtomID:
+        """Build an AtomID map for superimpose_pose call to function
+
+        PARAMS
+        ------
+        :pose_reference: The receptor or target we designed macrocycles for. This should have
+            the peptide or binder we used as a base/anchor for our peptide generation.
+        :pose_target: Our peptide/macrocycle byitself not in the context of the target
+        :residue_anchors: A list of residues that we want to align against (1-index)
+        :target_start_resi: The starting resi of the targets motif (1-index)
+        :full_pose: Bool to compare between if you want to get the full pose RMSD and not just a selection
+
+        RETURNS
+        -------
+        :core_atomid_map: Our map of AtomIDs for superimpose_pose to function
+        """
+        # init our map id
+        atid_map = map_core_id_AtomID_core_id_AtomID()
+
+        # Setup our backbone atoms
+        backbone_atoms = ["N", "CA", "C", "O"]
+
+        # RMSD of the entire backbone heavy atoms, full pose, not specific selection
+        if full_pose:
+            motif_ref_diff = (pose_reference.total_residue() - residue_anchors[0])+1
+            # loop through our residues
+            for ir in range(0, motif_ref_diff):
+                # Grab the residues
+                fzn_posit = ir+target_start_resi
+                nat_fzn_posit = ir+residue_anchors[0]
+                curres = pose_target.residue(fzn_posit)
+                refres = pose_reference.residue(nat_fzn_posit)
+
+                # Loop through atoms
+                for ia in range(1, curres.natoms()+1):
+                    if curres.atom_name( ia ).strip() not in backbone_atoms: continue
+                    atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
+
+            for ir in range(0, residue_anchors[0]):
+                # Update native residue position
+                nat_fzn_posit = 1+ir
+                # Update scaffold correctly
+                curirposition = (motif_ref_diff + 2) + ir 
+                fzn_posit = curirposition if curirposition <= pose_target.total_residue() else ( curirposition - pose_target.total_residue() )
+                curres = pose_target.residue(fzn_posit)
+                refres = pose_reference.residue(nat_fzn_posit)
+
+                # Loop through atoms
+                for ia in range(1, curres.natoms()+1):
+                    if curres.atom_name( ia ).strip() not in backbone_atoms: continue
+                    atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
+
+        # Specific Selection RMSD only
+        else:
+            # loop through our residues
+            for ir in range(0, len(residue_anchors)):
+                # Grab the residues
+                fzn_posit = ir+target_start_resi
+                nat_fzn_posit = ir+residue_anchors[0]
+                curres = pose_target.residue(fzn_posit)
+                refres = pose_reference.residue(nat_fzn_posit)
+
+                # Loop through atoms
+                for ia in range(1, curres.natoms()+1):
+                    if curres.atom_name( ia ).strip() not in backbone_atoms: continue
+                    atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
+        return atid_map
+
     def grab_atomid_map(
             self,
             pose_reference: core.pose.Pose,
@@ -836,70 +911,66 @@ class DoFSummary:
         :curpose: Threaded pose that was mutated
         :native_pose: PDB native peptide mutated
         """
-        atom_map = self.grab_atomid_map(
+        # Grab our atom id maps for RMS scoring (motif full)
+        atom_map_motif = self.grab_atomid_map(
                 native_pose,
                 curpose,
                 self.residues_of_interest,
+                self.consistent_motif_resi,
                 )
-        core.scoring.superimpose_pose(
+        # Grab bb heavy atoms of motif
+        bbheavy_atom_map_motif = self.grab_heavybb_atomid_map(
+                native_pose,
+                curpose,
+                self.residues_of_interest,
+                self.consistent_motif_resi,
+                )
+        # Calculate full heavy rmsd of motif
+        motif_specific_fullrmsd = core.scoring.rms_at_corresponding_atoms(
                 curpose,
                 native_pose,
-                atom_map,
+                atom_map_motif,
+                )
+        # Calculate bbheavy rmsd only
+        motif_specific_fullheavybbrmsd = core.scoring.rms_at_corresponding_atoms(
+                curpose,
+                native_pose,
+                bbheavy_atom_map_motif,
                 )
 
-        motif_specific_rmsd = core.scoring.rms_at_corresponding_atoms_no_super(
-                curpose,
-                native_pose,
-                atom_map,
-                )
-#         # init selectors
-#         rmsd_motif = core.simple_metrics.metrics.RMSDMetric(native_pose)
-# 
-#         # set heavy backbone atoms
-#         rmsd_motif.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
-# #         rmsd_motif.set_run_superimpose(True)
-# 
-#         # specify selectors
-#         motif_selector = select.ResidueIndexSelector()
-#         motif_selector.set_index(",".join([str(i) for i in range(self.consistent_motif_resi, self.consistent_motif_resi + len(self.motif_residue_info.keys()))]))
-#         # Native motif
-#         native_selector = select.ResidueIndexSelector()
-#         native_selector.set_index(",".join([str(i) for i in self.motif_residue_info.keys()]))
-# 
-# 
-#         # add our residues selections
-#         rmsd_motif.set_residue_selector(motif_selector)
-#         rmsd_motif.set_residue_selector_reference(native_selector)
-# 
-#         # perform RMSD calculation
-#         rmsd_motif.apply(curpose, "motif_bbHeavy_RMSD")
-        curpose.scores["motif_fullHeavy_RMSD"] = motif_specific_rmsd
-        if native_pose.total_residue() == curpose.total_residue():
-            rmsd_fullbb = core.simple_metrics.metrics.RMSDMetric(native_pose)
-            rmsd_fullbb.set_rmsd_type(core.scoring.rmsd_atoms.rmsd_protein_bb_heavy)
-            rmsd_fullbb.set_run_superimpose(True)
-            rmsd_fullbb.apply(curpose, "full_bbHeavy_RMSD")
+#       # Add scores to our poses
+        curpose.scores["motif_fullHeavy_RMSD"] = motif_specific_fullrmsd
+        curpose.scores["motif_bbHeavy_RMSD"] = motif_specific_fullheavybbrmsd
+
+        # Now if it is the same size and is cyclic then we want to compare our backbones against the native
+        if (native_pose.total_residue() == curpose.total_residue() and self.is_cyclic):
+            # Grab the bbheavy atom of our full pose
+            bbheavy_atom_map_fullpose = self.grab_heavybb_atomid_map(
+                    native_pose,
+                    curpose,
+                    self.residues_of_interest,
+                    self.consistent_motif_resi,
+                    True,
+                    )
+            core.scoring.superimpose_pose(
+                    curpose,
+                    native_pose,
+                    bbheavy_atom_map_motif,
+                    )
+            curpose.update_residue_neighbors()
+            full_pose_heavybbrmsd = core.scoring.rms_at_corresponding_atoms_no_super(
+                    curpose,
+                    native_pose,
+                    bbheavy_atom_map_fullpose,
+                    )
+            curpose.scores["fullpose_bbHeavy_RMSD_motifsuper"] = full_pose_heavybbrmsd
+            full_pose_heavybbrmsd_super = core.scoring.rms_at_corresponding_atoms(
+                    curpose,
+                    native_pose,
+                    bbheavy_atom_map_fullpose,
+                    )
+            curpose.scores["fullpose_bbHeavy_RMSD"] = full_pose_heavybbrmsd_super
         return 0
-
-    def align_to_native_motif_positions(
-        self,
-        pose: Pose,
-        ) -> Pose:
-        """
-        Take our model mutated pose and align it with the original motif location
-        in context with the original target.
-
-        PARAMS
-        ------
-        :pose: pol-glycine pose that had DoFs threaded onto it. Plus motif residues 
-            mutated back to their original residues already.
-
-        RETURNS
-        -------
-        :pose: Aligned to context of target pose this pose contains our target and our
-            generated peptide pose passed into the function.
-        """
-        pass
 
     def apply_dof_to_pose(
         self, 
@@ -975,8 +1046,6 @@ class DoFSummary:
             pose = self.rotate_pose(pose, residue_start)
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
-            # After this place back in PDB alignment, but that isn't necessary yet
-            # pose = self.align_to_native_motif_positions(pose.clone())
         else:
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
