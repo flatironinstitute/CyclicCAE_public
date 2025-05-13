@@ -82,7 +82,7 @@ class DoFSummary:
         self.peptide_native = None
 
         # init instance of pyrosetta with params
-        params = "-mute all -score:weights ref2015.wts -write_all_connect_info"
+        params = "-mute all -score:weights ref2015.wts -write_all_connect_info -detect_disulf false"
         # params = "-score:weights ref2015.wts -write_all_connect_info"
         init(params)
 
@@ -248,7 +248,7 @@ class DoFSummary:
         # Now delete all the non residues that are not our chain of interest
         if (peptide_chain > 1) and (peptide_pose.num_chains() > peptide_chain):
             peptide_pose.delete_residue_range_slow(1, start_res-1)
-            peptide_pose.delete_residue_range_slow(end_res+1, res_len)
+#             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
         elif (peptide_chain == 1) and (peptide_pose.num_chains() > 1):
             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
         elif peptide_chain == peptide_pose.num_chains():
@@ -440,7 +440,8 @@ class DoFSummary:
                 # Replace the residue without orienting the backbone (we already did it manually)
                 pose.replace_residue(ir, gly_residue, orient_backbone=False)
 #                 core.conformation.idealize_hydrogens(pose.residue(ir), pose.conformation())
-                core.conformation.idealize_position(ir, pose.conformation())
+                if ir in self.motif_residue_info.keys():
+                    core.conformation.idealize_position(ir, pose.conformation())
 # 
         pose.update_residue_neighbors()
 
