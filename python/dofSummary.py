@@ -191,7 +191,10 @@ class DoFSummary:
             residue_number = residue_start.item() + 1 + ele
             if residue_number > pose.total_residue():
                 residue_number = residue_number - pose.total_residue()
+            print(residue_number, pose.size())
             mutateResidue.set_target(residue_number)
+            print(self.motif_residue_info[ir])
+            print(self.motif_residue_info[ir].name())
             mutateResidue.set_res_name(self.motif_residue_info[ir].name())
             mutateResidue.apply(pose)
 
@@ -263,7 +266,8 @@ class DoFSummary:
         ft.reorder(root)
         peptide_pose.fold_tree(ft)
 
-        self.peptide_native = peptide_pose.clone()
+        # Moving this to extract_dofs_from_pose
+#         self.peptide_native = peptide_pose.clone()
 
         return peptide_pose
 
@@ -403,10 +407,15 @@ class DoFSummary:
         """
         # cyclic_peptide = self.n_to_c_distance(pose)
         if self.is_cyclic:
+            # Make sure there are no strange terminal types
+            self.remove_all_terminal_types(pose)
             # Make sure our structure is cyclic
             self.full_cyclize_native(pose)
+            print(pose.annotated_sequence())
         else:
             self.remove_all_terminal_types(pose)
+
+        self.peptide_native = pose.clone()
 
         # If this is True, then we want all of the DoFs and Residue information
         if self.extract_minimize_input:
@@ -575,7 +584,7 @@ class DoFSummary:
             atom1 = 'C',
             res2 = 1,
             atom2 ='N',
-            add_termini = True,
+            add_termini = False,
         )
         declarebond.apply(pose)
         pose.update_residue_neighbors()
@@ -589,22 +598,25 @@ class DoFSummary:
         ------
         :pose: Pose that has terminal variants
         """
-        # Modify the variant types
-        modifyvariant_nterm = sm.ModifyVariantTypeMover()
-        modifyvariant_nterm.set_additional_type_to_remove("CUTPOINT_UPPER")
-        modifyvariant_nterm.set_additional_type_to_remove("LOWER_TERMINUS_VARIANT")
-        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_VARIANT")
-        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_CONNECTION_VARIANT")
-        modifyvariant_nterm.set_residue_selector(select.TrueResidueSelector())
-        modifyvariant_nterm.apply(pose)
+        for ir in range(1, pose.total_residue()+1):
+            # Modify the variant types
+            modifyvariant_nterm = sm.ModifyVariantTypeMover()
+            modifyvariant_nterm.set_additional_type_to_remove("CUTPOINT_UPPER")
+            modifyvariant_nterm.set_additional_type_to_remove("LOWER_TERMINUS_VARIANT")
+            modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_VARIANT")
+            modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_CONNECTION_VARIANT")
+#             modifyvariant_nterm.set_residue_selector(select.TrueResidueSelector())
+            modifyvariant_nterm.set_residue_selector(select.ResidueIndexSelector(ir))
+            modifyvariant_nterm.apply(pose)
 
-        modifyvariant_cterm = sm.ModifyVariantTypeMover()
-        modifyvariant_cterm.set_additional_type_to_remove("CUTPOINT_LOWER")
-        modifyvariant_cterm.set_additional_type_to_remove("UPPER_TERMINUS_VARIANT")
-        modifyvariant_cterm.set_additional_type_to_remove("DIMETHYLATED_CTERMINUS_VARIANT")
-        modifyvariant_cterm.set_additional_type_to_remove("CTERM_AMIDATION")
-        modifyvariant_cterm.set_residue_selector(select.TrueResidueSelector())
-        modifyvariant_cterm.apply(pose)
+            modifyvariant_cterm = sm.ModifyVariantTypeMover()
+            modifyvariant_cterm.set_additional_type_to_remove("CUTPOINT_LOWER")
+            modifyvariant_cterm.set_additional_type_to_remove("UPPER_TERMINUS_VARIANT")
+            modifyvariant_cterm.set_additional_type_to_remove("DIMETHYLATED_CTERMINUS_VARIANT")
+            modifyvariant_cterm.set_additional_type_to_remove("CTERM_AMIDATION")
+#             modifyvariant_cterm.set_residue_selector(select.TrueResidueSelector())
+            modifyvariant_cterm.set_residue_selector(select.ResidueIndexSelector(ir))
+            modifyvariant_cterm.apply(pose)
         return 0
 
 
@@ -639,7 +651,7 @@ class DoFSummary:
             atom1 = 'C',
             res2 = 1,
             atom2 ='N',
-            add_termini = True,
+            add_termini = False,
         )
         declarebond.apply(pose)
         return 0
@@ -895,6 +907,8 @@ class DoFSummary:
             refres = pose_reference.residue(nat_fzn_posit)
 
             # Assert
+            print('CURRES:', curres)
+            print('REFRES:', refres)
             assert curres.natoms() == refres.natoms(), "The number of atoms do not match"
 
             # Loop through atoms
