@@ -942,13 +942,16 @@ class EnergyPath:
                 else:
                     # Non contiguous indexing of our outputs
                     coords = coords[match_res_mask[:, 0]]
+                    print(interface_dict["peptide"].shape)
+                    print(self.motif)
+                    print(self.motif_input)
                     aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                           motif_output = self.motif,
                                                           motif_input = self.motif_input,
                                                           )
 
                 interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
-                interface_nonorm_loss, energy_mask = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
+                interface_nonorm_loss= interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
                                                       sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
                                                       epsilon_peptide = interface_dict["epsilon_peptide"][peptide_nonhydrogen_mask],
                                                       sigma_interface = interface_dict["sigma_interface"][interface_nonhydrogen_mask],
@@ -2068,7 +2071,7 @@ class EnergyPath:
 
 
                         interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
-                        interface_nonorm_loss, energy_mask = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
+                        interface_nonorm_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
                                                               sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
                                                               epsilon_peptide = interface_dict["epsilon_peptide"][peptide_nonhydrogen_mask],
                                                               sigma_interface = interface_dict["sigma_interface"][interface_nonhydrogen_mask],

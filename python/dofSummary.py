@@ -191,10 +191,7 @@ class DoFSummary:
             residue_number = residue_start.item() + 1 + ele
             if residue_number > pose.total_residue():
                 residue_number = residue_number - pose.total_residue()
-            print(residue_number, pose.size())
             mutateResidue.set_target(residue_number)
-            print(self.motif_residue_info[ir])
-            print(self.motif_residue_info[ir].name())
             mutateResidue.set_res_name(self.motif_residue_info[ir].name())
             mutateResidue.apply(pose)
 
@@ -218,8 +215,9 @@ class DoFSummary:
     def read_pdb_extract_peptide(
         self,
         pdb_path: str,
+        residues_of_interest: torch.Tensor,
         peptide_chain: int = 2,
-        ) -> Pose:
+        ) -> tuple[Pose, int]:
         """
         Take in a PDB and extract the peptide/binder into
         another pose for DoF Extraction
@@ -228,13 +226,19 @@ class DoFSummary:
         ------
         :pdb_path: Path to the PDB file that containts the peptide/binder
             we want to use for inpainting.
+        :residues_of_interest: The residues we want to extract
         :peptide_chain: The integer representing the peptide/binders chain
             in our PDB.
 
         RETURNS
         -------
         :peptide_pose: Our extracted peptide/binder only pose.
+        :aa_removed: The amount of amino acids removed (necessar for calculating the relative position of 
+                                                        anchor residues)
         """
+        # Chain string map
+        chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+
         # load in our PDB
         full_pose = io.pose_from_pdb(pdb_path)
         
@@ -248,14 +252,20 @@ class DoFSummary:
         # clone the pose
         peptide_pose = full_pose.clone()
 
+        # grab pose numbering for our peptide
+        pdb_info = full_pose.pdb_info()
+
         # Now delete all the non residues that are not our chain of interest
         if (peptide_chain > 1) and (peptide_pose.num_chains() > peptide_chain):
             peptide_pose.delete_residue_range_slow(1, start_res-1)
+            aa_removed = start_res-1
 #             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
         elif (peptide_chain == 1) and (peptide_pose.num_chains() > 1):
             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
+            aa_removed = 0
         elif peptide_chain == peptide_pose.num_chains():
             peptide_pose.delete_residue_range_slow(1, start_res-1)
+            aa_removed = start_res-1
 
         # Set the fold tree
         root = self.foldtree_define(peptide_pose.total_residue())
@@ -268,8 +278,16 @@ class DoFSummary:
 
         # Moving this to extract_dofs_from_pose
 #         self.peptide_native = peptide_pose.clone()
+        updated_residues = list()
+        for ir in residues_of_interest:
+            updated_residues.append(pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) - aa_removed)
+            print(full_pose.residue(pdb_info.pdb2pose( chainint2str[peptide_chain], ir )))
 
-        return peptide_pose
+        print("residues of interset:", residues_of_interest)
+        print("Updated Residues:", updated_residues)
+
+
+        return peptide_pose, torch.tensor(updated_residues)
 
     def dof_extract(
         self,
@@ -411,7 +429,6 @@ class DoFSummary:
             self.remove_all_terminal_types(pose)
             # Make sure our structure is cyclic
             self.full_cyclize_native(pose)
-            print(pose.annotated_sequence())
         else:
             self.remove_all_terminal_types(pose)
 
@@ -523,16 +540,20 @@ class DoFSummary:
         self.include_mainchain_bondangles = include_bondangle
         self.include_mainchain_bondlengths = include_bondlength
 
-        # new test
-        self.residues_of_interest = residues_of_interest
 
         # extract only the peptide/binder pose
-        peptide_pose = self.read_pdb_extract_peptide(input_pdb, peptide_chain)
+        peptide_pose, updated_res = self.read_pdb_extract_peptide(input_pdb, residues_of_interest, peptide_chain)
+
+        # new test
+        self.residues_of_interest = updated_res
+
+        for ir in updated_res:
+            assert ir <= peptide_pose.total_residue(), "Residues of interest are too large. The DOFs extracted are from the Chain we are interested in only. Resi %i not found in range (1, %i)" % (ir, peptide_pose.total_residue())
 
         # extract the dofs from our peptide pose
         motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs = self.extract_dof_from_pose(
             peptide_pose,
-            residues_of_interest,
+            updated_res,
         )
 
         return motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs
@@ -776,8 +797,8 @@ class DoFSummary:
 
         # Set up a movemap
         mm = core.kinematics.MoveMap()
-        mm.set_bb(True)
-        mm.set_chi(True)
+#         mm.set_bb(True)
+#         mm.set_chi(True)
         if self.peptide_native != None:
             residue_range = [i for i in range(
                 self.consistent_motif_resi,
@@ -786,13 +807,25 @@ class DoFSummary:
                 if ir in residue_range:
                     mm.set_bb(ir, False)
                     mm.set_chi(ir, False)
+                else:
+                    mm.set_bb(ir, True)
+                    mm.set_chi(ir, True)
+
+        # Setup cart scorefxn
+        scorefxn_cart = self.scorefxn.clone()
+        scorefxn_cart.set_weight(core.scoring.cart_bonded, 0.5)
+        scorefxn_cart.set_weight(core.scoring.pro_close, 0.0)
 
         # Set up minimover
         minmover = protocols.minimization_packing.MinMover()
         minmover.movemap(mm)
-        minmover.score_function(self.scorefxn)
+        minmover.cartesian(True)
+        minmover.score_function(scorefxn_cart)
         minmover.min_type("lbfgs_armijo_nonmonotone")
+        minmover.max_iter(200)
         minmover.apply(pose)
+
+        self.declare_terminal_bond(pose)
 
         rmsd = core.scoring.bb_rmsd_including_O(pose_before, pose)
         # print(f"RMSD all heavy atom after minimization: {rmsd:.3f}")
@@ -907,8 +940,6 @@ class DoFSummary:
             refres = pose_reference.residue(nat_fzn_posit)
 
             # Assert
-            print('CURRES:', curres)
-            print('REFRES:', refres)
             assert curres.natoms() == refres.natoms(), "The number of atoms do not match"
 
             # Loop through atoms
@@ -1114,13 +1145,16 @@ class DoFSummary:
         # set a scorefunction
         if score_outputs or minimize_pose:
             self.scorefxn = core.scoring.get_score_function(is_fullatom = True)
-            self.scorefxn.set_weight(core.scoring.hbond_lr_bb, 11.7)
-            self.scorefxn.set_weight(core.scoring.hbond_sr_bb, 11.7)
+#             self.scorefxn.set_weight(core.scoring.hbond_lr_bb, 11.7)
+#             self.scorefxn.set_weight(core.scoring.hbond_sr_bb, 11.7)
+            self.scorefxn.set_weight(core.scoring.hbond_lr_bb, 10.0)
+            self.scorefxn.set_weight(core.scoring.hbond_sr_bb, 10.0)
             self.scorefxn.set_weight(core.scoring.coordinate_constraint, 1.0)
             self.scorefxn.set_weight(core.scoring.atom_pair_constraint, 1.0)
             self.scorefxn.set_weight(core.scoring.dihedral_constraint, 1.0)
             self.scorefxn.set_weight(core.scoring.angle_constraint, 1.0)
-            self.scorefxn.set_weight(core.scoring.chainbreak, 10.0)
+#             self.scorefxn.set_weight(core.scoring.chainbreak, 10.0)
+            self.scorefxn.set_weight(core.scoring.chainbreak, 1.0)
 
         x = dof_dict["x"]
         params = dof_dict["params"]

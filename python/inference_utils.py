@@ -659,7 +659,7 @@ def interface_loss(
         )
     ) 
 
-    return loss.sum((-2, -1)), pairwise_distances.min(-1)[0].min(-1).values < 1.0
+    return loss.sum((-2, -1)) #, pairwise_distances.min(-1)[0].min(-1).values < 1.0
 
 # def interface_loss(
 #     interface_atoms: torch.Tensor,
