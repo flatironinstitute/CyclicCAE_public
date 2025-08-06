@@ -268,24 +268,61 @@ class DoFSummary:
             aa_removed = start_res-1
 
         # Set the fold tree
-        root = self.foldtree_define(peptide_pose.total_residue())
-        ft = core.kinematics.FoldTree()
-        ft.clear()
-        ft.add_edge(1, root, -1)
-        ft.add_edge(root, peptide_pose.total_residue(), -1)
-        ft.reorder(root)
-        peptide_pose.fold_tree(ft)
+        if peptide_pose.total_residue() > len(residues_of_interest):
+            assert peptide_pose.total_residue() > len(residues_of_interest), "Something is wrong, our pose size not > %i, it is %i" % (len(residues_of_interest), peptide_pose.total_residue())
+            root = self.foldtree_define(peptide_pose.total_residue())
+            ft = core.kinematics.FoldTree()
+            ft.clear()
+            ft.add_edge(1, root, -1)
+            ft.add_edge(root, peptide_pose.total_residue(), -1)
+            ft.reorder(root)
+            peptide_pose.fold_tree(ft)
+            # Moving this to extract_dofs_from_pose
+            updated_residues = list()
+            for ir in residues_of_interest:
+                updated_residues.append(pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) - aa_removed)
+                # print(full_pose.residue(pdb_info.pdb2pose( chainint2str[peptide_chain], ir )))
+        else:
+            assert peptide_pose.total_residue() == len(residues_of_interest), "Our motif & peptide have too many residues (there is a problem with the selection logic for this section as they are not equal)"
+            # assert peptide_pose.total_residue() < len(residues_of_interest), "Our peptide has too few residues compared ot our motif (there is a problem with the selection logic for this section as they are not equal)"
+            stub_mover = protocols.cyclic_peptide.PeptideStubMover()
+            stub_mover.set_reset_mode(False)
+            stub_mover.add_residue(
+                    stubmode ="Append",
+                    resname = "GLY",
+                    position = 0,
+                    jumpmode = False,
+                    connecting_atom = "",
+                    repeat = 2,
+                    anchor_rsd = peptide_pose.chain_end(1),
+                    anchor_rsd_selector = None,
+                    anchor_atom = "",
+                    )
+            stub_mover.add_residue(
+                    stubmode ="Prepend",
+                    resname = "GLY",
+                    position = 0,
+                    jumpmode = False,
+                    connecting_atom = "",
+                    repeat = 2,
+                    anchor_rsd = 1,
+                    anchor_rsd_selector = None,
+                    anchor_atom = "",
+                    )
+            stub_mover.apply(peptide_pose)
+            peptide_pose.update_residue_neighbors()
+            updated_residues = [i+2 for i in range(1, len(residues_of_interest)+1)]
+            # Set the correct our omega angels to 180.0, since placed as cis.
+            for ir in range(1, peptide_pose.size()+1):
+                if peptide_pose.residue(ir).is_protein():
+                    peptide_pose.set_omega(ir, 180.0)
+            # Debug purposes
+            peptide_pose.dump_pdb("poly_gly_stub.pdb")
+            # print(peptide_pose.sequence())
 
-        # Moving this to extract_dofs_from_pose
-#         self.peptide_native = peptide_pose.clone()
-        updated_residues = list()
-        for ir in residues_of_interest:
-            updated_residues.append(pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) - aa_removed)
-            print(full_pose.residue(pdb_info.pdb2pose( chainint2str[peptide_chain], ir )))
 
-        print("residues of interset:", residues_of_interest)
-        print("Updated Residues:", updated_residues)
-
+        # print("residues of interest:", residues_of_interest)
+        # print("Updated Residues:", updated_residues)
 
         return peptide_pose, torch.tensor(updated_residues)
 

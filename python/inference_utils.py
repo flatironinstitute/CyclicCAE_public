@@ -1215,6 +1215,7 @@ def pdb_index_grab(split_motifs: list) -> list:
     :split_motifs: list of torch.Tensor residue indexes (0 index)
     """
     out = list()
+    print("SPLIT MOTIFS in pdb_index_grab:", split_motifs)
     for region in split_motifs:
         scaled = (region+1) * 4
         out.append(torch.tensor(
@@ -1324,7 +1325,8 @@ def find_weights(weights: str) -> str:
     -------
     :path: The true path to our weights
     """
-    path_prefix = ["../", "/content/conformational_autoencoder/"]
+    path_prefix = ["../", "/content/conformational_autoencoder/", 
+                   "/projects/parisahlab/apowers4/projects/conformational_autoencoder/"]
     for prefix in path_prefix:
         p = os.path.join(prefix, weights)
         if os.path.exists(p):

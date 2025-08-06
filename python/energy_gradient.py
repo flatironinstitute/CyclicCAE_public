@@ -942,9 +942,6 @@ class EnergyPath:
                 else:
                     # Non contiguous indexing of our outputs
                     coords = coords[match_res_mask[:, 0]]
-                    print(interface_dict["peptide"].shape)
-                    print(self.motif)
-                    print(self.motif_input)
                     aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                           motif_output = self.motif,
                                                           motif_input = self.motif_input,
@@ -1091,7 +1088,7 @@ class EnergyPath:
             torsion = self.calc_angles(scaffolds[:, :self.PARAMS["torsion_main_n"]*2])
             bond_angle = self.calc_angles(scaffolds[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
             preds = torch.cat((torsion, bond_angle, scaffolds[:, self.PARAMS["torsion_main_n"]*2*2:]), dim=-1)
-            torch.save({"scaffold": preds, "latent_point": points}, "inpaintStartOutStructures.pt")
+            # torch.save({"scaffold": preds, "latent_point": points}, "inpaintStartOutStructures.pt")
         else:
             print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
         if scaffolds.size(0) > self.scaffold_number:
@@ -1395,17 +1392,17 @@ class EnergyPath:
         # bond_angle = self.calc_angles(out[:, 116:116*2])
         # preds = torch.cat((torsion, bond_angle, out[:, 116*2:-3]), dim=-1)
         # preds = torch.cat((self.dof_traj[0, :].unsqueeze(0), preds), dim=0)
-        torch.save(preds, "mcmcOutStructures.pt")
-        if start_points == None:
-            torch.save(
-                {
-                    "latent_traj": latent_trajectories, 
-                    "energy_traj": energies_trajectories,
-                    "start_energy": energy_out[0, -1],
-                    "start_latent": self.start_latent_point,
-                    "harmonic_traj": H,
-                },
-                "mcmctest.pt")
+        # torch.save(preds, "mcmcOutStructures.pt")
+        # if start_points == None:
+        #     torch.save(
+        #         {
+        #             "latent_traj": latent_trajectories, 
+        #             "energy_traj": energies_trajectories,
+        #             "start_energy": energy_out[0, -1],
+        #             "start_latent": self.start_latent_point,
+        #             "harmonic_traj": H,
+        #         },
+        #         "mcmctest.pt")
         return latent_trajectories, energies_trajectories
 
     def mcmc_step(
