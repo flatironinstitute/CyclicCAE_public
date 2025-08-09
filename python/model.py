@@ -255,12 +255,12 @@ def main():
     term_pep_class = TerminalPeptide()
 
     # index tensors
-    phi_psi, omega_idx = term_pep_class.torsion_extract(torsion_full.size(-1), 4)
+    phi_psi, omega_idx = term_pep_class.torsion_extract(torsion_full.size(-1), PARAMS["protein_len"], term_pep_class.calculate_root(PARAMS["protein_len"]))
     omega = torsion_full[:, omega_idx]
     torsion = torsion_full[:, phi_psi]
 
     # compute coordinates
-    coordinates = term_pep_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths)
+    coordinates = term_pep_class.terminal_peptide(torsion, omega, bond_angles, bond_lengths, term_pep_class.calculate_root(PARAMS["protein_len"]))
     n_coords = coordinates[:, :, 2, :]
     c_coords = coordinates[:, :, 1, :]
     n_roll = torch.roll(n_coords, shifts=-1, dims=1)
