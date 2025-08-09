@@ -4,8 +4,6 @@ channels:
   - https://conda.graylab.jhu.edu
   - https://conda.rosettacommons.org
 dependencies:
-  - _libgcc_mutex
-  - _openmp_mutex
   - blas
   - bottleneck
   - brotli
