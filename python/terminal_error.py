@@ -77,8 +77,8 @@ class TerminalPeptide:
 
         # Extract bond angles
         bond_angle_idx, bond_length_idx = self.extract_bond_angles(bond_angle_degree.size(-1)-1, L=params["protein_len"], root=foldtree_root)
-        bond_angles = bond_angle_degree[:, bond_angle_idx]
-        bond_length_subset = bond_length[:, bond_length_idx]
+        bond_angles = bond_angle_degree[:, bond_angle_idx.to(device)]
+        bond_length_subset = bond_length[:, bond_length_idx.to(device)]
 
         # Extract out coordinates
         coordinates = self.terminal_peptide(torsion, omega, bond_angles, bond_length_subset, foldtree_root, device)
@@ -125,7 +125,7 @@ class TerminalPeptide:
         # perform regression
         # print("TERMINAL BOND LENGTH:", terminal_pred_length.flatten())
         # print("REAL TERM", real_term.flatten())
-        loss = torch.pow(terminal_pred_length.view(-1, 1) - real_term.view(-1, 1).to(device), 2)
+        loss = torch.pow(terminal_pred_length.view(-1, 1).to(device) - real_term.view(-1, 1).to(device), 2)
 
         # terminal angle
         # bdh_loss = torch.mean(torch.pow(torch.sin(bdh.view(-1, 1)) - (torch.ones(bdh.view(-1, 1).shape) * torch.sin(torch.deg2rad(torch.tensor(116.)))).to(device), 2) + torch.pow(torch.cos(bdh.view(-1, 1)) - (torch.ones(bdh.view(-1, 1).shape) * torch.cos(torch.deg2rad(torch.tensor(116.)))).to(device), 2))
