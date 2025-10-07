@@ -23,6 +23,7 @@ from pyrosetta.rosetta.core.id import AtomID
 import torch
 import os
 import warnings
+from typing import List
 
 # Import termina bond
 from terminal_error import TerminalPeptide
@@ -248,6 +249,9 @@ class DoFSummary:
         # Select the chain we want to extract
         start_res = full_pose.chain_begin(peptide_chain)
         end_res = full_pose.chain_end(peptide_chain)
+
+        # Clone our pose for alignment at the end of the class (when dumping)
+        self.full_input = full_pose
 
         # clone the pose
         peptide_pose = full_pose.clone()
@@ -576,6 +580,7 @@ class DoFSummary:
         self.include_mainchain_torsions = include_torsion
         self.include_mainchain_bondangles = include_bondangle
         self.include_mainchain_bondlengths = include_bondlength
+        self.ref_chain = peptide_chain
 
 
         # extract only the peptide/binder pose
@@ -977,11 +982,12 @@ class DoFSummary:
             refres = pose_reference.residue(nat_fzn_posit)
 
             # Assert
-            assert curres.natoms() == refres.natoms(), "The number of atoms do not match"
+            # assert curres.natoms() == refres.natoms(), "The number of atoms do not match"
 
             # Loop through atoms
             for ia in range(1, curres.natoms()+1):
                 if curres.atom_is_hydrogen( ia ): continue
+                if curres.atom_name( ia ).strip() not in ["N", "CA", "O", "C", "CB"]: continue
                 atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
         return atid_map
 
@@ -1054,6 +1060,116 @@ class DoFSummary:
                     )
             curpose.scores["fullpose_bbHeavy_RMSD"] = full_pose_heavybbrmsd_super
         return 0
+
+    def remove_term_variants(self,
+                            pose: core.pose.Pose,
+                            upper_idx: int,
+                            lower_idx: int,
+                            ) -> int:
+        """
+        Remove terminal variants
+
+        PARAMS
+        ------
+        :pose: Un cyclized pose
+        :upper_idx: The (1-index) residue index for the N-termini
+        :lower_idx: The (1-index) residue index for the C-termini
+        """
+        # Modify the variant types
+        modifyvariant_nterm = sm.ModifyVariantTypeMover()
+        modifyvariant_nterm.set_additional_type_to_remove("CUTPOINT_UPPER")
+        modifyvariant_nterm.set_additional_type_to_remove("LOWER_TERMINUS_VARIANT")
+        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_VARIANT")
+        modifyvariant_nterm.set_additional_type_to_remove("ACETYLATED_NTERMINUS_CONNECTION_VARIANT")
+        modifyvariant_nterm.set_residue_selector(select.ResidueIndexSelector(upper_idx))
+        modifyvariant_nterm.apply(pose)
+
+        modifyvariant_cterm = sm.ModifyVariantTypeMover()
+        modifyvariant_cterm.set_additional_type_to_remove("CUTPOINT_LOWER")
+        modifyvariant_cterm.set_additional_type_to_remove("UPPER_TERMINUS_VARIANT")
+        modifyvariant_cterm.set_additional_type_to_remove("DIMETHYLATED_CTERMINUS_VARIANT")
+        modifyvariant_cterm.set_additional_type_to_remove("CTERM_AMIDATION")
+        modifyvariant_cterm.set_residue_selector(select.ResidueIndexSelector(lower_idx))
+        modifyvariant_cterm.apply(pose)
+        return 0
+
+    def place_peptide_incontext(
+            self,
+            pose_reference: core.pose.Pose,
+            pose_target: core.pose.Pose,
+            ref_chain: int,
+            residue_anchors: List[int],
+            target_start_resi: int = 2,
+            ) -> core.pose.Pose:
+        """Place a peptide that is by itself in context with the target receptor.
+            This will be done along the motif (residue_anchor)
+
+        PARAMS
+        ------
+        :pose_reference: The receptor or target we designed macrocycles for. This should have
+            the peptide or binder we used as a base/anchor for our peptide generation.
+        :pose_target: Our peptide/macrocycle byitself not in the context of the target
+        :ref_chain: I am going to write this as if there are only 2 chains present, this is 
+                the chain to remove.
+        :residue_anchors: A list of residues that we want to align against (1-index)
+        :target_start_resi: The starting resi of the targets motif (1-index)
+
+        RETURNS
+        -------
+        :target_peptide: A new pose where our receptor and macrocycle/peptide are now
+            placed together.
+        """
+        # Chain string map
+        chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+
+        # We want to make sure that our ref pose doesnt have any weird term variant types
+        for ir in range(pose_reference.chain_begin(ref_chain), pose_reference.chain_end(ref_chain)+1): 
+            self.remove_term_variants(pose_reference, ir, ir)
+
+        # grab pose numbering for our peptide
+        pdb_info = pose_reference.pdb_info()
+        updated_residues = list()
+
+        # Set the fold tree
+        for ir in residue_anchors:
+            updated_residues.append(pdb_info.pdb2pose( chainint2str[ref_chain], ir ))
+
+        # generate an atom map 
+        atom_map = self.grab_atomid_map(
+                pose_reference,
+                pose_target,
+                updated_residues,
+                target_start_resi,
+                )
+
+        # Superimpose
+        core.scoring.superimpose_pose(
+                pose_target,
+                pose_reference,
+                atom_map,
+                )
+
+        # Now delete our ref chain
+        ref_pose = pose_reference.clone()
+        ref_pose.delete_residue_range_slow(
+                ref_pose.chain_begin(ref_chain),
+                ref_pose.chain_end(ref_chain),
+                )
+
+        # Now combine the two poses
+        core.pose.append_pose_to_pose(
+                pose_target,
+                ref_pose,
+                new_chain = True,
+                )
+
+        pose_target.update_residue_neighbors()
+
+        core.pose.renumber_pdbinfo_based_on_conf_chains(pose_target)
+        # This added because disulfides werent detected and found here:
+        # https://forum.rosettacommons.org/node/3932
+        pose_target.conformation().detect_disulfides()
+        return pose_target.clone()
 
     def apply_dof_to_pose(
         self, 
@@ -1129,6 +1245,13 @@ class DoFSummary:
             pose = self.rotate_pose(pose, residue_start)
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
+            pose = self.place_peptide_incontext(
+                pose_reference = self.full_input,
+                pose_target = pose,
+                ref_chain = self.ref_chain,
+                residue_anchors = self.residues_of_interest,
+                target_start_resi = self.consistent_motif_resi,
+            )
         else:
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
