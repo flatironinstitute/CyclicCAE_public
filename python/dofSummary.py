@@ -19,6 +19,9 @@ import pyrosetta.rosetta.core.io.silent as silent
 from pyrosetta.rosetta.std import map_core_id_AtomID_core_id_AtomID
 from pyrosetta.rosetta.core.id import AtomID
 
+from pyrosetta.rosetta.core.scoring import ScoreFunction
+from pyrosetta.rosetta.core.select.residue_selector import ResidueSelector
+
 # Import numpy
 import torch
 import os
@@ -1171,6 +1174,100 @@ class DoFSummary:
         pose_target.conformation().detect_disulfides()
         return pose_target.clone()
 
+    def determine_internal_bb_hbonds(
+        self,
+        currpose: Pose,
+        cursel: ResidueSelector,
+        scorefxn: ScoreFunction,
+        filtername: str = "design_bb_hbonds",
+        ) -> int:
+        """Count the number of bb internal 
+
+        PARAMS
+        ------
+        :currpose: The current pose
+        :cursel: The selection of the pose
+        :scorefxn: The scorefunction used to determine hbonds
+        :filtername: The name of our filter that will show up in the score file
+
+        RETURNS
+        -------
+        Number of internal bb hbonds
+        """
+        # setup the bb internal hbonds
+        bb_hbond_filter = cp.PeptideInternalHbondsFilter()
+        # Only set bb hbonds
+        bb_hbond_filter.set_hbond_types(
+                backbone_backbone_setting = True,
+                backbone_sidechain_setting = False,
+                sidechain_sidechain_setting = False,
+                )
+        # Set the scorefxn
+        bb_hbond_filter.set_scorefxn(scorefxn)
+        # Set selection
+        bb_hbond_filter.set_residue_selector(cursel)
+        bb_hbond_filter.apply(currpose)
+
+        currpose.scores[filtername] = bb_hbond_filter.report_sm(currpose)
+        return bb_hbond_filter.report_sm(currpose)
+
+    def shapeComp(
+        self,
+        currpose: core.pose.Pose,
+        jump_selection: int,
+        filtername: str = "shapeComp",
+        ) -> float:
+        """Calculate the shape complementarity between a jump
+
+        PARAMS
+        ------
+        :currpose: The filled current pose
+        :jump_selection: The jump you want to check between
+
+        RETURNS
+        -------
+        ShapeComp metric
+        """
+        # Setup a jump selector
+        jump_sel = core.select.jump_selector.JumpIndexSelector()
+        jump_sel.jump(jump_selection)
+        # init our shape comp
+        sc = protocols.simple_filters.ShapeComplementarityFilter()
+        sc.set_jump_selector(jump_sel)
+        sc.filtered_sc(0.5)
+        sc.write_int_area(True)
+        sc_score = sc.score(currpose)
+        currpose.scores[filtername] = sc_score
+        return sc_score
+
+    def calculate_metrics(
+            self,
+            pose: Pose,
+            pepSize: int,
+            ) -> int:
+        """Compute filtering metrics on backbones generated for quicker
+        and easier design selection of peptides.
+
+        PARAMS
+        ------
+        :pose: Complex pose where the Peptide (A) and Target (B) are
+            placed together in a pose.
+        :pepSize: The size of the peptide (number of Amino Acids)
+        """
+        chainASelector = selector.ChainResidueSelector(1)
+        self.determine_internal_bb_hbonds(
+                pose,
+                chainASelector,
+                scorefxn = self.scorefxn,
+                )
+        self.shapeComp(
+                pose,
+                1,
+                )
+        pose.scores["PeptideSize"] = pepSize
+
+        return 0
+
     def apply_dof_to_pose(
         self, 
         pose: Pose, 
@@ -1241,6 +1338,9 @@ class DoFSummary:
 
         # Update our pose after all DoFs are placed
         pose.update_residue_neighbors()
+        
+        # Take size for metrics
+        pepSize = pose.size()
 
         # Mutate Residues back to their original types if applicable
         if not random_outputs:
@@ -1271,6 +1371,7 @@ class DoFSummary:
 
         if score_outputs:
             self.scorefxn(pose)
+            self.calculate_metrics(pose, pepSize) # new feature to calculate metrics
         return pose
 
     def thread_dofs_to_poses(
