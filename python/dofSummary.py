@@ -11,7 +11,7 @@ import pyrosetta.io as io
 from pyrosetta.rosetta.core.pose import Pose
 import pyrosetta.rosetta.protocols as protocols
 import pyrosetta.rosetta.protocols.simple_moves as sm
-# import pyrosetta.rosetta.protocols.cyclic_peptide as cp
+import pyrosetta.rosetta.protocols.cyclic_peptide as cp
 import pyrosetta.rosetta.core.select.residue_selector as select
 import pyrosetta.rosetta.core as core
 import pyrosetta.rosetta as rosetta
@@ -1254,11 +1254,11 @@ class DoFSummary:
             placed together in a pose.
         :pepSize: The size of the peptide (number of Amino Acids)
         """
-        chainASelector = selector.ChainResidueSelector(1)
+        chainASelector = select.ChainSelector(1)
         self.determine_internal_bb_hbonds(
                 pose,
                 chainASelector,
-                scorefxn = self.scorefxn,
+                scorefxn = self.scorefxn_decompose,
                 )
         self.shapeComp(
                 pose,
@@ -1371,7 +1371,8 @@ class DoFSummary:
 
         if score_outputs:
             self.scorefxn(pose)
-            self.calculate_metrics(pose, pepSize) # new feature to calculate metrics
+            if complex_out:
+                self.calculate_metrics(pose, pepSize) # new feature to calculate metrics
         return pose
 
     def thread_dofs_to_poses(
@@ -1421,6 +1422,11 @@ class DoFSummary:
             self.scorefxn.set_weight(core.scoring.angle_constraint, 1.0)
 #             self.scorefxn.set_weight(core.scoring.chainbreak, 10.0)
             self.scorefxn.set_weight(core.scoring.chainbreak, 1.0)
+
+            self.scorefxn_decompose = self.scorefxn.clone()
+            emopts = core.scoring.methods.EnergyMethodOptions(self.scorefxn_decompose.energy_method_options())
+            emopts.hbond_options().decompose_bb_hb_into_pair_energies(True)
+            self.scorefxn_decompose.set_energy_method_options(emopts)
 
         x = dof_dict["x"]
         params = dof_dict["params"]
