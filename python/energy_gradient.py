@@ -2238,6 +2238,7 @@ class EnergyPath:
         output_path: str = "./", 
         random_outputs: bool = False,
         minimize_pose: bool = False,
+        complex_output: bool = False,
         ) -> int:
         """Output the GDS trajectory"""
         # # file name
@@ -2278,6 +2279,7 @@ class EnergyPath:
             random_outputs = random_outputs,
             minimize_pose = minimize_pose,
             residue_start = self.match_res_mask,
+            complex_out = complex_output,
         )
 
         return 0
@@ -2344,6 +2346,7 @@ if __name__ == "__main__":
                         or only bb-heavy + Cb atoms (which is default if you don't specify this flag)")
     p.add_argument("--ramp-interface-constraint", action="store_true", help="This sets the first 0.50 of the energy minimize steps to bb-heavy + Cb pocket context. \
                         Then for the last 0.50 switches to full pocket context (all heavy atoms). If not set then uses passed pocket specification throughout")
+    p.add_argument("--complex-output", action="store_true", help="Output scaffolds in complex with target structure")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -2491,5 +2494,6 @@ if __name__ == "__main__":
                             output_path = args.output_path,
                             random_outputs = args.random_sample,
                             minimize_pose = args.apply_minmover_outputs,
+                            complex_output= args.complex_output,
                             )
     print("TOTAL CyclicCAE RUNTIME:", timedelta(minutes=time.perf_counter() - start_time))

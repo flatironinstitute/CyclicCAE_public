@@ -1179,6 +1179,7 @@ class DoFSummary:
         random_outputs: bool,
         minimize_pose: bool,
         residue_start: int,
+        complex_out: bool,
         ) -> Pose:
         """
         Thread a singular DoF vector onto a pose
@@ -1194,6 +1195,8 @@ class DoFSummary:
             ref2015 scorefunction
         :residue_start: A tensor of size (N, 2) where the residue_start[:, 1]
             is the start location of our residue (0-index)
+        :complex_out: Bool determing whether the output, should be outputted with
+            the target supplied at the beginning.
 
         RETURNS
         -------
@@ -1245,13 +1248,14 @@ class DoFSummary:
             pose = self.rotate_pose(pose, residue_start)
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
-            pose = self.place_peptide_incontext(
-                pose_reference = self.full_input,
-                pose_target = pose,
-                ref_chain = self.ref_chain,
-                residue_anchors = self.residues_of_interest,
-                target_start_resi = self.consistent_motif_resi,
-            )
+            if complex_out:
+                pose = self.place_peptide_incontext(
+                    pose_reference = self.full_input,
+                    pose_target = pose,
+                    ref_chain = self.ref_chain,
+                    residue_anchors = self.residues_of_interest,
+                    target_start_resi = self.consistent_motif_resi,
+                )
         else:
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
@@ -1278,6 +1282,7 @@ class DoFSummary:
         random_outputs: bool = False,
         minimize_pose: bool = True,
         residue_start: torch.Tensor = None,
+        complex_out: bool = False,
         ) -> None:
         """
         Take a DoF vector output from CyclicCAE and apply each row to 
@@ -1376,6 +1381,7 @@ class DoFSummary:
                 random_outputs = random_outputs,
                 minimize_pose = minimize_pose,
                 residue_start = residue_start[s] if not random_outputs else None,
+                complex_out = complex_out,
             )
             if not silentfile:
                 updated_pose.dump_pdb(
