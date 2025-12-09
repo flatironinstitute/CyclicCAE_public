@@ -45,6 +45,7 @@ def extract_loss_and_matchres(
         coords: Tensor,
         device: str,
         dof_minimize: bool = False,
+        exclude_atom_positions: list = [],
         ) -> tuple[Tensor, Tensor, Tensor, Tensor, bool]:
     """Extract out the motif loss and match_res_mask against our scaffolds from the latent space
 
@@ -66,6 +67,7 @@ def extract_loss_and_matchres(
     :bond_angle_cos: The scaffold bondangle cos value
     :bond_length: The scaffold bondlength value
     :match_res_mask: Either None or the current Tensor of match_res_mask from a previous round
+    :exclude_atom_positions: DoF Atom positions we would like masked from the fixed residues
 
     RETURNS
     -------
@@ -110,6 +112,7 @@ def extract_loss_and_matchres(
         else:
             # If our input is continuous (allow residues are next to each other in sequence and space) then we use normal
             # Harmonic diff on our dofs
+            print("DOF MINIMIZE:", dof_minimize)
             loss, match_res_mask = harmonic_diff_inpaint(
                 real_t_sin,
                 real_t_cos,
@@ -133,6 +136,7 @@ def extract_loss_and_matchres(
                 inpaint_dist,
                 device,
                 dof_minimize,
+                exclude_atom_positions,
             )
 
         # If we have no matches then we sound continue

@@ -39,6 +39,8 @@ from motif_functions import (
     extract_dof_of_interest_minimize,
 )
 
+import discontig_funcs
+
 from inpaint_funcs import extract_loss_and_matchres
 
 #############
@@ -96,6 +98,7 @@ class EnergyPath:
         ramp_constraint: bool = True,
         full_pocket: bool = False,
         random_sample: bool = False,
+        exclude_atom_positions: list[str] = [],
         ):
         """GDS for energy minima structure from starting point
 
@@ -152,6 +155,9 @@ class EnergyPath:
                 Specify if we are only keeping full pocket or cb if ramp_constraints not set
             random_sample: bool
                 Generate random samples from the latent space for whatever passed batch size in params.
+            exclude_atom_positions: list[str]
+                Atom positions to exclude from our DoF loss calculation (e.g. input [1:0, 1:3]) This would exclude
+                the first residues Nitrogen and Oxygen
         """
         # Pull up points
         self.steps = steps
@@ -171,6 +177,7 @@ class EnergyPath:
             self.freeze_bond_angle = True
             self.freeze_bond_length = True
         self.contiguous = self.check_contiguous(self.freeze_residues)
+        self.exclude_atom_positions = exclude_atom_positions
         if not self.contiguous:
             self.regions_atoms, self.regions = split_motif_atoms(self.freeze_residues)
         else:
@@ -838,6 +845,7 @@ class EnergyPath:
 
             # If we have a motif that we want to inpaint with then we need to extract some information
             # Therefore, we traverse this logic
+            print("MATCH RES MASK:", self.match_res_mask)
             loss, match_res_mask, self.motif, self.motif_input, no_matches = extract_loss_and_matchres(
                 self.freeze_residues,
                 self.contiguous,
@@ -866,6 +874,8 @@ class EnergyPath:
                 HNCO,
                 coords,
                 self.device,
+                False,
+                self.exclude_atom_positions,
                 )
             if no_matches:
                 continue
@@ -1996,19 +2006,44 @@ class EnergyPath:
                             ), dim=-1,
                         )
                         # Now compute which residues match our motif
-                        harmonic_loss, _ = self.harmonic_diff_inpaint(
-                            real_t_sin,
-                            real_t_cos,
-                            real_ba_sin,
-                            real_ba_cos,
-                            real_bond_length,
-                            torsion_sin,
-                            torsion_cos,
-                            bond_angle_sin,
-                            bond_angle_cos,
-                            bond_length,
-                            True,
-                        )
+                        harmonic_loss, _ = discontig_funcs.harmonic_diff_inpaint(
+                                real_t_sin,
+                                real_t_cos,
+                                real_ba_sin,
+                                real_ba_cos,
+                                real_bond_length,
+                                torsion_sin,
+                                torsion_cos,
+                                bond_angle_sin,
+                                bond_angle_cos,
+                                bond_length,
+                                self.torsion_index,
+                                self.bond_angle_dofs,
+                                self.bond_length_dofs,
+                                self.PARAMS,
+                                self.freeze_residues,
+                                self.freeze_torsion,
+                                self.freeze_bond_angle,
+                                self.freeze_bond_length,
+                                self.match_res_mask,
+                                self.inpaint_dist,
+                                self.device,
+                                True,
+                                self.exclude_atom_positions,
+                                )
+#                         harmonic_loss, _ = self.harmonic_diff_inpaint(
+#                             real_t_sin,
+#                             real_t_cos,
+#                             real_ba_sin,
+#                             real_ba_cos,
+#                             real_bond_length,
+#                             torsion_sin,
+#                             torsion_cos,
+#                             bond_angle_sin,
+#                             bond_angle_cos,
+#                             bond_length,
+#                             True,
+#                         )
                     else:
                         harmonic_loss = torch.tensor([0.0], device=self.device)
 
@@ -2347,6 +2382,8 @@ if __name__ == "__main__":
     p.add_argument("--ramp-interface-constraint", action="store_true", help="This sets the first 0.50 of the energy minimize steps to bb-heavy + Cb pocket context. \
                         Then for the last 0.50 switches to full pocket context (all heavy atoms). If not set then uses passed pocket specification throughout")
     p.add_argument("--complex-output", action="store_true", help="Output scaffolds in complex with target structure")
+    p.add_argument("--exclude-atom-from-dof", nargs="+", default=[], type=str, help="Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N(0), Ca(1), C(2), O(4)) \
+            as the numbering. (e.g. --exclude-atom-from-dof 1:0 1:3)")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -2380,6 +2417,7 @@ if __name__ == "__main__":
         ramp_constraint = args.ramp_interface_constraint,
         full_pocket = args.fullpocket_minimize,
         random_sample = args.random_sample,
+        exclude_atom_positions = args.exclude_atom_from_dof,
     )
 
     # Init dofsummary which is used in both the beginning and end of the script
