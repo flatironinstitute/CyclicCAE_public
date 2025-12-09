@@ -187,6 +187,13 @@ class DoFSummary:
         :pose: Our mutate posed where the residues of interest are now
             restored. While everything else is retained as Glycine.
         """
+        # Write the phi/psi output of our motif
+        outfile_name = "phi_psi_motif.csv"
+        if not os.path.exists(outfile_name):
+            outfile = open(outfile_name, "w")
+            print("res,phi,psi", file=outfile)
+        else:
+            outfile = open(outfile_name, "a")
         # iter through our original residue information
         # Mutate GlY -> Original Residue
         for ele, ir in enumerate(list(self.motif_residue_info.keys())):
@@ -195,8 +202,16 @@ class DoFSummary:
             residue_number = residue_start.item() + 1 + ele
             if residue_number > pose.total_residue():
                 residue_number = residue_number - pose.total_residue()
+            print(str(ir) + "," + str(pose.phi(residue_number)) + "," + str(pose.psi(residue_number)), file=outfile)
             mutateResidue.set_target(residue_number)
-            mutateResidue.set_res_name(self.motif_residue_info[ir].name())
+
+            # Determine chirality (This is important when masking atoms, as chirality may flip)
+            if (pose.phi(residue_number) > 0) & (len(self.motif_residue_info[ir].name().strip()) == 3):
+                mutateResidue.set_res_name("D"+self.motif_residue_info[ir].name())
+            elif (pose.phi(residue_number) < 0) & (len(self.motif_residue_info[ir].name().strip()) > 3):
+                mutateResidue.set_res_name(self.motif_residue_info[ir].name()[1:])
+            else:
+                mutateResidue.set_res_name(self.motif_residue_info[ir].name())
             mutateResidue.apply(pose)
 
             # Now apply correction to chi angles, so they are more similar
