@@ -8,7 +8,7 @@ import torch
 from torch import Tensor
 from motif_functions import extract_dof_of_interest_minimize
 
-def generate_exclusion_vector( exclude_pos: list[str] ):
+def generate_exclusion_vector( exclude_pos: list[str], freeze_residues: list[int] ):
     """Take our input exclusion list[str] (e.g. ['1:0', '1:3', '2:3'])
         and break it up into a vector of positions.
         Additionally: torsion & bondangle/bondlength are different
@@ -34,38 +34,38 @@ def generate_exclusion_vector( exclude_pos: list[str] ):
     ------
     :exclude_pos: A list of strings where an element has the str layout
         of '1:3' where the first 1 is the first residue and the 3 after the :
-        indicates the atom of residue 1 to exclude. With size E
-        where E = len(exclude_pos)
-    :dof: The dof input tensor of size (B, L, A)
+        indicates the atom of residue 1 to exclude. With size of len(exclude_pos)
+    :freeze_residues: A list of residues that are a part of the motif we are
+        retaining. E is the len(freeze_residues)
 
     RETURN
     ------
-    :exclusion_vector: A tensor of atoms we want to exclude from
-        the fixed-residues with size (B, L, E)
+    :torsion_mask: A tensor of residue torsions we want to exclude from
+        the fixed-residues with size (E*3)
+    :bondangle_mask: A tensor of residue bondangles we want to exclude from
+        the fixed-residues with size (E*5)
     """
     # grab out the set of residues beings affected
     residue_set = {int(k.split(":")[0]) for k in exclude_pos}
-    E = len(residue_set)
+#     E = len(residue_set)
+    E = len(freeze_residues)
     torsion_map = {0: 0, 2: 1, 6:2}
     # Create our tensors
     # 3 for torsions (phi, psi, omega)
-    # 5 for bondangle/length (N, C, CA, C, O, NH)
     torsion_mask = torch.ones(E*3, dtype=torch.int32).reshape(E, 3)
+    # 5 for bondangle/length (N, C, CA, C, O, NH)
     bondangle_mask = torch.ones(E*5, dtype=torch.int32).reshape(E, 5)
 
-    # iter through our residues 
-    row = 0
-    rownum = min(residue_set)
+    # Error out if the masking residues are not equivalent or a subset of the freeze_residues
+    assert residue_set.issubset(set(freeze_residues)), "Our masked residues are not in our Motif please fix --exclude-atom-dof or --freeze-residues"
 
     # iter through
     for i, s in enumerate(exclude_pos):
         s_split = s.split(':')
-#         resi, atomi = int(s_split[0])-1, int(s_split[1])
         resi, atomi = int(s_split[0]), int(s_split[1])
 
-        if rownum != resi:
-            row += 1
-            rownum = resi
+        # Grab the resi position, so that it matches our masking scheme.
+        row = freeze_residues.index(resi)
 
         if atomi in [0, 2, 6]:
             torsion_mask[row, torsion_map[atomi]] = 0
