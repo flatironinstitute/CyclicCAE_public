@@ -155,7 +155,8 @@ def harmonic_diff_inpaint(
             mask_bondangle = torch.ones_like(bond_angle_sin)
         else:
             # Generate appropriate vector for exclusion atom DoF selection
-            mask_torsion, mask_bondangle = generate_exclusion_vector(exclude_positions)
+            mask_torsion, mask_bondangle = generate_exclusion_vector(exclude_positions,
+                                                                     freeze_residues)
 
     else:
         # Grab our residue's of interest DoFs
@@ -177,7 +178,8 @@ def harmonic_diff_inpaint(
             mask_bondangle = torch.ones_like(bond_angle_sin)
         else:
             # Generate appropriate vector for exclusion atom DoF selection
-            mask_torsion, mask_bondangle = generate_exclusion_vector(exclude_positions)
+            mask_torsion, mask_bondangle = generate_exclusion_vector(exclude_positions,
+                                                                     freeze_residues)
 
     # Compute the harmoinc difference
     harmonic_penalty_sin_torsion = torch.tensor(0.0, device=device)    if not freeze_torsion     else torch.mean(torch.pow(real_t_sin - torsion_sin,2) * mask_torsion, dim=-1).to(device=device)
