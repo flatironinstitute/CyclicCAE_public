@@ -46,9 +46,10 @@ def generate_exclusion_vector( exclude_pos: list[str], freeze_residues: list[int
         the fixed-residues with size (E*5)
     """
     # grab out the set of residues beings affected
-    residue_set = {int(k.split(":")[0]) for k in exclude_pos}
+    residue_set = {int(k.split(":")[0])-1 for k in exclude_pos}
 #     E = len(residue_set)
     E = len(freeze_residues)
+    freeze_set = {e.item() for e in freeze_residues}
     torsion_map = {0: 0, 2: 1, 6:2}
     # Create our tensors
     # 3 for torsions (phi, psi, omega)
@@ -57,15 +58,16 @@ def generate_exclusion_vector( exclude_pos: list[str], freeze_residues: list[int
     bondangle_mask = torch.ones(E*5, dtype=torch.int32).reshape(E, 5)
 
     # Error out if the masking residues are not equivalent or a subset of the freeze_residues
-    assert residue_set.issubset(set(freeze_residues)), "Our masked residues are not in our Motif please fix --exclude-atom-dof or --freeze-residues"
+    assert residue_set.issubset(freeze_set), "Our masked residues are not in our Motif please fix --exclude-atom-dof or --freeze-residues"
+    freeze_list = list(freeze_set)
 
     # iter through
     for i, s in enumerate(exclude_pos):
         s_split = s.split(':')
-        resi, atomi = int(s_split[0]), int(s_split[1])
+        resi, atomi = int(s_split[0])-1, int(s_split[1])
 
         # Grab the resi position, so that it matches our masking scheme.
-        row = freeze_residues.index(resi)
+        row = freeze_list.index(resi)
 
         if atomi in [0, 2, 6]:
             torsion_mask[row, torsion_map[atomi]] = 0
