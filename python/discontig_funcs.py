@@ -6,6 +6,7 @@
 
 import torch
 from torch import Tensor
+import numpy as np
 from motif_functions import extract_dof_of_interest_minimize
 
 def generate_exclusion_vector( exclude_pos: list[str], freeze_residues: list[int] ):
@@ -197,14 +198,15 @@ def harmonic_diff_inpaint(
         match_res = torch.nonzero(mask).to(torch.int)
 
         # Now grab non unique non redudent values
-        unique_values, inv_idx = torch.unique_consecutive(match_res[:, 0], return_inverse=True)
+#         unique_values, inv_idx = torch.unique_consecutive(match_res[:, 0], return_inverse=True)
+        unique_values, inv_idx = np.unique(match_res[:, 0], return_index=True)
 
-        # Now remove redudent non-first occuring values
-        mask_unique = torch.zeros_like(inv_idx, dtype=torch.bool)
-        mask_unique[torch.unique(inv_idx, return_inverse=True)[1]] = True
-
+#         # Now remove redudent non-first occuring values
+#         mask_unique = torch.zeros_like(inv_idx, dtype=torch.bool)
+#         mask_unique[torch.unique(inv_idx, return_inverse=True)[1]] = True
+# 
         # Reindex
-        match_res = match_res[mask_unique]
+#         match_res = match_res[inv_idx]
         harmonic_out = harmonic_loss[match_res[:, 0], match_res[:, 1]]
         return harmonic_out, match_res
     else:

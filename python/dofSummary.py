@@ -1382,6 +1382,13 @@ class DoFSummary:
             # Calculate internal hbonds
             hbond_set = pose.get_hbonds(exclude_sc=True, exclude_scb=True, exclude_bsc=True)
             pose.scores["bb_hbonds"] = hbond_set.nhbonds()
+        else:
+            print("Not Minimize Pose")
+            if (self.peptide_native != None) and (not self.extract_minimize_input):
+                self.calculate_rmsd_between_native(pose, self.peptide_native)
+            # Calculate internal hbonds
+            hbond_set = pose.get_hbonds(exclude_sc=True, exclude_scb=True, exclude_bsc=True)
+            pose.scores["bb_hbonds"] = hbond_set.nhbonds()
 
 
         if score_outputs:
