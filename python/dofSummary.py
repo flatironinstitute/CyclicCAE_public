@@ -187,6 +187,15 @@ class DoFSummary:
         :pose: Our mutate posed where the residues of interest are now
             restored. While everything else is retained as Glycine.
         """
+        def is_in_canonical_twenty( resname ):
+            canonical_aa = [
+                "ALA","ARG","ASN","ASP",
+                "CYS","GLN","GLU","GLY",
+                "HIS","ILE","LEU","LYS",
+                "MET","PHE","PRO","SER",
+                "THR","TRP","TYR","VAL",
+                ]
+            return resname in canonical_aa
         # Write the phi/psi output of our motif
         outfile_name = "phi_psi_motif.csv"
         if not os.path.exists(outfile_name):
@@ -206,9 +215,17 @@ class DoFSummary:
             mutateResidue.set_target(residue_number)
 
             # Determine chirality (This is important when masking atoms, as chirality may flip)
-            if (pose.phi(residue_number) > 0) & (len(self.motif_residue_info[ir].name().strip()) == 3):
+            if (
+                    (pose.phi(residue_number) > 0) & 
+                    (len(self.motif_residue_info[ir].name().strip()) == 3) &
+                    is_in_canonical_twenty(self.motif_residue_info[ir].name().strip())
+                    ):
                 mutateResidue.set_res_name("D"+self.motif_residue_info[ir].name())
-            elif (pose.phi(residue_number) < 0) & (len(self.motif_residue_info[ir].name().strip()) > 3):
+            elif (
+                    (pose.phi(residue_number) < 0) & 
+                    (len(self.motif_residue_info[ir].name().strip()) > 3) & 
+                    is_in_canonical_twenty(self.motif_residue_info[ir].name().strip()[1:])
+                    ):
                 mutateResidue.set_res_name(self.motif_residue_info[ir].name()[1:])
             else:
                 mutateResidue.set_res_name(self.motif_residue_info[ir].name())
@@ -1383,13 +1400,11 @@ class DoFSummary:
             hbond_set = pose.get_hbonds(exclude_sc=True, exclude_scb=True, exclude_bsc=True)
             pose.scores["bb_hbonds"] = hbond_set.nhbonds()
         else:
-            print("Not Minimize Pose")
             if (self.peptide_native != None) and (not self.extract_minimize_input):
                 self.calculate_rmsd_between_native(pose, self.peptide_native)
             # Calculate internal hbonds
             hbond_set = pose.get_hbonds(exclude_sc=True, exclude_scb=True, exclude_bsc=True)
             pose.scores["bb_hbonds"] = hbond_set.nhbonds()
-
 
         if score_outputs:
             self.scorefxn(pose)
