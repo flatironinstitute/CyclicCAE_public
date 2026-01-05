@@ -845,7 +845,6 @@ class EnergyPath:
 
             # If we have a motif that we want to inpaint with then we need to extract some information
             # Therefore, we traverse this logic
-            print("MATCH RES MASK:", self.match_res_mask)
             loss, match_res_mask, self.motif, self.motif_input, no_matches = extract_loss_and_matchres(
                 self.freeze_residues,
                 self.contiguous,
