@@ -940,12 +940,16 @@ class DoFSummary:
 
         # RMSD of the entire backbone heavy atoms, full pose, not specific selection
         if full_pose:
-            motif_ref_diff = (pose_reference.total_residue() - residue_anchors[0])+1
+#             motif_ref_diff = (pose_reference.total_residue() - residue_anchors[0])+1
             # loop through our residues
-            for ir in range(0, motif_ref_diff):
+#             for ir in range(0, motif_ref_diff):
+            for ir in range(0, pose_reference.total_residue()):
                 # Grab the residues
-                fzn_posit = ir+target_start_resi
+                fzn_posit = (ir+target_start_resi)
+#                 if (ir + target_start_resi) > motif_ref_diff: fzn_posit += 1
+                if fzn_posit > pose_target.total_residue(): fzn_posit = fzn_posit % pose_target.total_residue()
                 nat_fzn_posit = ir+residue_anchors[0]
+                if nat_fzn_posit > pose_reference.total_residue():  nat_fzn_posit = nat_fzn_posit % pose_reference.total_residue()
                 curres = pose_target.residue(fzn_posit)
                 refres = pose_reference.residue(nat_fzn_posit)
 
@@ -954,19 +958,23 @@ class DoFSummary:
                     if curres.atom_name( ia ).strip() not in backbone_atoms: continue
                     atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
 
-            for ir in range(0, residue_anchors[0]):
-                # Update native residue position
-                nat_fzn_posit = 1+ir
-                # Update scaffold correctly
-                curirposition = (motif_ref_diff + 2) + ir 
-                fzn_posit = curirposition if curirposition <= pose_target.total_residue() else ( curirposition - pose_target.total_residue() )
-                curres = pose_target.residue(fzn_posit)
-                refres = pose_reference.residue(nat_fzn_posit)
-
-                # Loop through atoms
-                for ia in range(1, curres.natoms()+1):
-                    if curres.atom_name( ia ).strip() not in backbone_atoms: continue
-                    atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
+#             print("BEFORE SECOND LOOP")
+#             for ir in range(0, residue_anchors[0]):
+#                 # Update native residue position
+#                 nat_fzn_posit = 1+ir
+#                 # Update scaffold correctly
+#                 curirposition = (motif_ref_diff + 2) + ir 
+#                 fzn_posit = curirposition if curirposition <= pose_target.total_residue() else ( curirposition - pose_target.total_residue() )
+#                 curres = pose_target.residue(fzn_posit)
+#                 refres = pose_reference.residue(nat_fzn_posit)
+#                 print("IR", ir)
+#                 print("fzn_posit", fzn_posit)
+#                 print("nat_fzn_posit", nat_fzn_posit)
+# 
+#                 # Loop through atoms
+#                 for ia in range(1, curres.natoms()+1):
+#                     if curres.atom_name( ia ).strip() not in backbone_atoms: continue
+#                     atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
 
         # Specific Selection RMSD only
         else:
@@ -1457,8 +1465,8 @@ class DoFSummary:
             self.scorefxn.set_weight(core.scoring.atom_pair_constraint, 1.0)
             self.scorefxn.set_weight(core.scoring.dihedral_constraint, 1.0)
             self.scorefxn.set_weight(core.scoring.angle_constraint, 1.0)
-#             self.scorefxn.set_weight(core.scoring.chainbreak, 10.0)
-            self.scorefxn.set_weight(core.scoring.chainbreak, 1.0)
+            self.scorefxn.set_weight(core.scoring.chainbreak, 10.0)
+#             self.scorefxn.set_weight(core.scoring.chainbreak, 1.0)
 
             self.scorefxn_decompose = self.scorefxn.clone()
             emopts = core.scoring.methods.EnergyMethodOptions(self.scorefxn_decompose.energy_method_options())
