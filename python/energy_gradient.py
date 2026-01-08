@@ -788,8 +788,8 @@ class EnergyPath:
             elif self.PARAMS["protein_len"] == 8:
                 scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
             elif self.PARAMS["protein_len"] == 9:
-                scatter_latent.uniform_(-0.20100, 0.20100)
-                # scatter_latent.uniform_(-0.9800, 0.9800)
+#                 scatter_latent.uniform_(-0.20100, 0.20100)
+                scatter_latent.uniform_(-0.9800, 0.9800)
             
             # run the points through the decoder
             out = self.decoder(scatter_latent)
@@ -1888,7 +1888,8 @@ class EnergyPath:
 
                 # grab the energies (ref2015 score)
                 # energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
-                energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
+                energies = out[:, -self.energy_n:]
+#                 energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
                 energies = energies[:, :2]
                 # print("ENRGIES:", energies)
                 # print('OUT ENERGY:', out[:, -self.energy_n].mean())
