@@ -944,41 +944,21 @@ class DoFSummary:
 
         # RMSD of the entire backbone heavy atoms, full pose, not specific selection
         if full_pose:
-#             motif_ref_diff = (pose_reference.total_residue() - residue_anchors[0])+1
             # loop through our residues
-#             for ir in range(0, motif_ref_diff):
             for ir in range(0, pose_reference.total_residue()):
                 # Grab the residues
                 fzn_posit = (ir+target_start_resi)
-#                 if (ir + target_start_resi) > motif_ref_diff: fzn_posit += 1
-                if fzn_posit > pose_target.total_residue(): fzn_posit = fzn_posit % pose_target.total_residue()
                 nat_fzn_posit = ir+residue_anchors[0]
+                if fzn_posit > pose_target.total_residue(): fzn_posit = fzn_posit % pose_target.total_residue()
                 if nat_fzn_posit > pose_reference.total_residue():  nat_fzn_posit = nat_fzn_posit % pose_reference.total_residue()
                 curres = pose_target.residue(fzn_posit)
                 refres = pose_reference.residue(nat_fzn_posit)
 
                 # Loop through atoms
                 for ia in range(1, curres.natoms()+1):
+                    if curres.atom_is_hydrogen( ia ): continue
                     if curres.atom_name( ia ).strip() not in backbone_atoms: continue
                     atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
-
-#             print("BEFORE SECOND LOOP")
-#             for ir in range(0, residue_anchors[0]):
-#                 # Update native residue position
-#                 nat_fzn_posit = 1+ir
-#                 # Update scaffold correctly
-#                 curirposition = (motif_ref_diff + 2) + ir 
-#                 fzn_posit = curirposition if curirposition <= pose_target.total_residue() else ( curirposition - pose_target.total_residue() )
-#                 curres = pose_target.residue(fzn_posit)
-#                 refres = pose_reference.residue(nat_fzn_posit)
-#                 print("IR", ir)
-#                 print("fzn_posit", fzn_posit)
-#                 print("nat_fzn_posit", nat_fzn_posit)
-# 
-#                 # Loop through atoms
-#                 for ia in range(1, curres.natoms()+1):
-#                     if curres.atom_name( ia ).strip() not in backbone_atoms: continue
-#                     atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
 
         # Specific Selection RMSD only
         else:
@@ -987,11 +967,14 @@ class DoFSummary:
                 # Grab the residues
                 fzn_posit = ir+target_start_resi
                 nat_fzn_posit = ir+residue_anchors[0]
+                if fzn_posit > pose_target.total_residue(): fzn_posit = fzn_posit % pose_target.total_residue()
+                if nat_fzn_posit > pose_reference.total_residue():  nat_fzn_posit = nat_fzn_posit % pose_reference.total_residue()
                 curres = pose_target.residue(fzn_posit)
                 refres = pose_reference.residue(nat_fzn_posit)
 
                 # Loop through atoms
                 for ia in range(1, curres.natoms()+1):
+                    if curres.atom_is_hydrogen( ia ): continue
                     if curres.atom_name( ia ).strip() not in backbone_atoms: continue
                     atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
         return atid_map
@@ -1003,7 +986,8 @@ class DoFSummary:
             residue_anchors: list[int],
             target_start_resi: int = 2,
             ) -> map_core_id_AtomID_core_id_AtomID:
-        """Build an AtomID map for superimpose_pose call to function
+        """Build an AtomID map for superimpose_pose call to function. This
+            will be an all-atom alignment, excluding hydrogens.
 
         PARAMS
         ------
@@ -1023,8 +1007,10 @@ class DoFSummary:
         # loop through our residues
         for ir in range(0, len(residue_anchors)):
             # Grab the residues
-            fzn_posit = ir+target_start_resi
+            fzn_posit = ir+target_start_resi 
             nat_fzn_posit = ir+residue_anchors[0]
+            if fzn_posit > pose_target.total_residue(): fzn_posit = fzn_posit % pose_target.total_residue()
+            if nat_fzn_posit > pose_target.total_residue(): nat_fzn_posit = nat_fzn_posit % pose_reference.total_residue()
             curres = pose_target.residue(fzn_posit)
             refres = pose_reference.residue(nat_fzn_posit)
 
@@ -1034,7 +1020,7 @@ class DoFSummary:
             # Loop through atoms
             for ia in range(1, curres.natoms()+1):
                 if curres.atom_is_hydrogen( ia ): continue
-                if curres.atom_name( ia ).strip() not in ["N", "CA", "O", "C", "CB"]: continue
+#                 if curres.atom_name( ia ).strip() not in ["N", "CA", "O", "C", "CB"]: continue
                 atid_map[AtomID(ia, fzn_posit)] = AtomID(ia, nat_fzn_posit)
         return atid_map
 
