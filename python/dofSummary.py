@@ -108,6 +108,9 @@ class DoFSummary:
         :pose: Rosetta Pose that has it's DoFs threaded already and the
             motif residues were added
         :residue_start: The start resi position of our motif (0-index)
+            this value comes from the search of what is the most similar
+            start resi on our scaffold that matches our motif. This value
+            can be different between individual scaffolds in the same run/batch.
 
         RETURNS
         -------
@@ -219,7 +222,7 @@ class DoFSummary:
                     (pose.phi(residue_number) > 0) & 
                     (len(self.motif_residue_info[ir].name().strip()) == 3) &
                     is_in_canonical_twenty(self.motif_residue_info[ir].name().strip()) &
-                    self.motif_residue_info[ir].name() != "GLY"
+                    (self.motif_residue_info[ir].name() != "GLY")
                     ):
                 mutateResidue.set_res_name("D"+self.motif_residue_info[ir].name())
             elif (
