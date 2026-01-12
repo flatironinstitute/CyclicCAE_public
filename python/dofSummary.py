@@ -218,7 +218,8 @@ class DoFSummary:
             if (
                     (pose.phi(residue_number) > 0) & 
                     (len(self.motif_residue_info[ir].name().strip()) == 3) &
-                    is_in_canonical_twenty(self.motif_residue_info[ir].name().strip())
+                    is_in_canonical_twenty(self.motif_residue_info[ir].name().strip()) &
+                    self.motif_residue_info[ir].name() != "GLY"
                     ):
                 mutateResidue.set_res_name("D"+self.motif_residue_info[ir].name())
             elif (
@@ -1384,7 +1385,10 @@ class DoFSummary:
 
         # Mutate Residues back to their original types if applicable
         if not random_outputs:
-            self.mutate_gly_to_orginial_residue(pose, residue_start)
+            try:
+                self.mutate_gly_to_orginial_residue(pose, residue_start)
+            except:
+                print("Residue type is Unknown in Rosetta, so you will get only a Glycine backbone in the output...")
             pose = self.rotate_pose(pose, residue_start)
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
