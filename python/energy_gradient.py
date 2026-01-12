@@ -99,6 +99,7 @@ class EnergyPath:
         full_pocket: bool = False,
         random_sample: bool = False,
         exclude_atom_positions: list[str] = [],
+        energy_weight: float = 1.0,
         ):
         """GDS for energy minima structure from starting point
 
@@ -158,6 +159,8 @@ class EnergyPath:
             exclude_atom_positions: list[str]
                 Atom positions to exclude from our DoF loss calculation (e.g. input [1:0, 1:3]) This would exclude
                 the first residues Nitrogen and Oxygen
+            energy_weight: float
+                Value to scale the energy during energy_steps()
         """
         # Pull up points
         self.steps = steps
@@ -205,6 +208,7 @@ class EnergyPath:
         self.ramp_constraint = ramp_constraint
         self.fullpocket = full_pocket
         self.match_res_mask = torch.empty((0, 2), dtype=torch.int)
+        self.energy_weight = energy_weight
 
         # Grab values required for model and other parts
         # dataset = torch.load(dataset)
@@ -2149,7 +2153,7 @@ class EnergyPath:
                         # loss = (energy_pred + 0*dist + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*100*ocnh_loss_term + term_bond_coeff*100*combo_angles + interface_total_loss + 0*clash_penalty).mean()
                         # loss = (self.lambda_2*l_homochiral_loss).mean()
                         loss = (
-                            energy_pred + \
+                            energy_pred*self.energy_weight + \
                             self.lambda_2*harmonic_loss + \
                             term_bond_coeff*discontig_loss + \
                             term_bond_coeff*term_bond_loss_term + \
@@ -2384,6 +2388,7 @@ if __name__ == "__main__":
     p.add_argument("--complex-output", action="store_true", help="Output scaffolds in complex with target structure")
     p.add_argument("--exclude-atom-from-dof", nargs="+", default=[], type=str, help="Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N(0), Ca(1), C(2), O(4)) \
             as the numbering. (e.g. --exclude-atom-from-dof 1:0 1:3)")
+    p.add_argument("--energy-weight", default=1.0, type=float, help="Energy weight term to be used during gradient descent energy minimization.")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -2418,6 +2423,7 @@ if __name__ == "__main__":
         full_pocket = args.fullpocket_minimize,
         random_sample = args.random_sample,
         exclude_atom_positions = args.exclude_atom_from_dof,
+        energy_weight = args.energy_weight,
     )
 
     # Init dofsummary which is used in both the beginning and end of the script
