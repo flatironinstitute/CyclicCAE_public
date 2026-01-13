@@ -1033,7 +1033,7 @@ class DoFSummary:
         :curpose: Threaded pose that was mutated
         :native_pose: PDB native peptide mutated
         """
-        # Grab our atom id maps for RMS scoring (motif full)
+        # Grab our atom id maps for RMS scoring (motif fullatom)
         atom_map_motif = self.grab_atomid_map(
                 native_pose,
                 curpose,
@@ -1048,21 +1048,21 @@ class DoFSummary:
                 self.consistent_motif_resi,
                 )
         # Calculate full heavy rmsd of motif
-        motif_specific_fullrmsd = core.scoring.rms_at_corresponding_atoms(
+        motif_specific_fullrmsd = core.scoring.superimpose_pose(
                 curpose,
                 native_pose,
                 atom_map_motif,
                 )
         # Calculate bbheavy rmsd only
-        motif_specific_fullheavybbrmsd = core.scoring.rms_at_corresponding_atoms(
+        motif_specific_heavybbrmsd = core.scoring.superimpose_pose(
                 curpose,
                 native_pose,
                 bbheavy_atom_map_motif,
                 )
 
 #       # Add scores to our poses
-        curpose.scores["motif_fullHeavy_RMSD"] = motif_specific_fullrmsd
-        curpose.scores["motif_bbHeavy_RMSD"] = motif_specific_fullheavybbrmsd
+        curpose.scores["motif_allatom_nothydrogens_RMSD"] = motif_specific_fullrmsd
+        curpose.scores["motif_bbHeavy_RMSD"] = motif_specific_heavybbrmsd
 
         # Now if it is the same size and is cyclic then we want to compare our backbones against the native
         if (native_pose.total_residue() == curpose.total_residue() and self.is_cyclic):
@@ -1074,24 +1074,13 @@ class DoFSummary:
                     self.consistent_motif_resi,
                     True,
                     )
-            core.scoring.superimpose_pose(
-                    curpose,
-                    native_pose,
-                    bbheavy_atom_map_motif,
-                    )
-            curpose.update_residue_neighbors()
-            full_pose_heavybbrmsd = core.scoring.rms_at_corresponding_atoms_no_super(
+            full_pose_heavybbrmsd = core.scoring.superimpose_pose(
                     curpose,
                     native_pose,
                     bbheavy_atom_map_fullpose,
                     )
-            curpose.scores["fullpose_bbHeavy_RMSD_motifsuper"] = full_pose_heavybbrmsd
-            full_pose_heavybbrmsd_super = core.scoring.rms_at_corresponding_atoms(
-                    curpose,
-                    native_pose,
-                    bbheavy_atom_map_fullpose,
-                    )
-            curpose.scores["fullpose_bbHeavy_RMSD"] = full_pose_heavybbrmsd_super
+#             curpose.update_residue_neighbors()
+            curpose.scores["fullpose_bbHeavy_RMSD"] = full_pose_heavybbrmsd
         return 0
 
     def remove_term_variants(self,
