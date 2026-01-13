@@ -127,42 +127,18 @@ class DoFSummary:
 
         assert True == rotated_pose.empty(), "This pose is not empty and needs to be fixed"
 
-        # Compute start residue of our new pose
-        # negative is left and positive is right rotation
-        direction = self.consistent_motif_resi - (residue_start + 1)
-        residue_amount_before_motif = self.consistent_motif_resi - 1
-        # Moves left as it is to the right 
-        if direction < 0:
-            first_new_residue_pos = (residue_start + 1) - residue_amount_before_motif
-        # Move right as it is to the left
-        else:
-            first_new_residue_pos = (residue_start + 1) - residue_amount_before_motif
-            first_new_residue_pos += pose.total_residue()
+        # Generate a mapping for our scaffold residues to the new desired ordering
+        resimap = [ ((ir % pose.total_residue())+1,(new_res % pose.total_residue())+1) for ir,new_res in zip(range(residue_start+1, residue_start+1+pose.total_residue()), range(self.consistent_motif_resi, self.consistent_motif_resi+pose.total_residue())) ]
+        sorted_resimap = sorted(resimap, key=lambda x: x[1])
 
-        for newpos, ir in enumerate(range(first_new_residue_pos, pose.total_residue()+1)):
-            if newpos == 0:
-                rotated_pose.append_residue_by_bond(pose.residue(ir))
+        # Loop through and build our reordered peptide
+        for old_scaffold_resi, new_scaffold_resi in sorted_resimap:
+            if new_scaffold_resi == 1:
+                rotated_pose.append_residue_by_bond(pose.residue(old_scaffold_resi))
             else:
                 rotated_pose.append_polymer_residue_after_seqpos(
-                    pose.residue(ir),
-                    newpos,
-                    False,
-                )
-
-        # Now prepend the remaining residues that were before the start position
-        # position = [1] + [i for i in range(pose.total_residue(), 1, -1)]
-        if direction < 0:
-            for ir in range(1, first_new_residue_pos):
-                rotated_pose.append_polymer_residue_after_seqpos(
-                    pose.residue(ir),
-                    rotated_pose.total_residue(),
-                    False,
-                )
-        else:
-            for ir in range(residue_start+1, pose.total_residue()-(residue_start+1).item()+1):
-                rotated_pose.append_polymer_residue_after_seqpos(
-                    pose.residue(ir),
-                    rotated_pose.total_residue(),
+                    pose.residue(old_scaffold_resi),
+                    new_scaffold_resi-1,
                     False,
                 )
 
