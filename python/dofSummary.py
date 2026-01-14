@@ -286,9 +286,13 @@ class DoFSummary:
             peptide_pose.delete_residue_range_slow(1, start_res-1)
             aa_removed = start_res-1
 
+        # option for if we are extracting all dofs from peptide
+        if self.extract_minimize_input:
+            residues_of_interest = torch.arange(peptide_pose.total_residue())
+
         # Set the fold tree
-        if peptide_pose.total_residue() > len(residues_of_interest):
-            assert peptide_pose.total_residue() > len(residues_of_interest), "Something is wrong, our pose size not > %i, it is %i" % (len(residues_of_interest), peptide_pose.total_residue())
+        if peptide_pose.total_residue() >= len(residues_of_interest):
+            assert peptide_pose.total_residue() >= len(residues_of_interest), "Something is wrong, our pose size not > %i, it is %i" % (len(residues_of_interest), peptide_pose.total_residue())
             root = self.foldtree_define(peptide_pose.total_residue())
             ft = core.kinematics.FoldTree()
             ft.clear()
@@ -409,13 +413,20 @@ class DoFSummary:
             # dof_tensor.clear()
 
         # DoF Types 1 and 2 are in radians FYI
-        if dof_type == 1:
+        if self.extract_minimize_input and not dof_type == 3:
             dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)
-            dof_tensor = torch.deg2rad(dof_tensor)
-        elif dof_type == 2:
-            dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
+            dof_tensor = torch.rad2deg(dof_tensor)
+        elif self.extract_minimize_input and dof_type == 3:
+            dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)
         else:
-            dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
+            if dof_type == 1:
+                dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)
+                dof_tensor = torch.deg2rad(dof_tensor)
+#             elif dof_type == 2:
+#                 dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
+#                 dof_tensor = torch.rad2deg(dof_tensor)
+            else:
+                dof_tensor = torch.tensor(dof_tensor, dtype=torch.float64)[key]
 
         #     # Add in padding to DoFs
         #     dof_tensor = torch.cat(
@@ -494,6 +505,7 @@ class DoFSummary:
         if self.extract_minimize_input:
             residues_of_interest = torch.tensor([i for i in range(1, pose.total_residue()+1)],
                                                 dtype=torch.long)
+            self.residues_of_interest = residues_of_interest
 
         # First we extract out the Resiude level information of our motif
         self.motif_residue_info = dict()
@@ -557,6 +569,58 @@ class DoFSummary:
 
         return motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs
 
+    def extract_all_dofs_from_pdb(
+        self,
+        input_pdb: str,
+        peptide_chain: int,
+        include_torsion: bool = True,
+        include_bondangle: bool = True,
+        include_bondlength: bool = True,
+        ) -> torch.Tensor:
+        """
+        Extract all DoFs from our passed peptide chain in the passed PDB and
+        return all DoFs in the correct order CyclicCAE is expecting for encoding
+
+        PARAMS
+        ------
+        :input_pdb: Path to the pdb file we are etracting information from
+        :peptide_chain: The integer representing the peptide/binders chain
+            in our PDB.
+        :include_torsion: Extract DoF (True/False)
+        :include_bondangle: Extract DoF (True/False)
+        :include_bondlength: Extract DoF (True/False)
+
+        RETURNS
+        -------
+        :dofs: All DoFs in a torch.Tensor in the correct order that CyclicCAE is expecting.
+        """
+        # init important variables
+        self.include_mainchain_torsions = include_torsion
+        self.include_mainchain_bondangles = include_bondangle
+        self.include_mainchain_bondlengths = include_bondlength
+        self.ref_chain = peptide_chain
+
+        # extract only the peptide/binder pose
+        peptide_pose, updated_res = self.read_pdb_extract_peptide(input_pdb, None, peptide_chain)
+
+        print("peptide size:", peptide_pose.total_residue())
+        # extract the dofs from our peptide pose
+        motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs = self.extract_dof_from_pose(
+            peptide_pose,
+            None,
+        )
+
+        print("torsion, bondangle, bondlength outputs:", motif_torsion_dofs.shape, motif_bondangle_dofs.shape, motif_bondlength_dofs.shape)
+        dofs = torch.cat(
+                (
+                    motif_torsion_dofs,
+                    motif_bondangle_dofs,
+                    motif_bondlength_dofs,
+                    ), -1
+                )
+
+        return dofs
+
     def extract_pdb_pose_and_dof(
         self,
         input_pdb: str,
@@ -596,7 +660,6 @@ class DoFSummary:
         self.include_mainchain_bondangles = include_bondangle
         self.include_mainchain_bondlengths = include_bondlength
         self.ref_chain = peptide_chain
-
 
         # extract only the peptide/binder pose
         peptide_pose, updated_res = self.read_pdb_extract_peptide(input_pdb, residues_of_interest, peptide_chain)
@@ -1337,8 +1400,13 @@ class DoFSummary:
         # Take size for metrics
         pepSize = pose.size()
 
+        if self.extract_minimize_input:
+            self.full_cyclize_pose_withoutbond(pose)
+            self.declare_terminal_bond(pose)
+            if self.peptide_native != None:
+                self.calculate_rmsd_between_native(pose, self.peptide_native)
         # Mutate Residues back to their original types if applicable
-        if not random_outputs:
+        elif not random_outputs:
             try:
                 self.mutate_gly_to_orginial_residue(pose, residue_start)
             except:
@@ -1490,7 +1558,7 @@ class DoFSummary:
                 score_outputs = score_outputs,
                 random_outputs = random_outputs,
                 minimize_pose = minimize_pose,
-                residue_start = residue_start[s] if not random_outputs else None,
+                residue_start = residue_start[s] if not random_outputs and not self.extract_minimize_input else None,
                 complex_out = complex_out,
             )
             if not silentfile:
