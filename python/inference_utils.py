@@ -1044,11 +1044,14 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
     # print("RSMD Whole:", rmsd.mean().item())
     
     if motif_input.size(0) == Q.size(0):
-        diff_motif = P_aligned - Q.unsqueeze(0)
+        diff_motif = torch.norm(P_aligned - Q.unsqueeze(0), dim=-1)
     else:
-        diff_motif = P_aligned - Q[motif_input, :].unsqueeze(0)
-    rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
-    print("RSMD Motif:", rmsd_motif.mean().item())
+        diff_motif = torch.norm(P_aligned - Q[motif_input, :].unsqueeze(0), dim=-1)
+#     rmsd_motif = torch.sqrt(diff_motif.pow(2).sum((1,2)) / P.size(1))
+#     rmsd_motif = torch.sqrt(diff_motif.pow(2).sum(-1).mean(-1))
+    rmsd_motif = torch.sqrt(diff_motif.pow(2).sum(-1) / P.size(1))
+    print("Batch Mean RSMD Motif:", rmsd_motif.mean().item())
+#     print("RSMD Motif:", rmsd_motif.mean().item())
 
     P_total = torch.matmul(P, R.transpose(2, 1)) + t.unsqueeze(1)
 
