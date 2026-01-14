@@ -996,8 +996,12 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
     """
     # Calc Translation
     # P_point = P[:, motif, :] # N atom of 4th residue root
-    P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
-    Q_point = Q[motif_input, :] # Same N atom
+    if motif_input.size(0) == Q.size(0):
+        P_point = P
+        Q_point = Q
+    else:
+        P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
+        Q_point = Q[motif_input, :] # Same N atom
 
     # Compute centroids
     centroid_P = P_point.mean(dim=1) # (B, N, 3) -> (B, 3)
@@ -1039,7 +1043,10 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
     # rmsd = torch.sqrt((diff * diff).sum(1) / P.size(1))
     # print("RSMD Whole:", rmsd.mean().item())
     
-    diff_motif = P_aligned - Q[motif_input, :].unsqueeze(0)
+    if motif_input.size(0) == Q.size(0):
+        diff_motif = P_aligned - Q.unsqueeze(0)
+    else:
+        diff_motif = P_aligned - Q[motif_input, :].unsqueeze(0)
     rmsd_motif = torch.sqrt((diff_motif * diff_motif).sum(1) / P.size(1))
     print("RSMD Motif:", rmsd_motif.mean().item())
 
@@ -1050,7 +1057,7 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
     if motif_input == slice(None):
         return P_aligned, t, R
     else:
-        return P_total
+        return P_total, rmsd_motif.mean()
 
 ## Keep this as the original
 # def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor, motif: torch.Tensor = slice(None)):
