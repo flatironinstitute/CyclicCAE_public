@@ -1049,7 +1049,7 @@ class DoFSummary:
             fzn_posit = ir+target_start_resi 
             nat_fzn_posit = ir+residue_anchors[0]
             if fzn_posit > pose_target.total_residue(): fzn_posit = fzn_posit % pose_target.total_residue()
-            if nat_fzn_posit > pose_target.total_residue(): nat_fzn_posit = nat_fzn_posit % pose_reference.total_residue()
+            if nat_fzn_posit > pose_reference.total_residue(): nat_fzn_posit = nat_fzn_posit % pose_reference.total_residue()
             curres = pose_target.residue(fzn_posit)
             refres = pose_reference.residue(nat_fzn_posit)
 
