@@ -847,8 +847,14 @@ class EnergyPath:
                 latent_dim6.uniform_(-0.3525, 0.3567)
 #                 scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
             elif self.PARAMS["protein_len"] == 9:
+                latent_dim1.uniform_(-0.1440, 0.1503)
+                latent_dim2.uniform_(-0.1590, 0.1649)
+                latent_dim3.uniform_(-0.1249, 0.1476)
+                latent_dim4.uniform_(-0.1348, 0.1504)
+                latent_dim5.uniform_(-0.1465, 0.1721)
+                latent_dim6.uniform_(-0.1755, 0.1834)
 #                 scatter_latent.uniform_(-0.20100, 0.20100)
-                scatter_latent.uniform_(-0.9800, 0.9800)
+#                 scatter_latent.uniform_(-0.9800, 0.9800)
 
             scatter_latent = torch.cat(
                     ( 
