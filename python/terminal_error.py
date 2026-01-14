@@ -123,9 +123,9 @@ class TerminalPeptide:
         CNCa = self.compute_angle(c_coords[:, -1, :], n_coords[:, 0, :], ca_coords[:, 0, :])
 
         # perform regression
-        # print("TERMINAL BOND LENGTH:", terminal_pred_length.flatten())
-        # print("REAL TERM", real_term.flatten())
-        loss = torch.pow(terminal_pred_length.view(-1, 1).to(device) - real_term.view(-1, 1).to(device), 2)
+#         print("TERMINAL BOND LENGTH:", terminal_pred_length[:40].flatten())
+#         print("REAL TERM", real_term[:40].flatten())
+        loss = torch.pow(terminal_pred_length.view(-1, 1).to(device) - real_term.view(-1, 1).to(device), 2) / 0.25
 
         # terminal angle
         # bdh_loss = torch.mean(torch.pow(torch.sin(bdh.view(-1, 1)) - (torch.ones(bdh.view(-1, 1).shape) * torch.sin(torch.deg2rad(torch.tensor(116.)))).to(device), 2) + torch.pow(torch.cos(bdh.view(-1, 1)) - (torch.ones(bdh.view(-1, 1).shape) * torch.cos(torch.deg2rad(torch.tensor(116.)))).to(device), 2))
