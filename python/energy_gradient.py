@@ -100,6 +100,7 @@ class EnergyPath:
         random_sample: bool = False,
         exclude_atom_positions: list[str] = [],
         energy_weight: float = 1.0,
+        encode_decode: bool = False,
         ):
         """GDS for energy minima structure from starting point
 
@@ -209,6 +210,8 @@ class EnergyPath:
         self.fullpocket = full_pocket
         self.match_res_mask = torch.empty((0, 2), dtype=torch.int)
         self.energy_weight = energy_weight
+        self.extract_minimize_input = encode_decode
+        self.ideal_term_length = 1.36 # 1.4
 
         # Grab values required for model and other parts
         # dataset = torch.load(dataset)
@@ -534,6 +537,34 @@ class EnergyPath:
         
         return out
 
+    def extract_latent_information( self, dataset: torch.Tensor ) -> torch.Tensor:
+        """Extract out latent space information from a dataset
+
+        PARAMS
+        ------
+        :dataset: This ideally should be a full dataset used to train the model, so that the bounds
+            of the latentspace can be assessed.
+        """
+        out, _, latent_points, _ = self.model.forward( dataset, noise=False )
+        return out, latent_points
+
+
+    def encode_decode(self, pdb_input: str, dofsummary: DoFSummary, chain: int = 2):
+        """Pass a pdb structure, extract the DoFs from the pose, encode and then decode them
+
+        PARAMS
+        ------
+        :pdb_input: Path to our pdb chain
+        :chain: The cyclic peptide chain
+        """
+        extracted_dofs = dofsummary.extract_all_dofs_from_pdb(pdb_input, chain)
+        out, _, latent_points, _ = self.model.forward( extracted_dofs, noise=False )
+        out = out.detach().clone()
+        torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
+        bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+        preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
+        self.dof_traj = preds.unsqueeze(0)
+        return latent_points.detach().clone()
 
     def calc_angles(self, preds: torch.Tensor):
         """Display the Computed Angles"""
@@ -782,18 +813,50 @@ class EnergyPath:
         # real_bond_length = self.start_point[:, self.ORIG_PARAMS["bond_angle_main_n"]*2:]
 
         while no_scaffolds:
+#             scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
             # set up tensor of random init values
-            scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
+            latent_dim1 = torch.zeros((B, 1), dtype=torch.float64, device=self.device)
+            latent_dim2 = torch.zeros((B, 1), dtype=torch.float64, device=self.device)
+            latent_dim3 = torch.zeros((B, 1), dtype=torch.float64, device=self.device)
+            latent_dim4 = torch.zeros((B, 1), dtype=torch.float64, device=self.device)
+            latent_dim5 = torch.zeros((B, 1), dtype=torch.float64, device=self.device)
+            latent_dim6 = torch.zeros((B, 1), dtype=torch.float64, device=self.device)
 
             if self.PARAMS["protein_len"] == 6:
-                scatter_latent.uniform_(-0.7400, 0.7400) # This is set up for model 
+                latent_dim1.uniform_(-0.5391, 0.5914)
+                latent_dim2.uniform_(-0.6257, 0.6309)
+                latent_dim3.uniform_(-0.7465, 0.7524)
+                latent_dim4.uniform_(-0.6096, 0.6380)
+                latent_dim5.uniform_(-0.6401, 0.6702)
+                latent_dim6.uniform_(-0.6841, 0.7061)
+#                 scatter_latent.uniform_(-0.7400, 0.7400) # This is set up for model 
             elif self.PARAMS["protein_len"] == 7:
-                scatter_latent.uniform_(-0.7400, 0.7400) # This is set up for model 
+                latent_dim1.uniform_(-0.5453, 0.5598)
+                latent_dim2.uniform_(-0.6588, 0.6565)
+                latent_dim3.uniform_(-0.6049, 0.6327)
+                latent_dim4.uniform_(-0.6324, 0.6509)
+                latent_dim5.uniform_(-0.6679, 0.6894)
+                latent_dim6.uniform_(-0.4654, 0.4858)
+#                 scatter_latent.uniform_(-0.7400, 0.7400) # This is set up for model 
             elif self.PARAMS["protein_len"] == 8:
-                scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
+                latent_dim1.uniform_(-0.3712, 0.3747)
+                latent_dim2.uniform_(-0.3114, 0.3205)
+                latent_dim3.uniform_(-0.3781, 0.3776)
+                latent_dim4.uniform_(-0.2715, 0.2808)
+                latent_dim5.uniform_(-0.2979, 0.3047)
+                latent_dim6.uniform_(-0.3525, 0.3567)
+#                 scatter_latent.uniform_(-0.3824, 0.3802) # This is set up for model 7731
             elif self.PARAMS["protein_len"] == 9:
 #                 scatter_latent.uniform_(-0.20100, 0.20100)
                 scatter_latent.uniform_(-0.9800, 0.9800)
+
+            scatter_latent = torch.cat(
+                    ( 
+                     latent_dim1, latent_dim2, latent_dim3,
+                     latent_dim4, latent_dim5, latent_dim6,
+                     ), dim=-1
+                    )
+
             
             # run the points through the decoder
             out = self.decoder(scatter_latent)
@@ -809,7 +872,8 @@ class EnergyPath:
             preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["bond_angle_main_n"]*2*2:-self.energy_n]), dim=-1)
 
             # Grab ref2015 energy from output
-            energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
+            energy_all = out[:, -self.energy_n:]
+#             energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
 
             ######### REMOVE SECTION LATER
 #             if energy_all.size(-1) == 1:
@@ -825,7 +889,7 @@ class EnergyPath:
             # term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
             term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                 dof_inputs = out,
-                real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length, 
                 params = self.PARAMS,
                 foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                 device = out.device,
@@ -947,7 +1011,7 @@ class EnergyPath:
                     print(self.motif_input)
                     print(self.regions_atoms)
                     print(self.regions_atoms[0])
-                    aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
+                    aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
 #                                                           motif_input_ = self.regions_atoms[0],
                                                           motif_input = self.regions_atoms[0].unsqueeze(0),
                                                           motif_output = self.regions_atoms[0].unsqueeze(0),
@@ -955,7 +1019,7 @@ class EnergyPath:
                 else:
                     # Non contiguous indexing of our outputs
                     coords = coords[match_res_mask[:, 0]]
-                    aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
+                    aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                           motif_output = self.motif,
                                                           motif_input = self.motif_input,
                                                           )
@@ -1304,7 +1368,7 @@ class EnergyPath:
                 # term_bond_loss = self.term_bond.terminal_peptide_loss(
                 term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, _, _ = self.term_bond.terminal_peptide_loss(
                     dof_inputs = out,
-                    real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                    real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length,
                     params = self.PARAMS,
                     foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                     device = out.device,
@@ -1543,7 +1607,7 @@ class EnergyPath:
             if terminal:
                 term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
                     dof_inputs = out,
-                    real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                    real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length,
                     params = self.PARAMS,
                     foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                     device = out.device,
@@ -1819,9 +1883,9 @@ class EnergyPath:
                      motif_dofs = None, l_homochiral: bool = False):
         """Model Eval Loop for GDS"""
         if start_points.size(0) == 1:
-            self.start_latent_point = self.encoder(start_points).detach()
+            self.start_latent_point = start_points.to(self.device) #self.encoder(start_points).detach()
             start_range = 0
-            self.path = torch.zeros((start_points.size(0),self.steps), device=self.device)
+            self.path = torch.zeros((start_points.size(0),self.steps), dtype=torch.float32, device=self.device)
             self.energy_path = torch.zeros(start_points.size(0), self.steps,  device=self.device)
             self.dof_traj = torch.zeros((start_points.size(0), self.steps, self.dof_size - self.energy_n), dtype=torch.float64, device=self.device)
         elif mcmc_minimize:
@@ -1945,7 +2009,7 @@ class EnergyPath:
 
                     term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty = self.term_bond.terminal_peptide_loss(
                         dof_inputs = out,
-                        real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                        real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length,
                         params = self.PARAMS,
                         foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                         device = out.device,
@@ -1987,7 +2051,7 @@ class EnergyPath:
                     # Compute coordinates first for HNCO calculation
                     term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                         dof_inputs = out,
-                        real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * 1.4,
+                        real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length,
                         params = self.PARAMS,
                         foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                         device = out.device,
@@ -2075,6 +2139,21 @@ class EnergyPath:
                     # Interface calculate
                     #########
 
+                    if self.extract_minimize_input:
+                        rmsd_weight = 10.0
+                        self.energy_weight = 0.0
+                        self.lambda_2 = 0.0
+                        term_bond_coeff = 0.0
+                        peptide_nonhydrogen_mask = interface_cb_dict["epsilon_peptide"] != 0.901681
+                        aligned_coordinates, rmsd_loss = kabsch_rootatom(
+                                P = coords, 
+                                Q = interface_cb_dict["peptide"][peptide_nonhydrogen_mask].double(),
+                                motif_input = torch.arange( interface_cb_dict["peptide"][peptide_nonhydrogen_mask].size(0) ),
+                                motif_output = torch.arange( coords.size(1) ),
+                                )
+                    else:
+                        rmsd_weight = 0.0
+
                     if interface_full_dict != None:
                         # We must specify which interface context we are using whether it be ramp or one consistent view
                         if (step < self.steps//4) and (self.ramp_constraint):
@@ -2088,7 +2167,7 @@ class EnergyPath:
 
                         peptide_nonhydrogen_mask = interface_dict["epsilon_peptide"] != 0.901681
                         if not self.contiguous:
-                            aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
+                            aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                                   motif = self.regions_atoms[0],
                                                                   )
                             discontig_loss = discontig_motif_loss(
@@ -2100,7 +2179,7 @@ class EnergyPath:
                             )
                         else:
                             discontig_loss = torch.zeros(1, device=self.device)
-                            aligned_coordinates = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
+                            aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                                   motif_output = self.motif,
                                                                   motif_input = self.motif_input,
                                                                   )
@@ -2159,7 +2238,8 @@ class EnergyPath:
                             term_bond_coeff*term_bond_loss_term + \
                             term_bond_coeff*combo_angles + \
                             interface_total_loss + \
-                            self.lambda_2*l_homochiral_loss
+                            self.lambda_2*l_homochiral_loss + \
+                            rmsd_loss*rmsd_weight
                         ).mean()
                         # loss = (energy_pred + self.lambda_2*harmonic_loss + term_bond_coeff*term_bond_loss_term + term_bond_coeff*ocnh_loss_term + term_bond_coeff*interface_total_loss + 0*clash_penalty).mean()
                     else:
@@ -2389,6 +2469,8 @@ if __name__ == "__main__":
     p.add_argument("--exclude-atom-from-dof", nargs="+", default=[], type=str, help="Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N(0), Ca(1), C(2), O(4)) \
             as the numbering. (e.g. --exclude-atom-from-dof 1:0 1:3)")
     p.add_argument("--energy-weight", default=1.0, type=float, help="Energy weight term to be used during gradient descent energy minimization.")
+    p.add_argument("--latent-space-exploration", action="store_true", help="This is only used to extract latent space information, so we can plot and extract metadata")
+    p.add_argument("--latent-space-training-dataset", type=str, help="If using --latent-space-exploration, then pass this as well. This should be an already extracted .pt dataset used in training")
     args = p.parse_args()
 
     use_device = "cuda:0" if args.gpu else "cpu"
@@ -2424,13 +2506,47 @@ if __name__ == "__main__":
         random_sample = args.random_sample,
         exclude_atom_positions = args.exclude_atom_from_dof,
         energy_weight = args.energy_weight,
+        encode_decode = args.extract_minimize_input
     )
+
+    # This is only for running a dataset through a model and extracting out information from it.
+    if args.latent_space_exploration:
+        data = torch.load(args.latent_space_training_dataset)
+        data_dof = data["x"].double()
+        points_left = True
+        loop = 0
+
+        while points_left:
+            print("Current dof_size:", data_dof.size(0))
+            section = data_dof[:10000] if data_dof.size(0) > 10000 else data_dof
+            out_dof, latent_points = energySearch.extract_latent_information( section )
+            if loop == 0: 
+                storage = latent_points 
+                loop+=1
+            else:
+                # Should be in shape (B, 6)
+                storage = torch.cat( ( storage, latent_points ), dim=0 )
+            if data_dof.size(0) < 10000: points_left = False
+            else: data_dof = data_dof[10000:]
+
+        assert storage.size(0) == data["x"].size(0), "Not all of the points are accounted for!"
+        max_min_values = torch.cat(
+                (
+                    storage.max(dim=0).values.unsqueeze(0),
+                    storage.min(dim=0).values.unsqueeze(0),
+                    ), dim=0,
+                )
+        print("Max-Min (Max row 0, Min row 1):", max_min_values)
+        outfilename = args.latent_space_training_dataset.split(".pt")[0]
+        torch.save({"latent-space-points": storage, "max-min": max_min_values}, f"{outfilename}-latentspace-info.pt")
+        sys.exit()
 
     # Init dofsummary which is used in both the beginning and end of the script
     dofsummary = DoFSummary(
         prefix = args.prefix_outfile,
         extract_minimize_input = args.extract_minimize_input,
         is_cyclic = args.treat_input_binder_as_cyclic,
+        pose_motif_location = args.desired_motif_start_position,
     )
 
     # generate our output path if not yet created
@@ -2529,6 +2645,17 @@ if __name__ == "__main__":
             latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
             energySearch.energy_steps(latent_points, l_homochiral = args.l_homochiral)
 
+    #### encode-decode, so we want to encode and then decode directly. To check to see if we can have a minimized version of our structure
+    elif args.extract_minimize_input:
+        # Cb Pocket Context Extract
+        atomdict = extract_pdb_xyz(args.pdb_input, full=False)
+        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
+        interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
+        interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
+                          "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
+                          "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
+        latent_points = energySearch.encode_decode(args.pdb_input, dofsummary, args.peptide_chain)
+        energySearch.energy_steps(latent_points, interface_cb_dict = interface_cb_dict)
 
     # Write our outputs out to this location
     energySearch.output_GDS(skip_individual = args.skip_individual,
