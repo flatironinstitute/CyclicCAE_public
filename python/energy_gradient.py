@@ -2472,7 +2472,7 @@ if __name__ == "__main__":
     p.add_argument("--ramp-interface-constraint", action="store_true", help="This sets the first 0.50 of the energy minimize steps to bb-heavy + Cb pocket context. \
                         Then for the last 0.50 switches to full pocket context (all heavy atoms). If not set then uses passed pocket specification throughout")
     p.add_argument("--complex-output", action="store_true", help="Output scaffolds in complex with target structure")
-    p.add_argument("--exclude-atom-from-dof", nargs="+", default=[], type=str, help="Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N(0), Ca(1), C(2), O(4)) \
+    p.add_argument("--exclude-atom-from-dof", nargs="+", default=[], type=str, help="Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N,phi(0), Ca(1), C,psi(2), O(3), NH(4), Omega: 6) \
             as the numbering. (e.g. --exclude-atom-from-dof 1:0 1:3)")
     p.add_argument("--energy-weight", default=1.0, type=float, help="Energy weight term to be used during gradient descent energy minimization.")
     p.add_argument("--latent-space-exploration", action="store_true", help="This is only used to extract latent space information, so we can plot and extract metadata")
