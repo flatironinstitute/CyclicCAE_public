@@ -194,21 +194,21 @@ class DoFSummary:
             mutateResidue.set_target(residue_number)
 
             # Determine chirality (This is important when masking atoms, as chirality may flip)
-            if (
-                    (pose.phi(residue_number) > 0) & 
-                    (len(self.motif_residue_info[ir].name().strip()) == 3) &
-                    is_in_canonical_twenty(self.motif_residue_info[ir].name().strip()) &
-                    (self.motif_residue_info[ir].name() != "GLY")
-                    ):
-                mutateResidue.set_res_name("D"+self.motif_residue_info[ir].name())
-            elif (
-                    (pose.phi(residue_number) < 0) & 
-                    (len(self.motif_residue_info[ir].name().strip()) > 3) & 
-                    is_in_canonical_twenty(self.motif_residue_info[ir].name().strip()[1:])
-                    ):
-                mutateResidue.set_res_name(self.motif_residue_info[ir].name()[1:])
-            else:
-                mutateResidue.set_res_name(self.motif_residue_info[ir].name())
+#             if (
+#                     (pose.phi(residue_number) > 0) & 
+#                     (len(self.motif_residue_info[ir].name().strip()) == 3) &
+#                     is_in_canonical_twenty(self.motif_residue_info[ir].name().strip()) &
+#                     (self.motif_residue_info[ir].name() != "GLY")
+#                     ):
+#                 mutateResidue.set_res_name("D"+self.motif_residue_info[ir].name())
+#             elif (
+#                     (pose.phi(residue_number) < 0) & 
+#                     (len(self.motif_residue_info[ir].name().strip()) > 3) & 
+#                     is_in_canonical_twenty(self.motif_residue_info[ir].name().strip()[1:])
+#                     ):
+#                 mutateResidue.set_res_name(self.motif_residue_info[ir].name()[1:])
+#             else:
+            mutateResidue.set_res_name(self.motif_residue_info[ir].name())
             mutateResidue.apply(pose)
 
             # Now apply correction to chi angles, so they are more similar
