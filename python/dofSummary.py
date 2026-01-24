@@ -1086,17 +1086,17 @@ class DoFSummary:
                 self.residues_of_interest,
                 self.consistent_motif_resi,
                 )
-        # Calculate full heavy rmsd of motif
-        motif_specific_fullrmsd = core.scoring.superimpose_pose(
-                curpose,
-                native_pose,
-                atom_map_motif,
-                )
         # Calculate bbheavy rmsd only
         motif_specific_heavybbrmsd = core.scoring.superimpose_pose(
                 curpose,
                 native_pose,
                 bbheavy_atom_map_motif,
+                )
+        # Calculate full heavy rmsd of motif
+        motif_specific_fullrmsd = core.scoring.superimpose_pose(
+                curpose,
+                native_pose,
+                atom_map_motif,
                 )
 
 #       # Add scores to our poses
