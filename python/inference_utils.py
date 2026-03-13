@@ -1356,7 +1356,8 @@ def load_weights(size: int, device: str) -> torch.Tensor:
         return torch.load(find_weights("weights/8mer/model_7731_best_weights.pt"),
                           map_location = device)
     else:
-        return torch.load(find_weights("weights/9mer/model_9890_current_weights.pt"),
+        # return torch.load(find_weights("weights/9mer/model_9890_current_weights.pt"),
+        return torch.load(find_weights("weights/9mer/model_6049_best_weights.pt"),
                           map_location = device)
 
 def size_help(size: int, params: dict) -> Union[dict, int]:
