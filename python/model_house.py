@@ -1099,14 +1099,28 @@ class CyclicCAE(nn.Module):
             noise_std = self.noise_std,
         )
 
-    def forward(self, x: torch.Tensor, noise: bool):
-        """Forward"""
-        # Add noise if we are training and not validating
-        # if self.training and noise:
-        #     noise = torch.normal(torch.zeros(x.shape), self.noise_std).to("cuda" if torch.cuda.is_available() else "cpu")
-        #     x = x + noise
-        #     x = torch.clamp(x, -180, 180)
+    def encoder(self, x: torch.Tensor, noise: bool = False) -> tuple[
+            torch.Tensor, torch.Tensor,
+            ]:
+        """Take a (B, D) input and encode it into a (B,R) dimensional latent space
+        (B, D)  -> encoder -> (B, R)
 
+        PARAMS
+        ------
+        :x: An input of size (B, D) where B is the batch size and D
+        is the size of the degrees of freedom that our system defines
+        :noise: Whether to add in noise or not to the samples.
+            True adds noise/ False does not
+
+        RETURNS
+        -------
+        :x: latent space tensor of size (B, R)
+        :intial_input: Which is the decomposed input where the angles are
+            decomposed to their sin/cos components. D is divisible by 3
+            for (torsions, bond angles, bond lengths)
+            if E = (D/3) then the new tensor is of size:
+            (B, E*4 + E)
+        """
         # decompose angles/ return linear terms
         x, bond_angle, bond_length, energy = self.input_decompose(x, self.training, noise)
         init_x = torch.cat((x, bond_angle, bond_length, energy), dim=-1)
@@ -1167,19 +1181,18 @@ class CyclicCAE(nn.Module):
         # Pyramid Encoder 64 -> 32 -> 16 -> 8 -> 3
         x = self.encoder_pyramid(torch.add(x, skip_n2))
         ##### ENCODER END
+        return x, initial_input
 
-        # combine energy and encoded info
-        # x = torch.add(x, energy_encode)
 
-        ##### LATENT SPACE
-        # Copy and compute distance for latent space
-        latent_space = x.clone()
-        latent_euclid_dist = self.compute_euclidean_distance(latent_space)
-        ##### LATENT SPACE END
+    def decoder(self, x: torch.Tensor) -> torch.Tensor:
+        """Decoder portion of CyclicCAE after the output
+        has been reduced to our latent space size.
 
-        # compute energy
-        # energy_pred = self.decode_energy(x)
-
+        PARAMS
+        ------
+        :x: Laten space tensor of size (B, R)
+            where R is the number of dimensions within the latent space
+        """
         ##### DECODER
         energy_x = self.energy_decoder1(x)
         energy_skip1 = energy_x.clone()
@@ -1227,6 +1240,134 @@ class CyclicCAE(nn.Module):
             ),
             dim=-1
         )
+
+        return out  
+
+
+    def forward(self, x: torch.Tensor, noise: bool):
+        """Forward"""
+        x = self.encoder( x, noise )
+#         # decompose angles/ return linear terms
+#         x, bond_angle, bond_length, energy = self.input_decompose(x, self.training, noise)
+#         init_x = torch.cat((x, bond_angle, bond_length, energy), dim=-1)
+#         initial_input = init_x.clone().detach()
+# 
+#         # encode energy
+#         # energy_encode = self.encode_energy(energy)
+# 
+#         # generate linear pe
+#         pe = self.pe()
+# 
+#         ##### ENCODER
+#         # If convolution is true then reformat and apply convolution
+#         if self.convolution:
+#             # Torsion reshape
+#             sin_x = self.reformat_convolution2(x[:, :self.torsion_main_n], self.dof_residue_metadata[:self.torsion_main_n,:])
+#             cos_x = self.reformat_convolution2(x[:, self.torsion_main_n:], self.dof_residue_metadata[:self.torsion_main_n,:])
+#             # Bond Angle Reshape
+#             sin_x_bond = self.reformat_convolution2(bond_angle[:, :self.bond_angle_main_n], self.dof_residue_metadata[self.torsion_main_n:self.torsion_main_n + self.bond_angle_main_n, :])
+#             cos_x_bond = self.reformat_convolution2(bond_angle[:, self.bond_angle_main_n:], self.dof_residue_metadata[self.torsion_main_n+self.bond_angle_main_n : self.torsion_main_n+self.bond_angle_main_n+self.bond_length_main_n, :])
+#             # non-linear transform bond_length to match input dim for convolution
+#             bond_length_transform = self.bond_length_trans(bond_length)
+#             B, L, D = sin_x_bond.shape
+# 
+#             # Concat together
+#             x_combo = torch.cat(
+#                 (
+#                     sin_x.unsqueeze(-1),
+#                     cos_x.unsqueeze(-1),
+#                     sin_x_bond.unsqueeze(-1),
+#                     cos_x_bond.unsqueeze(-1),
+#                     bond_length_transform.reshape(B, L, D).unsqueeze(-1),
+#                 ),
+#                 dim=-1,
+#             )
+#             # Add in positional encodings
+#             x_combo = torch.add(x_combo, pe.unsqueeze(0))
+#             # reshape from (N, L, D, 2) -> (N, 2, D*L)
+#             B, L, D, C = x_combo.shape
+#             x = self.conv_cyc_encoder(x_combo.reshape(B, C, D*L)) # 1D
+#             # x = self.conv_cyc2d(x_combo.permute(0, 3, 1, 2)) # 2D
+#         else:
+#         # Convert 116 -> 64 for encoder block training
+#             x = self.encoder_one(x)
+#         skip_one = x.clone()
+# 
+#         # First Encoder block 64 -> 64
+#         x = self.encoder(x)
+#         skip_n1 = x.clone()
+# 
+#         # Second Encoder Block 64 -> 64 
+#         x = self.encoder_n2(torch.add(x, skip_one))
+#         skip_n2 = x.clone() 
+# 
+#         # Third Encoder Block 64 -> 64
+#         x = self.encoder_n3(torch.add(x, skip_n1))
+# 
+#         # Pyramid Encoder 64 -> 32 -> 16 -> 8 -> 3
+#         x = self.encoder_pyramid(torch.add(x, skip_n2))
+        ##### ENCODER END
+
+        # combine energy and encoded info
+        # x = torch.add(x, energy_encode)
+
+        ##### LATENT SPACE
+        # Copy and compute distance for latent space
+        latent_space = x.clone()
+        latent_euclid_dist = self.compute_euclidean_distance(latent_space)
+        ##### LATENT SPACE END
+
+        # compute energy
+        # energy_pred = self.decode_energy(x)
+
+        ##### DECODER
+        out = self.decoder( latent_space )
+#         energy_x = self.energy_decoder1(x)
+#         energy_skip1 = energy_x.clone()
+#         # Decoder latent to decoder blocks size 3 -> 64
+#         x = self.decoder_pyramid(x)
+#         decode_skip1 = x.clone()
+# 
+#         # First Decoder Block 64 -> 64
+#         x = self.decoder_n(x)
+#         dskip_n1 = x.clone()
+#         # compute first block of energy with first decoder block info as well
+#         energy_x = self.energy_decoder2(torch.add(energy_x, decode_skip1))
+#         energy_skip2 = energy_x.clone()
+# 
+#         # Second Decoder Block 64 -> 64
+#         x = self.decoder_n2(torch.add(x, decode_skip1))
+#         dskip_n2 = x.clone()
+#         # compute second block of energy with second decoder block info as well
+#         energy_x = self.energy_decoder3(torch.add(torch.add(energy_x, energy_skip1), dskip_n2))
+#         energy_skip3 = energy_x.clone()
+# 
+#         # Third Decoder Block 64 -> 64
+#         x = self.decoder_n3(torch.add(x, dskip_n1))
+#         dskip_n3 = x.clone()
+#         # compute third block of energy with third decoder block and second skip energy
+#         energy_x = self.energy_decoder4(torch.add(torch.add(energy_x, energy_skip2), dskip_n3))
+# 
+#         # FINAL decoder layer 64 -> 116 out size
+#         if self.convolution:
+#             B, D = x.shape
+#             x = self.conv_cyc_decoder(x).view(B, -1)
+# 
+#         torsion_angle_pred = self.head_torsion_angle(x)
+#         bond_angle_pred = self.head_bond_angle(x)
+#         bond_length_pred = self.head_bond_length(x)
+#         energy_pred = self.head_energy(energy_x)
+#         ##### DECODER END
+# 
+#         out = torch.cat(
+#             (
+#                 torsion_angle_pred,
+#                 bond_angle_pred,
+#                 bond_length_pred,
+#                 energy_pred,
+#             ),
+#             dim=-1
+#         )
 
 
         return out, latent_euclid_dist.clone(), latent_space, initial_input 

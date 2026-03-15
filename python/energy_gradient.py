@@ -402,141 +402,6 @@ class EnergyPath:
                 j = i
         return True
 
-    def encoder(self, input: torch.Tensor):
-        """Input the DoF Vector and get out the latent space point to optimize
-
-        PARAMS
-        ------
-            input: torch.Tensor
-                DoF Input vector (1, 174) (for glycine 8mer cyclic petpide)
-        
-        RETURNS
-            torch.Tensor
-                Latent Space Tensor (1, 3)
-        """
-        # decompose angles/ return linear terms
-        x, bond_angle, bond_length, energy = self.model.input_decompose(input, self.model.training, False)
-        init_x = torch.cat((x, bond_angle, bond_length, energy), dim=-1)
-        initial_input = init_x.clone().detach()
-
-        # encode energy
-        # energy_encode = self.encode_energy(energy)
-
-        # generate linear pe
-        pe = self.model.pe()
-
-        ##### ENCODER
-        # If convolution is true then reformat and apply convolution
-        if self.model.convolution:
-            # Torsion reshape
-            sin_x = self.model.reformat_convolution2(x[:, :self.model.torsion_main_n], self.model.dof_residue_metadata[:self.model.torsion_main_n,:])
-            cos_x = self.model.reformat_convolution2(x[:, self.model.torsion_main_n:], self.model.dof_residue_metadata[:self.model.torsion_main_n,:])
-            # Bond Angle Reshape
-            sin_x_bond = self.model.reformat_convolution2(bond_angle[:, :self.model.bond_angle_main_n], self.model.dof_residue_metadata[self.model.torsion_main_n:self.model.torsion_main_n + self.model.bond_angle_main_n, :])
-            cos_x_bond = self.model.reformat_convolution2(bond_angle[:, self.model.bond_angle_main_n:], self.model.dof_residue_metadata[self.model.torsion_main_n+self.model.bond_angle_main_n : self.model.torsion_main_n+self.model.bond_angle_main_n+self.model.bond_length_main_n, :])
-            # non-linear transform bond_length to match input dim for convolution
-            bond_length_transform = self.model.bond_length_trans(bond_length)
-            B, L, D = sin_x_bond.shape
-
-            # Concat together
-            x_combo = torch.cat(
-                (
-                    sin_x.unsqueeze(-1),
-                    cos_x.unsqueeze(-1),
-                    sin_x_bond.unsqueeze(-1),
-                    cos_x_bond.unsqueeze(-1),
-                    bond_length_transform.reshape(B, L, D).unsqueeze(-1),
-                ),
-                dim=-1,
-            )
-            # Add in positional encodings
-            x_combo = torch.add(x_combo, pe.unsqueeze(0))
-            # reshape from (N, L, D, 2) -> (N, 2, D*L)
-            B, L, D, C = x_combo.shape
-            x = self.model.conv_cyc_encoder(x_combo.reshape(B, C, D*L)) # 1D
-            # x = self.model.conv_cyc2d(x_combo.permute(0, 3, 1, 2)) # 2D
-        else:
-        # Convert 116 -> 64 for encoder block training
-            x = self.model.encoder_one(x)
-        skip_one = x.clone()
-
-        # First Encoder block 64 -> 64
-        x = self.model.encoder(x)
-        skip_n1 = x.clone()
-
-        # Second Encoder Block 64 -> 64 
-        x = self.model.encoder_n2(torch.add(x, skip_one))
-        skip_n2 = x.clone() 
-
-        # Third Encoder Block 64 -> 64
-        x = self.model.encoder_n3(torch.add(x, skip_n1))
-
-        # Pyramid Encoder 64 -> 32 -> 16 -> 8 -> 3
-        x = self.model.encoder_pyramid(torch.add(x, skip_n2))
-        ##### ENCODER END
-        return x
-
-    def decoder(self, latent_space: torch.Tensor):
-        """Decode straight from the latent space optimization
-
-        PARAMS
-        ------
-            latent_space: torch.Tensor
-                Latnet Space Vector (1, 3)
-        
-        RETURNS
-        -------
-            torch.Tensor: Recomputed DoFs
-        """
-        energy_x = self.model.energy_decoder1(latent_space)
-        energy_skip1 = energy_x.clone()
-        # Decoder latent to decoder blocks size 3 -> 64
-        x = self.model.decoder_pyramid(latent_space)
-        decode_skip1 = x.clone()
-
-        # First Decoder Block 64 -> 64
-        x = self.model.decoder_n(x)
-        dskip_n1 = x.clone()
-        # compute first energy block
-        energy_x = self.model.energy_decoder2(torch.add(energy_x, decode_skip1))
-        energy_skip2 = energy_x.clone()
-
-        # Second Decoder Block 64 -> 64
-        x = self.model.decoder_n2(torch.add(x, decode_skip1))
-        dskip_n2 = x.clone()
-        # compute second block of energies
-        energy_x = self.model.energy_decoder3(torch.add(torch.add(energy_x, energy_skip1), dskip_n2))
-        energy_skip3 = energy_x.clone()
-
-        x = self.model.decoder_n3(torch.add(x, dskip_n1))
-        dskip_n3 = x.clone()
-        # final energy compute
-        energy_x = self.model.energy_decoder4(torch.add(torch.add(energy_x, energy_skip2), dskip_n3))
-
-        # Third Decoder Block 64 -> 64
-        if self.model.convolution:
-            B, D = x.shape
-            x = self.model.conv_cyc_decoder(x).view(B, -1)
-
-        # FINAL decoder layer 64 -> 116 out size
-        torsion_angle_pred = self.model.head_torsion_angle(x)
-        bond_angle_pred = self.model.head_bond_angle(x)
-        bond_length_pred = self.model.head_bond_length(x)
-        energy_pred = self.model.head_energy(energy_x)
-
-        out = torch.cat(
-            (
-                torsion_angle_pred,
-                bond_angle_pred,
-                bond_length_pred,
-                energy_pred,
-            ),
-            dim=-1
-        )
-        ##### DECODER END
-        
-        return out
-
     def extract_latent_information( self, dataset: torch.Tensor ) -> torch.Tensor:
         """Extract out latent space information from a dataset
 
@@ -875,7 +740,7 @@ class EnergyPath:
 
             
             # run the points through the decoder
-            out = self.decoder(scatter_latent)
+            out = self.model.decoder(scatter_latent)
 
             # Prediction Information
             torsion = out[:, :self.PARAMS["torsion_main_n"]*2]
@@ -889,18 +754,6 @@ class EnergyPath:
 
             # Grab ref2015 energy from output
             energy_all = out[:, -self.energy_n:]
-#             energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
-
-            ######### REMOVE SECTION LATER
-#             if energy_all.size(-1) == 1:
-#                 energy = torch.zeros(energy_all.size(0), 3)
-#                 energy[:, -2] = energy_all.squeeze(-1)
-#                 energy_all = energy
-# 
-#             energy_ref = energy_all[:, -2]
-# 
-            ######### REMOVE SECTION LATER
-
 
             # term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
             term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
@@ -910,6 +763,55 @@ class EnergyPath:
                 foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                 device = out.device,
             )
+
+            # We trigger this early to remove structures 
+            if random_no_reference:
+                if terminal:
+                    # Determine which points are within the latent space cutoff
+                    terminal_mask = term_bond_loss < 0.5 #2.0
+                    ocnh_mask = ocnh_loss < 0.5
+                    hnc_mask = hnc_loss < 0.5
+                    nco_mask = nco_loss < 0.5
+                    mask = torch.logical_and(
+                        ocnh_mask.view(-1, 1), torch.logical_and(
+                            hnc_mask.view(-1, 1), torch.logical_and(
+                                nco_mask.view(-1, 1), terminal_mask.view(-1, 1)
+                            ),
+                        )
+                    ).view(-1)
+                else:
+                    mask = torch.ones(term_bond_loss.shape, dtype=bool)
+
+                if not torch.is_tensor(scaffolds):
+                    scaffolds = preds[mask, :-3].detach()
+                    points = scatter_latent[mask].detach()
+                else:
+                    # add to set of scaffolds
+                    scaffolds = torch.cat(
+                        (
+                            scaffolds,
+                            preds[mask, :-3],
+                        ), dim=0,
+                    ).detach()
+                    points = torch.cat(
+                        (
+                            points,
+                            scatter_latent[mask],
+                        ), dim=0,
+                    ).detach()
+
+                # If scaffolds found Stop While Loop
+                run+=1
+                if run > 1000 or scaffolds.size(0) >= self.scaffold_number: 
+                    no_scaffolds = False
+
+                # Save outputs
+                if torch.is_tensor(scaffolds): print(f"Found {scaffolds.size(0)} To Proceed With")
+                else: print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
+                if scaffolds.size(0) >= self.scaffold_number:
+                    return scaffolds[:self.scaffold_number], points[:self.scaffold_number]
+                continue
+
 
             coords_inter = torch.cat(
                 (
@@ -962,58 +864,6 @@ class EnergyPath:
                 )
             if no_matches:
                 continue
-#             if args.freeze_residues != None:
-#                 # Add in the terminal peptide bond HNCO radian, as it isn't a part
-#                 # of the DoFs
-#                 HNCO_sin, HNCO_cos = torch.sin(HNCO), torch.cos(HNCO)
-#                 torsion_sin = torch.cat(
-#                     (
-#                         torsion_sin,
-#                         HNCO_sin,
-#                     ), dim=-1,
-#                 )
-#                 torsion_cos = torch.cat(
-#                     (
-#                         torsion_cos,
-#                         HNCO_cos,
-#                     ), dim=-1,
-#                 )
-# 
-#                 if not self.contiguous:
-#                     discontig_loss = discontig_motif_loss(
-#                         region1  = coords[:, self.regions_atoms[0], :].view(coords.shape[0], -1, 3),
-#                         region2  = coords[:, self.regions_atoms[1], :].view(coords.shape[0], -1, 3),
-#                         t_native = self.t_native,
-#                         R_native = self.R_native,
-#                     )
-#                     # For testing purposes
-#                     match_res_mask = torch.empty()
-#                 else:
-#                     # Now compute which residues match our motif
-#                     harmonic_loss, match_res_mask = self.harmonic_diff_inpaint(
-#                         real_t_sin,
-#                         real_t_cos,
-#                         real_ba_sin,
-#                         real_ba_cos,
-#                         real_bond_length,
-#                         torsion_sin,
-#                         torsion_cos,
-#                         bond_angle_sin,
-#                         bond_angle_cos,
-#                         bond_length,
-#                     )
-#                 if match_res_mask.numel() == 0:
-#                     print("No Scaffolds Match Your inpaint-dist. If this happens many times, \
-#                     you may want to relax the threshold slightly. It is too strict.")
-#                     continue
-#                 # Calculate motif numbering
-#                 # HERE
-#                 self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
-#                     match_res_mask,
-#                     self.PARAMS["protein_len"],
-#                     self.freeze_residues.shape[0],
-#                     self.freeze_residues,
-#                 )
 
             #########
             # Interface calculate
@@ -1072,70 +922,43 @@ class EnergyPath:
                 l_homochiral_loss = torch.zeros(out.shape[0], dtype=torch.float32, device=self.device)
                 homochiral_mask = torch.ones(out.size(0),dtype=torch.bool, device=out.device)
 
-            if random_no_reference:
-                if terminal:
-                    # Determine which points are within the latent space cutoff
-                    terminal_mask = term_bond_loss < 0.5 #2.0
-                    ocnh_mask = ocnh_loss < 0.5
-                    hnc_mask = hnc_loss < 0.5
-                    nco_mask = nco_loss < 0.5
-                    l_homochiral_mask = homochiral_mask # <= 100#homochiral_mask[match_res_mask[:, 0]]
-                    mask = torch.logical_and(
-                        ocnh_mask.view(-1, 1), torch.logical_and(
-                            hnc_mask.view(-1, 1), torch.logical_and(
-                                nco_mask.view(-1, 1), torch.logical_and(
-                                    terminal_mask.view(-1, 1), l_homochiral_mask.view(-1,1),
-                                ),
-                            ),
-                        )
-                    ).view(-1)
-                else:
-                    mask = torch.ones(term_bond_loss.shape, dtype=bool)
-                # torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
-                # bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
-                # preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
-                # torch.save({"random_x": preds, "latent_point": scatter_latent}, f"randomPoints_batch{B}_{datetime.date.today()}.pt")
-                # print("Random Scatter DONE")
-                # return preds, scatter_latent
-
-            else:
-                # Determine which points are within the latent space cutoff
-                int_mask = interface_total_loss <= self.interface_cutoff
-                terminal_mask = term_bond_loss[match_res_mask[:, 0]].view(-1) < 0.5 #2.0
-                ocnh_mask = ocnh_loss[match_res_mask[:, 0]].view(-1) < 0.5
-                hnc_mask = hnc_loss[match_res_mask[:, 0]].view(-1) < 0.5
-                nco_mask = nco_loss[match_res_mask[:, 0]].view(-1) < 0.5
+            # Determine which points are within the latent space cutoff
+            int_mask = interface_total_loss <= self.interface_cutoff
+            terminal_mask = term_bond_loss[match_res_mask[:, 0]].view(-1) < 0.5 #2.0
+            ocnh_mask = ocnh_loss[match_res_mask[:, 0]].view(-1) < 0.5
+            hnc_mask = hnc_loss[match_res_mask[:, 0]].view(-1) < 0.5
+            nco_mask = nco_loss[match_res_mask[:, 0]].view(-1) < 0.5
 #                 harm_mask = harmonic_loss <= self.inpaint_dist
-                l_homochiral_mask = homochiral_mask[match_res_mask[:, 0]].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
-                # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
-                if self.contiguous:
-                    harm_mask = loss <= self.inpaint_dist
-                    mask = torch.logical_and(
-                        ocnh_mask.view(-1, 1), torch.logical_and(
-                            hnc_mask.view(-1, 1), torch.logical_and(
-                                nco_mask.view(-1, 1), torch.logical_and(
-                                    harm_mask.view(-1,1), torch.logical_and(
-                                        int_mask.view(-1,1), torch.logical_and(
-                                            terminal_mask.view(-1, 1), l_homochiral_mask.view(-1, 1),
-                                            ),
+            l_homochiral_mask = homochiral_mask[match_res_mask[:, 0]].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
+            # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
+            if self.contiguous:
+                harm_mask = loss <= self.inpaint_dist
+                mask = torch.logical_and(
+                    ocnh_mask.view(-1, 1), torch.logical_and(
+                        hnc_mask.view(-1, 1), torch.logical_and(
+                            nco_mask.view(-1, 1), torch.logical_and(
+                                harm_mask.view(-1,1), torch.logical_and(
+                                    int_mask.view(-1,1), torch.logical_and(
+                                        terminal_mask.view(-1, 1), l_homochiral_mask.view(-1, 1),
                                         ),
                                     ),
                                 ),
                             ),
-                        ).view(-1) #).view(-1)
-                else:
-                    ca_motif_distance_mask = loss <= 5.0
-                    mask = torch.logical_and(
-                        ocnh_mask.view(-1, 1), torch.logical_and(
-                            hnc_mask.view(-1, 1), torch.logical_and(
-                                nco_mask.view(-1, 1), torch.logical_and(
+                        ),
+                    ).view(-1) #).view(-1)
+            else:
+                ca_motif_distance_mask = loss <= 5.0
+                mask = torch.logical_and(
+                    ocnh_mask.view(-1, 1), torch.logical_and(
+                        hnc_mask.view(-1, 1), torch.logical_and(
+                            nco_mask.view(-1, 1), torch.logical_and(
 #                                     harm_mask.view(-1,1), torch.logical_and(
-                                        int_mask.view(-1,1), torch.logical_and(
-                                            terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
+                                    int_mask.view(-1,1), torch.logical_and(
+                                        terminal_mask.view(-1, 1), ca_motif_distance_mask.view(-1, 1)),
 #                                     )
-                                ),
                             ),
-                        )).view(-1)
+                        ),
+                    )).view(-1)
 
 
             # Grab out specific points that only pass
@@ -1229,7 +1052,7 @@ class EnergyPath:
             energies_trajectories = torch.zeros((B, F, 2, 1), dtype=torch.double)
             H = torch.zeros((B*F, 2, 1), dtype=torch.double)
             # get starting point and enable grad
-            self.start_latent_point = self.encoder(self.start_point_scaled).detach()
+            self.start_latent_point = self.model.encoder(self.start_point_scaled, noise=False).detach()
 
             # Set this as t_0 for all trajectories
             latent_trajectories[:, :,  0, :] = self.start_latent_point.unsqueeze(1).repeat(B, F, 1)
@@ -1286,7 +1109,7 @@ class EnergyPath:
             x_t = latent_trajectories[:, -1, :] + epsilon
 
             # decode points
-            out = self.decoder(x_t.to(self.device))
+            out = self.model.decoder(x_t.to(self.device))
 
             # Prediction Information
             torsion = out[:, :self.PARAMS["torsion_main_n"]*2]
@@ -1466,7 +1289,7 @@ class EnergyPath:
             print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()}, Average Distance: {torch.norm(latent_trajectories[:, 0, :] - start_points.to('cpu'), dim=-1).mean().item()}, Lowest Harmonic Constraint: {H[:, 0, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
 
         # Get lowest energy structures
-        out = self.decoder(latent_trajectories[:, 0, :].to(self.device))
+        out = self.model.decoder(latent_trajectories[:, 0, :].to(self.device))
 
         # generate self
         self.start_latent_point = latent_trajectories[:, 0, :].to(self.device)
@@ -1522,7 +1345,7 @@ class EnergyPath:
         x_t = latent_trajectories + epsilon
 
         # decode points
-        out = self.decoder(x_t)
+        out = self.model.decoder(x_t)
 
         # Prediction Information
         torsion = out[:, :self.PARAMS["torsion_main_n"]*2]
@@ -1614,7 +1437,7 @@ class EnergyPath:
             optimizer.zero_grad()
 
             # get the structure from the latent point
-            out = self.decoder(scatter_latent)
+            out = self.model.decoder(scatter_latent)
 
             # grab the energies (ref2015 score)
             energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
@@ -1899,7 +1722,7 @@ class EnergyPath:
                      motif_dofs = None, l_homochiral: bool = False):
         """Model Eval Loop for GDS"""
         if start_points.size(0) == 1:
-            self.start_latent_point = start_points.to(self.device) #self.encoder(start_points).detach()
+            self.start_latent_point = start_points.to(self.device) 
             start_range = 0
             self.path = torch.zeros((start_points.size(0),self.steps), dtype=torch.float32, device=self.device)
             self.energy_path = torch.zeros(start_points.size(0), self.steps,  device=self.device)
@@ -1950,7 +1773,7 @@ class EnergyPath:
                 optimizer.zero_grad()
 
                 # get the structure from the latent point
-                out = self.decoder(self.start_latent_point)
+                out = self.model.decoder(self.start_latent_point)
 
                 # Prediction Information
                 torsion = out[:, :self.PARAMS["torsion_main_n"]*2]
@@ -2213,6 +2036,7 @@ class EnergyPath:
                     else:
                         interface_total_loss = torch.zeros(1, device=energy.device)
                         discontig_loss = torch.zeros(1, device=self.device)
+                        rmsd_loss = torch.zeros(1, device=self.device)
 
                     if l_homochiral:
                         # THis is for homochiral
