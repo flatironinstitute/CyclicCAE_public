@@ -2430,7 +2430,7 @@ if __name__ == "__main__":
         #### Here we are using our custom functions to extract Target and PDB
         #### information for inpainting and gradient-marching
         # All atoms are Extracted within cutoff distance
-        atomdict = extract_pdb_xyz(args.pdb_input, full=True)
+        atomdict = extract_pdb_xyz(args.pdb_input, full=True, peptide_chain = args.peptide_chain)
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         # torch.save(color_target[mask], "interface_color.pt")
@@ -2439,7 +2439,7 @@ if __name__ == "__main__":
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
                           "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
         # Cb Pocket Context Extract
-        atomdict = extract_pdb_xyz(args.pdb_input, full=False)
+        atomdict = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain = args.peptide_chain)
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),

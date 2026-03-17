@@ -315,7 +315,6 @@ class DoFSummary:
 #                 if isinstance(peptide_chain, int):
 #                     updated_residues.append(pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) - aa_removed)
 #                     updated_residues.append( pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) )
-                print( 'RES:', ir )
                 updated_residues.append( ir )
 #                 else:
 #                     updated_residues.append(pdb_info.pdb2pose( peptide_chain, ir ) - aa_removed)
@@ -619,14 +618,12 @@ class DoFSummary:
         # extract only the peptide/binder pose
         peptide_pose, updated_res = self.read_pdb_extract_peptide(input_pdb, None, peptide_chain)
 
-        print("peptide size:", peptide_pose.total_residue())
         # extract the dofs from our peptide pose
         motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs = self.extract_dof_from_pose(
             peptide_pose,
             None,
         )
 
-        print("torsion, bondangle, bondlength outputs:", motif_torsion_dofs.shape, motif_bondangle_dofs.shape, motif_bondlength_dofs.shape)
         dofs = torch.cat(
                 (
                     motif_torsion_dofs,
