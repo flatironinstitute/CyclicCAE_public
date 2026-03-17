@@ -232,7 +232,7 @@ class DoFSummary:
         self,
         pdb_path: str,
         residues_of_interest: torch.Tensor,
-        peptide_chain: int = 2,
+        peptide_chain: int|str = 2,
         ) -> tuple[Pose, int]:
         """
         Take in a PDB and extract the peptide/binder into
@@ -243,7 +243,7 @@ class DoFSummary:
         :pdb_path: Path to the PDB file that containts the peptide/binder
             we want to use for inpainting.
         :residues_of_interest: The residues we want to extract
-        :peptide_chain: The integer representing the peptide/binders chain
+        :peptide_chain: The integer or char representing the peptide/binders chain
             in our PDB.
 
         RETURNS
@@ -274,17 +274,24 @@ class DoFSummary:
         # grab pose numbering for our peptide
         pdb_info = full_pose.pdb_info()
 
+        # Problem:
+        # Target = 200 Residues
+        # Peptide = 8 residues
+
         # Now delete all the non residues that are not our chain of interest
         if (peptide_chain > 1) and (peptide_pose.num_chains() > peptide_chain):
             peptide_pose.delete_residue_range_slow(1, start_res-1)
             aa_removed = start_res-1
-#             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
+            # There are more chains after the peptide
+            if end_res != res_len:
+                peptide_pose.delete_residue_range_slow(end_res+1, res_len)
+#                 aa_removed += (res_len - end_res+1)
         elif (peptide_chain == 1) and (peptide_pose.num_chains() > 1):
             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
             aa_removed = 0
-        elif peptide_chain == peptide_pose.num_chains():
-            peptide_pose.delete_residue_range_slow(1, start_res-1)
-            aa_removed = start_res-1
+#         elif peptide_chain == peptide_pose.num_chains():
+#             peptide_pose.delete_residue_range_slow(1, start_res-1)
+#             aa_removed = start_res-1
 
         # option for if we are extracting all dofs from peptide
         if self.extract_minimize_input:
@@ -303,7 +310,16 @@ class DoFSummary:
             # Moving this to extract_dofs_from_pose
             updated_residues = list()
             for ir in residues_of_interest:
-                updated_residues.append(pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) - aa_removed)
+                if ir > peptide_pose.total_residue():
+                    ir = aa_removed - ir
+#                 if isinstance(peptide_chain, int):
+#                     updated_residues.append(pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) - aa_removed)
+#                     updated_residues.append( pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) )
+                print( 'RES:', ir )
+                updated_residues.append( ir )
+#                 else:
+#                     updated_residues.append(pdb_info.pdb2pose( peptide_chain, ir ) - aa_removed)
+#                     updated_residues.append( pdb_info.pdb2pose( peptide_chain, ir ) )
                 # print(full_pose.residue(pdb_info.pdb2pose( chainint2str[peptide_chain], ir )))
         else:
             assert peptide_pose.total_residue() == len(residues_of_interest), "Our motif & peptide have too many residues (there is a problem with the selection logic for this section as they are not equal)"
@@ -1158,7 +1174,7 @@ class DoFSummary:
             self,
             pose_reference: core.pose.Pose,
             pose_target: core.pose.Pose,
-            ref_chain: int,
+            ref_chain: int|str,
             residue_anchors: List[int],
             target_start_resi: int = 2,
             ) -> core.pose.Pose:
@@ -1193,7 +1209,10 @@ class DoFSummary:
 
         # Set the fold tree
         for ir in residue_anchors:
-            updated_residues.append(pdb_info.pdb2pose( chainint2str[ref_chain], ir ))
+            if isinstance(ref_chain, int):
+                updated_residues.append(pdb_info.pdb2pose( chainint2str[ref_chain], ir ))
+            else:
+                updated_residues.append(pdb_info.pdb2pose( ref_chain, ir ))
 
         # generate an atom map 
         atom_map = self.grab_atomid_map(
