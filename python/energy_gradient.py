@@ -1052,7 +1052,7 @@ class EnergyPath:
             energies_trajectories = torch.zeros((B, F, 2, 1), dtype=torch.double)
             H = torch.zeros((B*F, 2, 1), dtype=torch.double)
             # get starting point and enable grad
-            self.start_latent_point = self.model.encoder(self.start_point_scaled, noise=False).detach()
+            self.start_latent_point = self.model.encoder_forward(self.start_point_scaled, noise=False).detach()
 
             # Set this as t_0 for all trajectories
             latent_trajectories[:, :,  0, :] = self.start_latent_point.unsqueeze(1).repeat(B, F, 1)

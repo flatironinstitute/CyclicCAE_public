@@ -1099,7 +1099,7 @@ class CyclicCAE(nn.Module):
             noise_std = self.noise_std,
         )
 
-    def encoder(self, x: torch.Tensor, noise: bool = False) -> tuple[
+    def encoder_forward(self, x: torch.Tensor, noise: bool = False) -> tuple[
             torch.Tensor, torch.Tensor,
             ]:
         """Take a (B, D) input and encode it into a (B,R) dimensional latent space
@@ -1246,7 +1246,7 @@ class CyclicCAE(nn.Module):
 
     def forward(self, x: torch.Tensor, noise: bool):
         """Forward"""
-        x = self.encoder( x, noise )
+        x, initial_input = self.encoder_forward( x, noise )
 #         # decompose angles/ return linear terms
 #         x, bond_angle, bond_length, energy = self.input_decompose(x, self.training, noise)
 #         init_x = torch.cat((x, bond_angle, bond_length, energy), dim=-1)
