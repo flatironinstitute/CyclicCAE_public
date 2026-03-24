@@ -278,39 +278,23 @@ def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1
                     line_split = line_split[:4] + [line_split[4][0]] + [line_split[4][1:]] + line_split[5:]
                 if len(line_split[9]) > 4:
                     line_split = line_split[:9] + [line_split[9][:4]] + [line_split[9][4:]] + line_split[10:]
-            # if line_split[2] in ["N", "CA", "C", "O"]:
-            #     atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-            #     index += 1
             if full:
-#                 if (line_split[4] == "A") & (line_split[11] != "H"):
                 if (line_split[4] != pep) & (line_split[11] != "H"):
                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
                     if line_split[2] in ["N", "CA", "C", "O"]:
                         atom_specific = line_split[2]
                     elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
-                        # if line_split[2][0] == "CB":
-                        #     atom_specific = "C"
-                        # else:
-                        #     continue
-                        ####### Editing out below this to try only Cb pocket context (also else with H or C below as well) ####
                         if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
                             atom_specific = line_split[2][0]
                         elif line_split[2][0] == "S":
                             atom_specific = "C"
                         else:
-                            atom_specific = line_split[11]
+                            atom_specific = line_split[12]
                     else: 
                         # atom_specific =  "H"
                         atom_specific =  "C"
-                    # atom_specific = line_split[2] if line_split[2] in ["N", "CA", "C", "O"] else "C"
                     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
                     index += 1
-                # elif (line_split[4] == "A") & (line_split[11] == "H"):
-                #     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                #     atom_specific = "H"
-                #     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                #     index += 1
-#                 elif (line_split[4] == "B") & (line_split[2] in ["N", "CA", "C", "O"]):
                 elif (line_split[4] == pep) & (line_split[2] in ["N", "CA", "C", "O"]):
                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
                     atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
@@ -321,7 +305,6 @@ def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1
             #### full = False
             #### We use up to Cb for target information
             else:
-#                 if (line_split[4] == "A") & (line_split[11] != "H"):
                 if (line_split[4] != pep) & (line_split[11] != "H"):
                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
                     if line_split[2] in ["N", "CA", "C", "O"]:
@@ -333,7 +316,6 @@ def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1
                             continue
                     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
                     index += 1
-#                 elif (line_split[4] == "B") & (line_split[2] in ["N", "CA", "C", "O"]):
                 elif (line_split[4] == pep) & (line_split[2] in ["N", "CA", "C", "O"]):
                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
                     atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
@@ -395,15 +377,12 @@ def gen_xyz_tensor(atomdict: dict, peptide_chain: int|str):
                 atomdict[k][-1]
             ]
         )
-        # print(atomdict[k])
         sigma_mat[k] = sigma_key[atomdict[k][0]]
         epsilon_mat[k] = epsilon_key[atomdict[k][0]]
         color_tensor[k] = color_key[atomdict[k][0]]
 
         # Extract pep_chain
-#         if atomdict[k][2] == 'B':
         if atomdict[k][2] == pep:
-            # append list
             split_tensor_idx.append(k)
 
     # Grab out the peptide xyz indexes
@@ -422,29 +401,6 @@ def gen_xyz_tensor(atomdict: dict, peptide_chain: int|str):
     sigma_target = sigma_mat[nonpeptide_mask]
     epsilon_target = epsilon_mat[nonpeptide_mask]
     color_target = color_tensor[nonpeptide_mask]
-
-#     if peptide_chain == 2:
-#         # target == chain 1
-#         target = full_xyz[:split_tensor_idx[0], :]
-#         sigma_target = sigma_mat[:split_tensor_idx[0]]
-#         epsilon_target = epsilon_mat[:split_tensor_idx[0]]
-#         color_target = color_tensor[:split_tensor_idx[0]]
-# 
-#         # Peptide == chain 2
-#         peptide = full_xyz[split_tensor_idx[0]:, :]
-#         sigma_peptide = sigma_mat[split_tensor_idx[0]:]
-#         epsilon_peptide = epsilon_mat[split_tensor_idx[0]:]
-#     else:
-#         # peptide == chain 1
-#         peptide = full_xyz[:split_tensor_idx[0], :]
-#         sigma_peptide = sigma_mat[:split_tensor_idx[0]]
-#         epsilon_peptide = epsilon_mat[:split_tensor_idx[0]]
-# 
-#         # Target == chain 2
-#         target = full_xyz[split_tensor_idx[0]:, :]
-#         sigma_target = sigma_mat[split_tensor_idx[0]:]
-#         epsilon_target = epsilon_mat[split_tensor_idx[0]:]
-#         color_target = color_tensor[split_tensor_idx[0]:]
 
     return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target
 
@@ -1051,13 +1007,14 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
         Aligned DoF XYZ points
     """
     # Calc Translation
-    # P_point = P[:, motif, :] # N atom of 4th residue root
     if motif_input.size(0) == Q.size(0):
-        P_point = P
         Q_point = Q
     else:
-        P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
         Q_point = Q[motif_input, :] # Same N atom
+    P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
+
+    assert len(P_point.shape) == 3, f"Number of dimensions in our P_point is incorrect. P_point dim size: {P_point.shape}"
+    assert len(Q_point.shape) == 2, f"Number of dimensions in our Q_point is incorrect. Q_point dim size: {Q_point.shape}"
 
     # Compute centroids
     centroid_P = P_point.mean(dim=1) # (B, N, 3) -> (B, 3)
