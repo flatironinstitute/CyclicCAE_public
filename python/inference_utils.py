@@ -276,6 +276,9 @@ def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1
                     line_split = line_split[:2] + [atom] + [res] + line_split[3:]
                 if len(line_split[4]) > 2:
                     line_split = line_split[:4] + [line_split[4][0]] + [line_split[4][1:]] + line_split[5:]
+                if line_split[6].count(".") > 1:
+                    split_6 = line_split[6].split("-")
+                    line_split = line_split[:6] + ["-"+split_6[1]] + ["-"+split_6[-1]] + line_split[7:]
                 if len(line_split[9]) > 4:
                     line_split = line_split[:9] + [line_split[9][:4]] + [line_split[9][4:]] + line_split[10:]
             if full:
@@ -288,8 +291,9 @@ def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1
                             atom_specific = line_split[2][0]
                         elif line_split[2][0] == "S":
                             atom_specific = "C"
-                        else:
-                            atom_specific = line_split[12]
+                        elif line_split[12] in ["N", "CA", "C", "O"]:
+                            atom_specific = line_split[12] 
+                        else: atom_specific = "C"
                     else: 
                         # atom_specific =  "H"
                         atom_specific =  "C"

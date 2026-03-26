@@ -279,19 +279,19 @@ class DoFSummary:
         # Peptide = 8 residues
 
         # Now delete all the non residues that are not our chain of interest
-        if (peptide_chain > 1) and (peptide_pose.num_chains() > peptide_chain):
+        if peptide_chain > 1:
+            assert peptide_pose.num_chains() > 1, "Peptide chain cant be > 1, but the pose not have multiple chains!"
             peptide_pose.delete_residue_range_slow(1, start_res-1)
-            aa_removed = start_res-1
+            pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
             # There are more chains after the peptide
             if end_res != res_len:
-                peptide_pose.delete_residue_range_slow(end_res+1, res_len)
-#                 aa_removed += (res_len - end_res+1)
+                peptide_pose.delete_residue_range_slow(end_res+1 - start_res, peptide_pose.total_residue())
         elif (peptide_chain == 1) and (peptide_pose.num_chains() > 1):
             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
-            aa_removed = 0
-#         elif peptide_chain == peptide_pose.num_chains():
-#             peptide_pose.delete_residue_range_slow(1, start_res-1)
-#             aa_removed = start_res-1
+            pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
+        # This means it is a peptide by itself with no other chains
+        else:
+            pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
 
         # option for if we are extracting all dofs from peptide
         if self.extract_minimize_input:
@@ -299,7 +299,7 @@ class DoFSummary:
 
         # Set the fold tree
         if peptide_pose.total_residue() >= len(residues_of_interest):
-            assert peptide_pose.total_residue() >= len(residues_of_interest), "Something is wrong, our pose size not > %i, it is %i" % (len(residues_of_interest), peptide_pose.total_residue())
+            # Setup our fold tree
             root = self.foldtree_define(peptide_pose.total_residue())
             ft = core.kinematics.FoldTree()
             ft.clear()
@@ -307,19 +307,11 @@ class DoFSummary:
             ft.add_edge(root, peptide_pose.total_residue(), -1)
             ft.reorder(root)
             peptide_pose.fold_tree(ft)
-            # Moving this to extract_dofs_from_pose
+
             updated_residues = list()
             for ir in residues_of_interest:
-                if ir > peptide_pose.total_residue():
-                    ir = aa_removed - ir
-#                 if isinstance(peptide_chain, int):
-#                     updated_residues.append(pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) - aa_removed)
-#                     updated_residues.append( pdb_info.pdb2pose( chainint2str[peptide_chain], ir ) )
+                ir -= pdb_start
                 updated_residues.append( ir )
-#                 else:
-#                     updated_residues.append(pdb_info.pdb2pose( peptide_chain, ir ) - aa_removed)
-#                     updated_residues.append( pdb_info.pdb2pose( peptide_chain, ir ) )
-                # print(full_pose.residue(pdb_info.pdb2pose( chainint2str[peptide_chain], ir )))
         else:
             assert peptide_pose.total_residue() == len(residues_of_interest), "Our motif & peptide have too many residues (there is a problem with the selection logic for this section as they are not equal)"
             # assert peptide_pose.total_residue() < len(residues_of_interest), "Our peptide has too few residues compared ot our motif (there is a problem with the selection logic for this section as they are not equal)"
