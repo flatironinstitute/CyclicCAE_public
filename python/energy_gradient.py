@@ -621,7 +621,8 @@ class EnergyPath:
 
     # @timeit
     def inpainting(self, B: int, random_no_reference: bool = False, interface_dict = None,
-                   terminal = True, motif_dofs = None, l_homochiral: bool = False,):
+                   terminal = True, motif_dofs = None, l_homochiral: bool = False,
+                   updated_freeze_residues: torch.Tensor = None):
         """given frozen residues search for scaffolds to hold motif residues
 
         PARAMS
@@ -652,6 +653,8 @@ class EnergyPath:
         run=0
         scaffolds = 0
         points = 0
+        if updated_freeze_residues is not None:
+            self.freeze_residues = updated_freeze_residues
 
         # Need the coordinates calculated here, for discontinuous motifs
         if not self.contiguous:
@@ -2393,33 +2396,6 @@ if __name__ == "__main__":
     if not os.path.exists(args.output_path):
         os.makedirs(args.output_path)
 
-    # Search And Output
-    # if args.energy_search:
-    #     if args.pdb_input != None:
-    #         atomdict = extract_pdb_xyz(args.pdb_input)
-    #         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict)
-    #         interface, mask = grab_interface(target, peptide, dist_cutoff = 10.0)
-    #         interface_dict = {"target": target, "peptide": peptide, "interface_atoms": interface,
-    #                           "sigma_peptide": sigma_peptide, "epsilon_peptide": epsilon_peptide,
-    #                           "sigma_interface": sigma_target[mask], "epsilon_interface": epsilon_target[mask]}
-    #         # print("INTERFACE SHAPE TENSOR:", interface.shape)
-    #         energySearch.energy_steps(interface_dict=interface_dict)
-    #     else:
-    #         energySearch.energy_steps()
-    #     energySearch.dist_energy_plot()
-    #     energySearch.output_GDS()
-    # elif args.termbond_test:
-    #     scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample)
-    #     terminal_out = energySearch.generate_constraint_termbond(latent_points, True)
-    #     # Non-Terminal Bond
-    #     scaffolds, latent_pointss = energySearch.inpainting(args.batch_size, args.random_sample, terminal=False)
-    #     noterminal_out = energySearch.generate_constraint_termbond(latent_points, False)
-    #     torch.save({"with_constraint": terminal_out, "without_constraint": noterminal_out}, f"termbond_without_vs_with_{datetime.date.today()}.pt" )
-    # elif args.mcmc:
-    #     energySearch.metropolis_hastings(args.batch_size, args.sigma)
-    #     if args.minimize_mcmc:
-    #         energySearch.energy_steps(mcmc_minimize=True, minimize_steps=args.minimize_steps)
-    #         energySearch.output_GDS()
 
     ## Inpainting Task 
     if args.inpaint:
@@ -2448,7 +2424,7 @@ if __name__ == "__main__":
         
         #### Here we are extracting the DoFs needed for Harmonic DoF Inpainting Regression
         #### these are taken from our passed PDB
-        motif_dofs = dofsummary.extract_pdb_pose_and_dof(
+        motif_dofs, updated_freeze_residues = dofsummary.extract_pdb_pose_and_dof(
             input_pdb = args.pdb_input,
             peptide_chain = args.peptide_chain,
             residues_of_interest = torch.tensor(args.freeze_residues),
@@ -2460,10 +2436,12 @@ if __name__ == "__main__":
         #### Based on Target Information perform inpainting
         if args.fullpocket_minimize:
             scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_full_dict,
-                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral)
+                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral,
+                                                               updated_freeze_residues = updated_freeze_residues)
         else:
             scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict,
-                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral)
+                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral, 
+                                                               updated_freeze_residues = updated_freeze_residues)
 
         #### Take either inpaint output and use for MCMC/Gradient-march or just graident-march
         if args.mcmc_steps >= 1:

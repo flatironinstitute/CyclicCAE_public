@@ -112,7 +112,6 @@ def extract_loss_and_matchres(
         else:
             # If our input is continuous (allow residues are next to each other in sequence and space) then we use normal
             # Harmonic diff on our dofs
-            print("DOF MINIMIZE:", dof_minimize)
             loss, match_res_mask = harmonic_diff_inpaint(
                 real_t_sin,
                 real_t_cos,

@@ -681,7 +681,7 @@ class DoFSummary:
             updated_res,
         )
 
-        return motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs
+        return (motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs), updated_res
 
 
     def foldtree_define(self, N: int) -> int:
