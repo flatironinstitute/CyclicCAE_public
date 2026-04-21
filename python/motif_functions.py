@@ -79,6 +79,7 @@ def compute_motif_indices(
             torch.tensor([dof_len], dtype=torch.long),
         ), dim=-1,
     )
+    omega_idx[-1] -= 1
     omega_idx = omega_idx.unsqueeze(0).repeat(pep_len, 1) # (B, pep_len)
     omega_true = torch.gather(omega_idx, -1, residue_idx) #.view(pep_len, -1, 1) # (B, M, 1)
     torsions_true = torch.cat(

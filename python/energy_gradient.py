@@ -813,6 +813,7 @@ class EnergyPath:
             if not torch.is_tensor(scaffolds):
                 scaffolds = preds[mask, :-3].detach()
                 points = scatter_latent[mask].detach()
+                harm_values = loss[mask].detach()
             else:
                 scaffolds = torch.cat(
                     (
@@ -824,6 +825,12 @@ class EnergyPath:
                     (
                         points,
                         scatter_latent[mask],
+                    ), dim=0,
+                ).detach()
+                harm_values = torch.cat(
+                    (
+                        harm_values,
+                        loss[mask],
                     ), dim=0,
                 ).detach()
 
@@ -850,14 +857,17 @@ class EnergyPath:
             print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
         if scaffolds.size(0) > self.scaffold_number:
             self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1]
-            return scaffolds[:self.scaffold_number], points[:self.scaffold_number]
+            return scaffolds[:self.scaffold_number], points[:self.scaffold_number], harm_values[:self.scaffold_number]
         else:
             self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1]
-            return scaffolds, points
+            return scaffolds, points, harm_values
 
     def metropolis_hastings(self, B: int, sigma: torch.float, 
                             start_points: torch.Tensor|None = None, 
-                            mcmc_steps: int = 0):
+                            mcmc_steps: int = 0,
+                            motif_dofs: torch.Tensor|None = None,
+                            harmonic_start: torch.Tensor|None = None,
+                            ):
         """MCMC Search for energy minima structures
 
         PARAMS
@@ -870,6 +880,11 @@ class EnergyPath:
                 Start latent points from inpainting
             mcmc_steps: int,
                 The number of steps to talk within our MCMC walk
+            motif_dofs: torch.Tensor,
+                The dofs we will use for motif matching if they are supplied and
+                partial_optimization is True
+            harmonic_start: torch.Tensor
+                The harmonic loss values associated with our starting values
 
         RETURNS
         -------
@@ -883,7 +898,6 @@ class EnergyPath:
         if start_points == None:
             F = 1
             latent_trajectories = torch.zeros((B, F, 2, self.latent_dim), dtype=torch.double, device=self.device)
-            energies_trajectories = torch.zeros((B, F, 2, 1), dtype=torch.double, device=self.device)
             H = torch.zeros((B*F, 2, 1), dtype=torch.double, device=self.device)
             # get starting point and enable grad
             self.start_latent_point = self.model.encoder_forward(self.start_point_scaled, noise=False).detach()
@@ -896,21 +910,19 @@ class EnergyPath:
         else:
             F = self.mcmc_paths
             latent_trajectories = torch.zeros((B, F, 2, self.latent_dim), dtype=torch.double, device=self.device)
-            energies_trajectories = torch.zeros((B, F, 2, 1), dtype=torch.double, device=self.device)
-            H = torch.zeros((B*F, 2, 1), dtype=torch.double, device=self.device)
-            # (B, 6) -> (B, 1, 6) -> B, F, 6
+            H = harmonic_start[..., None, None, None].repeat(1, F, 2, 1).view(B*F, 2, 1)
             latent_trajectories[:, :, 0, :] = start_points.unsqueeze(1).repeat(1, F, 1)
             latent_trajectories[:, :, -1, :] = start_points.unsqueeze(1).repeat(1, F, 1)
+            self.start_latent_point = start_points
             # reshape for model input
             latent_trajectories = latent_trajectories.reshape(B*F, 2, self.latent_dim)
 
         # Decode our points to get the initial output, where we want the energy to compare against
-        initial_out = self.model.decoder((self.start_latent_point if start_points == None else start_points).to(self.device))
-        # Reshape energy to (Batch * NUM_PATHS, 2, 1)
-        # Energies are all zero (MIGHT BE GOOD TO UPDATE THIS WITH THE CURRENT ENERGY)
-        energies_trajectories = energies_trajectories.reshape(B*F, 2, 1)
+        initial_out = self.model.decoder((self.start_latent_point).to(self.device))
         # Grab out the initial ref2015 scores
-        energies_trajetories[initial_out.size(0), -1, 0] = initial_out[:, -2]
+        energies_trajectories = initial_out[:, -2].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).repeat(1, F, 2, 1)
+        # Reshape energy to (Batch * NUM_PATHS, 2, 1)
+        energies_trajectories = energies_trajectories.reshape(B*F, 2, 1)
 
         # updated temperature
         temp_linspace = torch.linspace(1, self.temp, steps=self.rampdown) if self.temp != 1 else torch.tensor([1])
@@ -925,6 +937,9 @@ class EnergyPath:
 
         # Setup our steps to be the same as gradient steps or custom
         steps = self.steps if mcmc_steps == 0 else mcmc_steps
+
+        # Update self match res to be the same shape
+        match_res_mask_mcmc = self.match_res_mask.unsqueeze(0).repeat(F, 1).view(-1)
 
         # Perform MCMC for n steps
         for t in range(1, steps):
@@ -955,55 +970,62 @@ class EnergyPath:
                 energy_all = energy
             energy_t = energy_all[:, -2]
 
-            # Harmonic Change for if none of these are true if they are then it will change
-            harmonic_change = torch.zeros((B, 1), dtype=torch.double)
-            harmonic_loss = torch.zeros((B), dtype=torch.double)
+            # Determine our terminal bond loss
+            term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
+                dof_inputs = out,
+                real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length, 
+                params = self.PARAMS,
+                foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
+                device = out.device,
+            )
 
-            # Only optimize a portion of the 
-            if self.partial_optimization or self.retain_structure:
-                harmonic_loss = self.harmonic_diff_inpaint(
-                real_t_sin,
-                real_t_cos,
-                real_ba_sin,
-                real_ba_cos,
-                real_bond_length,
-                torsion_sin,
-                torsion_cos,
-                bond_angle_sin,
-                bond_angle_cos,
-                bond_length,
+            if self.freeze_residues != None:
+
+                coords_inter = torch.cat(
+                    (
+                        coordinates[:, :, 2, :].unsqueeze(2), # N
+                        coordinates[:, :, 0, :].unsqueeze(2), # CA
+                        coordinates[:, :, 1, :].unsqueeze(2), # C
+                        coordinates[:, :, 3, :].unsqueeze(2), # O
+
+                    ), dim = 2,
                 )
-                if t == 1:
-                    H[:, 0, :] = harmonic_loss.unsqueeze(-1)
-                    H[:, 1, :] = harmonic_loss.unsqueeze(-1)
-                    harmonic_change = harmonic_loss.squeeze(0).unsqueeze(-1)
-                else:
-                    harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1).detach().cpu()
 
-#             elif self.retain_structure:
-#                 harmonic_loss = self.harmonic_diff_inpaint(
-#                 real_t_sin,
-#                 real_t_cos,
-#                 real_ba_sin,
-#                 real_ba_cos,
-#                 real_bond_length,
-#                 torsion_sin,
-#                 torsion_cos,
-#                 bond_angle_sin,
-#                 bond_angle_cos,
-#                 bond_length,
-#                 )
-# 
-#                 if t == 1:
-#                     H[:, 0, :] = harmonic_loss.unsqueeze(-1)
-#                     H[:, 1, :] = harmonic_loss.unsqueeze(-1)
-#                     harmonic_change = harmonic_loss.squeeze(0).unsqueeze(-1)
-#                 else:
-#                     harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1)
+                # Align points
+                coord_B, coord_L, coord_A, coord_D = coords_inter.shape
+                coords = coords_inter.reshape(coord_B, coord_L * coord_A, coord_D).squeeze(0)
+                if len(coords.shape) == 2:
+                    coords = coords.unsqueeze(0)
 
+                # If we have a motif that we want to inpaint with then we need to extract some information
+                # Therefore, we traverse this logic
+                harmonic_loss, _ = discontig_funcs.harmonic_diff_inpaint(
+                        real_t_sin,
+                        real_t_cos,
+                        real_ba_sin,
+                        real_ba_cos,
+                        real_bond_length,
+                        torsion_sin,
+                        torsion_cos,
+                        bond_angle_sin,
+                        bond_angle_cos,
+                        bond_length,
+                        self.torsion_index,
+                        self.bond_angle_dofs,
+                        self.bond_length_dofs,
+                        self.PARAMS,
+                        self.freeze_residues,
+                        self.freeze_torsion,
+                        self.freeze_bond_angle,
+                        self.freeze_bond_length,
+                        match_res_mask_mcmc,
+                        self.inpaint_dist,
+                        self.device,
+                        True,
+                        self.exclude_atom_positions,
+                        )
+                harmonic_change = H[:, 1, :] - harmonic_loss.unsqueeze(-1).detach() #.cpu()
 
-            # temp_coeff = temp_linspace[(self.initial_set+t)-(self.initial_set+1)] if t <= self.rampdown+self.initial_set else 0.01
-            # alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp( -( ( (energies_trajectories[:, -1, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) ) / temp_coeff ) ) )
 
             # Accept a step or Not
             if t > self.initial_set:
@@ -1015,27 +1037,17 @@ class EnergyPath:
                 else:
                     temp_coeff = 1
 
-                # Determine our terminal bond loss
-                term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, _, _ = self.term_bond.terminal_peptide_loss(
-                    dof_inputs = out,
-                    real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length,
-                    params = self.PARAMS,
-                    foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
-                    device = out.device,
-                )
-
                 out_num = ( 
-                    (energies_trajectories[:, -1, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) + term_bond_loss.squeeze(-1).detach().cpu() 
-                    + bah_loss.squeeze(-1).detach().cpu() + ahd_loss.squeeze(-1).detach().cpu() + ocnh_loss.squeeze(-1).detach().cpu() + ncaco_loss.squeeze(-1).detach().cpu()
+                    (energies_trajectories[:, 0, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) + term_bond_loss.squeeze(-1).detach().cpu() 
+                    + nco_loss.squeeze(-1).detach().cpu() + hnc_loss.squeeze(-1).detach().cpu() + ocnh_loss.squeeze(-1).detach().cpu() #+ ncaco_loss.squeeze(-1).detach().cpu()
                 )
                 temp_coeff = temp_coeff if out_num.mean() > 1 else 1/temp_coeff
-                # alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp( -( ( (energies_trajectories[:, -1, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) + term_bond_loss.squeeze(-1)) / temp_coeff ) ) )
                 alpha = torch.minimum(torch.ones(energy_t.shape), torch.exp( -( out_num / temp_coeff ) ) )
 
+                # generate bool of T/F
                 u = torch.ones((B*F))
                 u.uniform_(0, 1)
-                # generate bool of T/F
-                condition_u = u > alpha
+                condition_u = u <= alpha 
 
                 # Place energies or reject
                 energies_trajectories[condition_u, -1, :] = energy_t[condition_u].view(-1, 1)
@@ -1051,127 +1063,49 @@ class EnergyPath:
             else:
                 energies_trajectories[:, -1, :] = energy_t.view(-1, 1)
                 latent_trajectories[:, -1, :] = x_t
-                H[:, 1, :] = harmonic_loss.unsqueeze(-1).cpu()
+                H[:, 1, :] = harmonic_loss.unsqueeze(-1) #.cpu()
 
                 if t == steps-1:
                     latent_trajectories[:, 0, :] = latent_trajectories[:, -1, :]
 
-            if t % 100 == 0:
-                print(f"Current Time Step: {t} Current Lowest Energy Minima: {energies_trajectories.min().item()}, Current Lowest Harmonic Constraint: {H[:, -1, :].min().item()}, Start Harmonic Constraint: {H[0, 0, 0].item()}")
+            if t % 5 == 0:
+                print(f"Current Time Step: {t} Current Mean Energy: {energies_trajectories[:, 0, :].mean().item()}, Current Mean Harmonic Constraint: {H[:, 0, :].mean().item()}, Start Mean Harmonic Constraint: {harmonic_start.mean().item()}")
 
         # grab minimum of each B_i from F
         latent_trajectories = latent_trajectories.reshape(B, F, 2, self.latent_dim)
         energies_trajectories = energies_trajectories.reshape(B, F, 2, 1)
         
-        if self.partial_optimization or self.retain_structure:
+        if self.freeze_residues != None or self.retain_structure:
+            # Reshape our H, so we can start grabbing best runs
             H = H.reshape(B, F, 2, 1)
-            # grab min of H
-            h_min = H.argmin(dim=1, keepdim=True)
-            h_min_expanded = h_min.expand(-1, -1, -1, latent_trajectories.size(-1))
-            latent_trajectories = torch.gather(latent_trajectories, 1, h_min_expanded).squeeze(1)
-            H = torch.gather(H, 1, h_min).squeeze(1)
+
+            # First we grab the lowest of our the 2 tracks that are recorded
+            latent_trajectories =  latent_trajectories[:, :, 0, :]
+            H = H[:, :, 0, :]
+
+            # Now grab the lowest MCMC PATH (F, dim-1) that started from the same B_i
+            h_path_min = H.argmin(dim=1, keepdim=True)
+            H = torch.gather(H, 1, h_path_min).squeeze(1)
+            latent_trajectories = torch.gather(latent_trajectories, 1, h_path_min.expand(-1, -1, latent_trajectories.size(-1))).squeeze(1)
         else:
-            energy_min = energies_trajectories.min(dim=1).indices if F != 1 else 0
-            latent_trajectories = latent_trajectories[:, energy_min, :, :]
+#             energy_min = energies_trajectories.min(dim=1).indices if F != 1 else 0
+            energy_min = energies_trajectories.argmin(dim=1, keepdim=True) #.indices if F != 1 else 0
+            energy_min_expanded = energy_min.expand(-1, -1, -1, latent_trajectories.size(-1))
+            latent_trajectories = torch.gather(latent_trajectories, 1, energy_min_expanded).squeeze(1)
+
 
         if start_points == None:
             print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()}, Lowest Harmonic Constraint: {H[:, 0, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
         else:
-            print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()}, Average Distance: {torch.norm(latent_trajectories[:, 0, :] - start_points.to('cpu'), dim=-1).mean().item()}, Lowest Harmonic Constraint: {H[:, 0, :].min().item()}, Start Mean Harmonic Constraint: {H[:, 0, :].mean().item()}")
+            print(f"Final Lowest Energy Minima: {energies_trajectories.min().item()}, Average Distance: {torch.norm(latent_trajectories - self.start_latent_point, dim=-1).mean().item()}, Lowest Harmonic Constraint: {H.min().item()}, Start Mean Harmonic Constraint: {harmonic_start.mean().item()}, Mean Finish Harmonic Constraint: {H.mean().item()}")
 
         # Get lowest energy structures
-        out = self.model.decoder(latent_trajectories[:, 0, :].to(self.device))
+        out = self.model.decoder(latent_trajectories.to(self.device))
 
         # generate self
-        self.start_latent_point = latent_trajectories[:, 0, :].to(self.device)
+        self.start_latent_point = latent_trajectories.to(self.device)
 
-        # Format them correctly
-        out = out.detach()
-        print("OUT SHAPE:", out.shape)
-        torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
-        print("TORSION:", self.PARAMS["torsion_main_n"]*2)
-        bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
-        print("BOND ANGLES:", self.PARAMS["torsion_main_n"]*2, self.PARAMS["bond_angle_main_n"]*2*2)
-        preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-3]), dim=-1)
-        print("bond angles:", self.PARAMS["torsion_main_n"]*2*2)
-        preds = torch.cat((self.dof_traj[0, :].unsqueeze(0), preds), dim=0)
         return latent_trajectories, energies_trajectories
-
-    def mcmc_step(
-        self, 
-        latent_trajectories: torch.tensor,
-        sigma: float,
-        H: torch.Tensor,
-        ):
-        """Perform a single MCMC step
-
-        PARAMS
-        ------
-            latent_trajectories: torch.Tensor
-                Latent Points to walk along
-            sigma: float
-                Noise to add to the walk
-            H: torch.Tensor
-                Harmonic Constraint Tensor
-        """
-        # Generate random walk noise
-        epsilon = torch.normal(0, sigma, size=(B, self.latent_dim), dtype=torch.double)
-
-        # Apply noise to previous t-1 point
-        x_t = latent_trajectories + epsilon
-
-        # decode points
-        out = self.model.decoder(x_t)
-
-        # Prediction Information
-        torsion = out[:, :self.PARAMS["torsion_main_n"]*2]
-        torsion_sin = torsion[:, :self.PARAMS["torsion_main_n"]]
-        torsion_cos = torsion[:, self.PARAMS["torsion_main_n"]:]
-        bond_angle = out[:, self.PARAMS["bond_angle_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2]
-        bond_angle_sin = bond_angle[:, :self.PARAMS["bond_angle_main_n"]]
-        bond_angle_cos = bond_angle[:, self.PARAMS["bond_angle_main_n"]:]
-        bond_length = out[:, self.PARAMS["bond_angle_main_n"]*2*2:-3]
-
-        # Grab ref2015 energy from output
-        energy_all = self.energy_scale.inverse_scale(out[:, -self.energy_n:])
-        energy_t = energy_all[:, -2]
-
-        # Harmonic Change for if none of these are true if they are then it will change
-        harmonic_change = torch.zeros((B, 1), dtype=torch.double)
-        harmonic_loss = torch.zeros((1, B), dtype=torch.double)
-
-        if self.partial_optimization:
-            # Harmonic Constraint
-            print("SELF PARTIAL CHECK")
-            harmonic_penalty_sin_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.sin(real_t_sin[:, self.torsion_index]),   torsion_sin[:, self.torsion_index], p=1),2)
-            harmonic_penalty_cos_torsion = torch.tensor(0.0)    if not self.freeze_torsion     else torch.pow(torch.cdist(torch.cos(real_t_cos[:, self.torsion_index]),   torsion_cos[:, self.torsion_index], p=1),2)
-            harmonic_penalty_sin_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.sin(real_ba_sin[:, self.torsion_index]),  bond_angle_sin[:, self.torsion_index],p=1),2)
-            harmonic_penalty_cos_bond_angle = torch.tensor(0.0) if not self.freeze_bond_angle  else torch.pow(torch.cdist(torch.cos(real_ba_cos[:, self.torsion_index]),  bond_angle_cos[:, self.torsion_index],p=1),2)
-            harmonic_penalty_bond_length = torch.tensor(0.0)    if not self.freeze_bond_length else torch.pow(torch.cdist(real_bond_length[:, self.torsion_index],        bond_length[:, self.torsion_index],p=1),2)
-            harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
-            harmonic_loss /= self.torsion_index.size(0)*torch.sum(torch.tensor([self.freeze_torsion, self.freeze_torsion, self.freeze_bond_angle, self.freeze_bond_angle, self.freeze_bond_length]))
-            if t == 1:
-                H[:, 0, :] = harmonic_loss.unsqueeze(-1)
-                H[:, 1, :] = harmonic_loss.unsqueeze(-1)
-                harmonic_change = harmonic_loss.squeeze(0).unsqueeze(-1)
-            else:
-                harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1)
-        if self.retain_structure:
-            harmonic_penalty_sin_torsion     = torch.pow(torch.cdist(torch.exp(torch.sin(real_t_sin)),   torch.exp(torsion_sin), p=2), 2)   
-            harmonic_penalty_cos_torsion     = torch.pow(torch.cdist(torch.exp(torch.cos(real_t_cos)),   torch.exp(torsion_cos), p=2), 2)   
-            harmonic_penalty_sin_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.sin(real_ba_sin)),  torch.exp(bond_angle_sin),p=2), 2) 
-            harmonic_penalty_cos_bond_angle  = torch.pow(torch.cdist(torch.exp(torch.cos(real_ba_cos)),  torch.exp(bond_angle_cos),p=2), 2) 
-            harmonic_penalty_bond_length     = torch.pow(torch.cdist(torch.exp(real_bond_length),        torch.exp(bond_length),p=2), 2)    
-            harmonic_loss = harmonic_penalty_sin_torsion + harmonic_penalty_cos_torsion + harmonic_penalty_cos_bond_angle + harmonic_penalty_sin_bond_angle + harmonic_penalty_bond_length
-            harmonic_loss /= 5*self.PARAMS["torsion_main_n"]
-            if t == 1:
-                H[:, 0, :] = harmonic_loss.unsqueeze(-1)
-                H[:, 1, :] = harmonic_loss.unsqueeze(-1)
-                harmonic_change = harmonic_loss.squeeze(0).unsqueeze(-1)
-            else:
-                harmonic_change = H[:, 1, :] - harmonic_loss.squeeze(0).unsqueeze(-1)
-
-        return x_t, H, harmonic_change, harmonic_loss, energy_t
 
     # @timeit
     def energy_steps(self, start_points: torch.Tensor = None, mcmc_minimize: bool = False, minimize_steps: int = 1000,
@@ -1706,18 +1640,19 @@ if __name__ == "__main__":
 
         #### Based on Target Information perform inpainting
         if args.fullpocket_minimize:
-            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_full_dict,
+            scaffolds, latent_points, harm_values = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_full_dict,
                                                                motif_dofs = motif_dofs, l_homochiral = args.l_homochiral,
                                                                updated_freeze_residues = updated_freeze_residues)
         else:
-            scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict,
+            scaffolds, latent_points, harm_values = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict,
                                                                motif_dofs = motif_dofs, l_homochiral = args.l_homochiral, 
                                                                updated_freeze_residues = updated_freeze_residues)
 
         #### Take either inpaint output and use for MCMC/Gradient-march or just graident-march
         if args.mcmc_steps >= 1:
-            latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
-            energySearch.energy_steps(latent_traj[:, 0, :], interface_full_dict = interface_full_dict, interface_cb_dict = interface_cb_dict,
+            latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps, motif_dofs = motif_dofs,
+                                                              harmonic_start = harm_values)
+            energySearch.energy_steps(latent_traj, interface_full_dict = interface_full_dict, interface_cb_dict = interface_cb_dict,
                                       motif_dofs = motif_dofs, l_homochiral = args.l_homochiral)
         elif args.mcmc_steps < 1:
             energySearch.energy_steps(latent_points, interface_full_dict = interface_full_dict, interface_cb_dict = interface_cb_dict,
