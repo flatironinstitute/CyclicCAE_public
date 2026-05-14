@@ -16,6 +16,8 @@ from typing import Union
 
 # xyz coordinates
 from terminal_error import TerminalPeptide
+import biotite.structure as struc
+import biotite.structure.io as strucio
 
 ####### Class
 
@@ -221,6 +223,72 @@ class HBondCount:
         # checkpoint bools
         checkpoint_bool = terminal_bool & hbond_bool
         return checkpoint_bool
+
+def extract_pdb_xyz(input_file: str, 
+                    full: bool = False, 
+                    peptide_chain: int|str = "-1",
+                    ):
+    """Extract out Target xyz coordinates
+
+    PARAMS
+    ------
+    input: str
+        The pdb input target file
+    full: bool
+        If you want the full atom side chain information if not then we
+        use bb-heavy + Cb
+    peptide_chain: int|str
+        This is either the char or int representation of where the peptide is
+        that we want to use as our native input
+
+    RETURNS
+    ------
+    atomdict: Dict
+        [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+        dict that holds every atom and its xyz coordinates
+    """
+    # chain string map
+    chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+    if isinstance(peptide_chain, int):
+        pep = chainint2str[peptide_chain]
+    else:
+        pep = peptide_chain
+
+    # Separate out the relevant information
+    atom_array = strucio.load_structure(input_file)
+    aa_values = atom_array[struc.filter_amino_acids(atom_array)]
+    peptide = aa_values[aa_values.chain_id == pep]
+    non_peptide = aa_values[aa_values.chain_id != pep]
+
+    # extract atom number
+    epsilon_key = {
+            "CA": 0.062642, "N": 0.161725, "C": 0.141799,
+            "O": 0.142417, "H": 0.901681,
+            }#0.901681}
+    sigma_key   = {
+            "CA": 2.011760, "N": 1.802452, "C": 1.916661,
+            "O": 1.540580, "H": 1.540580,
+            }#0.005000}
+
+    # generate tensor 
+    full_xyz = aa_values.coords
+    peptide_sigma = torch.zeros(len(peptide), dtype=torch.float)
+    peptide_epsilon = torch.zeros(len(peptide), dtype=torch.float)
+    target_sigma = torch.zeros(len(non_peptide), dtype=torch.float)
+    target_epsilon = torch.zeros(len(non_peptide), dtype=torch.float)
+    target_xyz = non_peptide.coords
+    peptide_xyz = peptide.coords
+
+    # Fill sigma / epsilon mats
+    for k, e in enumerate(peptide.element):
+        peptide_epsilon[k] = epsilon_key[e]
+        peptide_sigma[k] = sigma_key[e]
+    for k, e in enumerate(non_peptide.element):
+        target_epsilon[k] = epsilon_key[e]
+        target_sigma[k] = sigma_key[e]
+
+    return full_xyz, target_xyz, peptide_xyz, target_sigma, target_epsilon, peptide_sigma, peptide_epsilon
+
 
 def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1"):
     """Extract out Target xyz coordinates
