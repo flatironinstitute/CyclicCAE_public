@@ -280,201 +280,218 @@ def extract_pdb_xyz(input_file: str,
     peptide_xyz = peptide.coords
 
     # Fill sigma / epsilon mats
-    for k, e in enumerate(peptide.element):
-        peptide_epsilon[k] = epsilon_key[e]
-        peptide_sigma[k] = sigma_key[e]
-    for k, e in enumerate(non_peptide.element):
-        target_epsilon[k] = epsilon_key[e]
-        target_sigma[k] = sigma_key[e]
+    for k, a in enumerate(peptide):
+        if a.atom_name == "CA":
+            atom_name = "CA"
+        elif (not full) and (a.atom_name not in ["N", "CA", "C", "O", "CB"]):
+            continue
+        elif a.element_name not in ["N", "C", "O", "H"]:
+            atom_name = "C"
+        else:
+            atom_name = a.element
+        peptide_epsilon[k] = epsilon_key[atom_name]
+        peptide_sigma[k] = sigma_key[atom_name]
+
+    for k, a in enumerate(non_peptide):
+        if a.atom_name == "CA":
+            atom_name = "CA"
+        elif (not full) and (a.atom_name not in ["N", "CA", "C", "O", "CB"]):
+            continue
+        elif a.element_name not in ["N", "C", "O", "H"]:
+            atom_name = "C"
+        else:
+            atom_name = a.element
+        target_epsilon[k] = epsilon_key[atom_name]
+        target_sigma[k] = sigma_key[atom_name]
 
     return full_xyz, target_xyz, peptide_xyz, target_sigma, target_epsilon, peptide_sigma, peptide_epsilon
 
 
-def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1"):
-    """Extract out Target xyz coordinates
-
-    PARAMS
-    ------
-    input: str
-        The pdb input target file
-    full: bool
-        If you want the full atom side chain information if not then we
-        use bb-heavy + Cb
-    peptide_chain: int|str
-        This is either the char or int representation of where the peptide is
-        that we want to use as our native input
-
-    RETURNS
-    ------
-    atomdict: Dict
-        [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-        dict that holds every atom and its xyz coordinates
-    """
-    # chain string map
-    chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
-    if isinstance(peptide_chain, int):
-        pep = chainint2str[peptide_chain]
-    else:
-        pep = peptide_chain
-
-    # Load in the file
-    data = open(input, 'r')
-
-    # Init atom dictionary
-    atomdict = defaultdict(list)
-    index = 0
-
-    # grab ATOM lines
-    for line in data:
-        # Do if atom in line
-        if "ATOM" in line or "HETATM" in line:
-            # Split the line to be readable
-            line_split = re.sub("\s+", ",", line).strip("\n").split(",")
-            # Most likely this is because we have something happening in split section 4 where we get something like B1000
-            # We need to separate this into "B 1000" which are two distinct elements in our line_split list
-            if len(line_split) < 14:
-                if len(line_split[2]) > 4:
-                    data_split = re.split(r'(\d+)', line_split[2])
-                    if len(data_split[2]) >= 4:
-                        atom = data_split[0] + data_split[1] + data_split[2][0]
-                        res = data_split[2][1:]
-                    else:
-                        atom = data_split[0] + data_split[1] 
-                        res = data_split[2]
-                    line_split = line_split[:2] + [atom] + [res] + line_split[3:]
-                if len(line_split[4]) > 2:
-                    line_split = line_split[:4] + [line_split[4][0]] + [line_split[4][1:]] + line_split[5:]
-                if line_split[6].count(".") > 1:
-                    split_6 = line_split[6].split("-")
-                    line_split = line_split[:6] + ["-"+split_6[1]] + ["-"+split_6[-1]] + line_split[7:]
-                if len(line_split[9]) > 4:
-                    line_split = line_split[:9] + [line_split[9][:4]] + [line_split[9][4:]] + line_split[10:]
-            if full:
-                if (line_split[4] != pep) & (line_split[11] != "H"):
-                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                    if line_split[2] in ["N", "CA", "C", "O"]:
-                        atom_specific = line_split[2]
-                    elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
-                        if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
-                            atom_specific = line_split[2][0]
-                        elif line_split[2][0] == "S":
-                            atom_specific = "C"
-                        elif line_split[12] in ["N", "CA", "C", "O"]:
-                            atom_specific = line_split[12] 
-                        else: atom_specific = "C"
-                    else: 
-                        # atom_specific =  "H"
-                        atom_specific =  "C"
-                    atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                    index += 1
-                elif (line_split[4] == pep) & (line_split[2] in ["N", "CA", "C", "O"]):
-                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                    atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                    index += 1
-                else:
-                    pass
-
-            #### full = False
-            #### We use up to Cb for target information
-            else:
-                if (line_split[4] != pep) & (line_split[11] != "H"):
-                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                    if line_split[2] in ["N", "CA", "C", "O"]:
-                        atom_specific = line_split[2]
-                    elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
-                        if line_split[2][0] == "CB":
-                            atom_specific = "C"
-                        else:
-                            continue
-                    atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                    index += 1
-                elif (line_split[4] == pep) & (line_split[2] in ["N", "CA", "C", "O"]):
-                    # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-                    atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
-                    index += 1
-                else:
-                    pass
-
-
-    return atomdict
-
-def gen_xyz_tensor(atomdict: dict, peptide_chain: int|str):
-    """Convert the atomic dictionary to tensors
-
-    PARAMS
-    ------
-    atomdict: Dict
-        [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
-        dict that holds every atom and its xyz coordinates
-
-    RETURNS
-    -------
-    full_xyz: Tensor (A+B, 3)
-        All atoms and xyz
-    target: Tensor (A, 3)
-        target protein chain A with atom numbers and xyz
-    peptide: Tensor(B, 3)
-        Peptide protein chain B with atom numbers and xyz
-    """
-    # chain string map
-    chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
-    if isinstance(peptide_chain, int):
-        pep = chainint2str[peptide_chain]
-    else:
-        pep = peptide_chain
-
-    # extract atom number
-    atom_max = max([int(x) for x in atomdict.keys()])+1
-    # Key for epsilon and sigma matrixes
-    epsilon_key = {"CA": 0.062642, "N": 0.161725, "C": 0.141799, "O": 0.142417, "H": 0.901681}#0.901681}
-    sigma_key   = {"CA": 2.011760, "N": 1.802452, "C": 1.916661, "O": 1.540580, "H": 1.540580}#0.005000}
-    color_key   = {"CA": 0, "N": 1, "C": 2, "O": 3, "H": 4}
-
-    # generate tensor 
-    full_xyz = torch.zeros(atom_max, 3, dtype=torch.float)
-    sigma_mat = torch.zeros(atom_max, dtype=torch.float)
-    epsilon_mat = torch.zeros(atom_max, dtype=torch.float)
-    color_tensor = torch.zeros(atom_max, dtype=torch.long)
-
-    split_tensor_idx = list()
-
-    # extract and add to tensor
-    for k in atomdict.keys():
-
-        # Tensor xyz
-        full_xyz[k, :] = torch.tensor(
-            [
-                atomdict[k][-3],
-                atomdict[k][-2],
-                atomdict[k][-1]
-            ]
-        )
-        sigma_mat[k] = sigma_key[atomdict[k][0]]
-        epsilon_mat[k] = epsilon_key[atomdict[k][0]]
-        color_tensor[k] = color_key[atomdict[k][0]]
-
-        # Extract pep_chain
-        if atomdict[k][2] == pep:
-            split_tensor_idx.append(k)
-
-    # Grab out the peptide xyz indexes
-    peptide_mask = torch.zeros(full_xyz.size(0), dtype=torch.bool)
-    nonpeptide_mask = torch.ones(full_xyz.size(0), dtype=torch.bool)
-    peptide_mask[split_tensor_idx] = True
-    nonpeptide_mask[split_tensor_idx] = False
-
-    # Grab the peptide xyz out and everything else is target
-    # peptide
-    peptide = full_xyz[peptide_mask]
-    sigma_peptide = sigma_mat[peptide_mask]
-    epsilon_peptide = epsilon_mat[peptide_mask]
-    # target
-    target = full_xyz[nonpeptide_mask]
-    sigma_target = sigma_mat[nonpeptide_mask]
-    epsilon_target = epsilon_mat[nonpeptide_mask]
-    color_target = color_tensor[nonpeptide_mask]
-
-    return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target
+# def extract_pdb_xyz(input: str, full: bool = False, peptide_chain: int|str = "-1"):
+#     """Extract out Target xyz coordinates
+# 
+#     PARAMS
+#     ------
+#     input: str
+#         The pdb input target file
+#     full: bool
+#         If you want the full atom side chain information if not then we
+#         use bb-heavy + Cb
+#     peptide_chain: int|str
+#         This is either the char or int representation of where the peptide is
+#         that we want to use as our native input
+# 
+#     RETURNS
+#     ------
+#     atomdict: Dict
+#         [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+#         dict that holds every atom and its xyz coordinates
+#     """
+#     # chain string map
+#     chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+#     if isinstance(peptide_chain, int):
+#         pep = chainint2str[peptide_chain]
+#     else:
+#         pep = peptide_chain
+# 
+#     # Load in the file
+#     data = open(input, 'r')
+# 
+#     # Init atom dictionary
+#     atomdict = defaultdict(list)
+#     index = 0
+# 
+#     # grab ATOM lines
+#     for line in data:
+#         # Do if atom in line
+#         if "ATOM" in line or "HETATM" in line:
+#             # Split the line to be readable
+#             line_split = re.sub("\s+", ",", line).strip("\n").split(",")
+#             # Most likely this is because we have something happening in split section 4 where we get something like B1000
+#             # We need to separate this into "B 1000" which are two distinct elements in our line_split list
+#             if len(line_split) < 14:
+#                 if len(line_split[2]) > 4:
+#                     data_split = re.split(r'(\d+)', line_split[2])
+#                     if len(data_split[2]) >= 4:
+#                         atom = data_split[0] + data_split[1] + data_split[2][0]
+#                         res = data_split[2][1:]
+#                     else:
+#                         atom = data_split[0] + data_split[1] 
+#                         res = data_split[2]
+#                     line_split = line_split[:2] + [atom] + [res] + line_split[3:]
+#                 if len(line_split[4]) > 2:
+#                     line_split = line_split[:4] + [line_split[4][0]] + [line_split[4][1:]] + line_split[5:]
+#                 if line_split[6].count(".") > 1:
+#                     split_6 = line_split[6].split("-")
+#                     line_split = line_split[:6] + ["-"+split_6[1]] + ["-"+split_6[-1]] + line_split[7:]
+#                 if len(line_split[9]) > 4:
+#                     line_split = line_split[:9] + [line_split[9][:4]] + [line_split[9][4:]] + line_split[10:]
+#             if full:
+#                 if (line_split[4] != pep) & (line_split[11] != "H"):
+#                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+#                     if line_split[2] in ["N", "CA", "C", "O"]:
+#                         atom_specific = line_split[2]
+#                     elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
+#                         if (len(line_split[2]) > 1) & (line_split[2][0] in ["N", "CA", "C", "O"]):
+#                             atom_specific = line_split[2][0]
+#                         elif line_split[2][0] == "S":
+#                             atom_specific = "C"
+#                         elif line_split[12] in ["N", "CA", "C", "O"]:
+#                             atom_specific = line_split[12] 
+#                         else: atom_specific = "C"
+#                     else: 
+#                         # atom_specific =  "H"
+#                         atom_specific =  "C"
+#                     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+#                     index += 1
+#                 elif (line_split[4] == pep) & (line_split[2] in ["N", "CA", "C", "O"]):
+#                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+#                     atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+#                     index += 1
+#                 else:
+#                     pass
+# 
+#             #### full = False
+#             #### We use up to Cb for target information
+#             else:
+#                 if (line_split[4] != pep) & (line_split[11] != "H"):
+#                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+#                     if line_split[2] in ["N", "CA", "C", "O"]:
+#                         atom_specific = line_split[2]
+#                     elif (line_split[2] not in ["N", "CA", "C", "O"]) & (line_split[11] not in ["X", "S"]):
+#                         if line_split[2][0] == "CB":
+#                             atom_specific = "C"
+#                         else:
+#                             continue
+#                     atomdict[index] = [atom_specific, line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+#                     index += 1
+#                 elif (line_split[4] == pep) & (line_split[2] in ["N", "CA", "C", "O"]):
+#                     # [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+#                     atomdict[index] = [line_split[2], line_split[3], line_split[4], int(line_split[5]), float(line_split[6]), float(line_split[7]), float(line_split[8])]
+#                     index += 1
+#                 else:
+#                     pass
+# 
+# 
+#     return atomdict
+# 
+# def gen_xyz_tensor(atomdict: dict, peptide_chain: int|str):
+#     """Convert the atomic dictionary to tensors
+# 
+#     PARAMS
+#     ------
+#     atomdict: Dict
+#         [Atom Type, Residue 3 Letter, Chain, Residue Number, X, Y, Z]
+#         dict that holds every atom and its xyz coordinates
+# 
+#     RETURNS
+#     -------
+#     full_xyz: Tensor (A+B, 3)
+#         All atoms and xyz
+#     target: Tensor (A, 3)
+#         target protein chain A with atom numbers and xyz
+#     peptide: Tensor(B, 3)
+#         Peptide protein chain B with atom numbers and xyz
+#     """
+#     # chain string map
+#     chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+#     if isinstance(peptide_chain, int):
+#         pep = chainint2str[peptide_chain]
+#     else:
+#         pep = peptide_chain
+# 
+#     # extract atom number
+#     atom_max = max([int(x) for x in atomdict.keys()])+1
+#     # Key for epsilon and sigma matrixes
+#     epsilon_key = {"CA": 0.062642, "N": 0.161725, "C": 0.141799, "O": 0.142417, "H": 0.901681}#0.901681}
+#     sigma_key   = {"CA": 2.011760, "N": 1.802452, "C": 1.916661, "O": 1.540580, "H": 1.540580}#0.005000}
+#     color_key   = {"CA": 0, "N": 1, "C": 2, "O": 3, "H": 4}
+# 
+#     # generate tensor 
+#     full_xyz = torch.zeros(atom_max, 3, dtype=torch.float)
+#     sigma_mat = torch.zeros(atom_max, dtype=torch.float)
+#     epsilon_mat = torch.zeros(atom_max, dtype=torch.float)
+#     color_tensor = torch.zeros(atom_max, dtype=torch.long)
+# 
+#     split_tensor_idx = list()
+# 
+#     # extract and add to tensor
+#     for k in atomdict.keys():
+# 
+#         # Tensor xyz
+#         full_xyz[k, :] = torch.tensor(
+#             [
+#                 atomdict[k][-3],
+#                 atomdict[k][-2],
+#                 atomdict[k][-1]
+#             ]
+#         )
+#         sigma_mat[k] = sigma_key[atomdict[k][0]]
+#         epsilon_mat[k] = epsilon_key[atomdict[k][0]]
+#         color_tensor[k] = color_key[atomdict[k][0]]
+# 
+#         # Extract pep_chain
+#         if atomdict[k][2] == pep:
+#             split_tensor_idx.append(k)
+# 
+#     # Grab out the peptide xyz indexes
+#     peptide_mask = torch.zeros(full_xyz.size(0), dtype=torch.bool)
+#     nonpeptide_mask = torch.ones(full_xyz.size(0), dtype=torch.bool)
+#     peptide_mask[split_tensor_idx] = True
+#     nonpeptide_mask[split_tensor_idx] = False
+# 
+#     # Grab the peptide xyz out and everything else is target
+#     # peptide
+#     peptide = full_xyz[peptide_mask]
+#     sigma_peptide = sigma_mat[peptide_mask]
+#     epsilon_peptide = epsilon_mat[peptide_mask]
+#     # target
+#     target = full_xyz[nonpeptide_mask]
+#     sigma_target = sigma_mat[nonpeptide_mask]
+#     epsilon_target = epsilon_mat[nonpeptide_mask]
+#     color_target = color_tensor[nonpeptide_mask]
+# 
+#     return full_xyz, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target
 
 def geometric_center(input_tensor: torch.Tensor):
     """Take a xyz structure and compute the centroid node
