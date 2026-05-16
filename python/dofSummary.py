@@ -65,6 +65,19 @@ class DoFSummary:
         self.term_bond = TerminalPeptide()
         self.is_cyclic = is_cyclic
         self.consistent_motif_resi = pose_motif_location
+        # Chain string map
+        self.chainint2str = dict(
+                zip(
+                    list(range(1, 27)),
+                    "A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z".split(",")
+                    )
+                )
+        self.chainstr2int = dict(
+                zip(
+                    "A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z".split(","),
+                    list(range(1, 27))
+                    )
+                )
 
         # create list of current DOF types in Rosetta
         dof_types = [
@@ -253,7 +266,8 @@ class DoFSummary:
                                                         anchor residues)
         """
         # Chain string map
-        chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+#         chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+        peptide_chain_int = self.chainstr2int[peptide_chain]
 
         # load in our PDB
         full_pose = io.pose_from_pdb(pdb_path)
@@ -262,8 +276,8 @@ class DoFSummary:
         res_len = full_pose.total_residue()
 
         # Select the chain we want to extract
-        start_res = full_pose.chain_begin(peptide_chain)
-        end_res = full_pose.chain_end(peptide_chain)
+        start_res = full_pose.chain_begin(peptide_chain_int)
+        end_res = full_pose.chain_end(peptide_chain_int)
 
         # Clone our pose for alignment at the end of the class (when dumping)
         self.full_input = full_pose
@@ -279,14 +293,15 @@ class DoFSummary:
         # Peptide = 8 residues
 
         # Now delete all the non residues that are not our chain of interest
-        if peptide_chain > 1:
+        print("BEFORE")
+        if peptide_chain_int > 1:
             assert peptide_pose.num_chains() > 1, "Peptide chain cant be > 1, but the pose not have multiple chains!"
             peptide_pose.delete_residue_range_slow(1, start_res-1)
             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
             # There are more chains after the peptide
             if end_res != res_len:
                 peptide_pose.delete_residue_range_slow(end_res+1 - start_res, peptide_pose.total_residue())
-        elif (peptide_chain == 1) and (peptide_pose.num_chains() > 1):
+        elif (peptide_chain_int == 1) and (peptide_pose.num_chains() > 1):
             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
         # This means it is a peptide by itself with no other chains
@@ -354,6 +369,7 @@ class DoFSummary:
         # print("residues of interest:", residues_of_interest)
         # print("Updated Residues:", updated_residues)
 
+        print("BEFORE POSE EXTRACT", peptide_pose.sequence())
         return peptide_pose, torch.tensor(updated_residues)
 
     def dof_extract(
@@ -629,7 +645,7 @@ class DoFSummary:
     def extract_pdb_pose_and_dof(
         self,
         input_pdb: str,
-        peptide_chain: int,
+        peptide_chain: int|str,
         residues_of_interest: torch.Tensor,
         include_torsion: bool = True,
         include_bondangle: bool = True,

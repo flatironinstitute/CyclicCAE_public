@@ -28,7 +28,7 @@ from model_house import CyclicCAE
 from model_functions import scale, ScaleOutputs
 from terminal_error import TerminalPeptide
 from inference_utils import (
-    extract_pdb_xyz, gen_xyz_tensor, geometric_center, grab_interface, 
+    extract_pdb_xyz, geometric_center, grab_interface, 
     interface_loss, kabsch_algorithm, kabsch_rootatom, size_help, 
     split_motif_atoms, discontig_motif_loss, kabsch_rigid_transform,
     homochiral_loss, load_weights,
@@ -734,12 +734,20 @@ class EnergyPath:
                                                           )
                 else:
                     # Non contiguous indexing of our outputs
-                    coords = coords[match_res_mask[:, 0]]
+                    print("Coordsd before match_res_mask -- energy_gradient")
+                    print(coords.shape)
+                    print(match_res_mask.shape)
+                    coords = coords[match_res_mask[:B, 0]]
+                    print("Coordsd after match_res_mask -- energy_gradient")
+                    print(coords.shape)
                     aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
-                                                          motif_output = self.motif,
+                                                          motif_output = self.motif[:B],
                                                           motif_input = self.motif_input,
                                                           )
+                    print("AlignedCoords after kabsch_rootatom -- energy_gradient")
+                    print(aligned_coordinates.shape)
 
+                print("BEFORE INTERFACE LOSS")
                 interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
                 interface_nonorm_loss= interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
                                                       sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
@@ -747,6 +755,7 @@ class EnergyPath:
                                                       sigma_interface = interface_dict["sigma_interface"][interface_nonhydrogen_mask],
                                                       epsilon_interface = interface_dict["epsilon_interface"][interface_nonhydrogen_mask])
                 interface_total_loss = interface_nonorm_loss # / aligned_coordinates.size(0)
+                print("AFTER INTERFACE LOSS")
             else:
                 interface_total_loss = torch.zeros(out.size(0), dtype=torch.bool, device=self.device)
 
@@ -1506,7 +1515,9 @@ if __name__ == "__main__":
     p.add_argument("--interface-cutoff", type=float, default=20.0, help="Metric for accepting a not clashing peptide [10.0 for compact pockets, 20.0 for others] ")
     p.add_argument("--treat-input-binder-as-cyclic", action="store_true", help="Apply Rosetta cyclic constraints to our Motif Chain (--peptide-chain) \
             Only specify this if the Motif Chain is a N-C cyclic peptide.")
-    p.add_argument("--peptide-chain", type=int, default=2, help="Chain Index (1-index) that contains our motif of interest. The model \
+#     p.add_argument("--peptide-chain", type=int, default=2, help="Chain Index (1-index) that contains our motif of interest. The model \
+#             expects input PDBS to have two chains currently (target & binder/peptide.)")
+    p.add_argument("--peptide-chain", type=str, default="B", help="Chain String that contains our motif of interest. The model \
             expects input PDBS to have two chains currently (target & binder/peptide.)")
     p.add_argument("--interface-distance-cutoff", type=float, default=15.0, help="Atoms within this distance cutoff of the target will be considered \
             when gradient-marching peptide")
@@ -1620,7 +1631,7 @@ if __name__ == "__main__":
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
                           "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
         # Cb Pocket Context Extract
-        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=True, peptide_chain=args.peptide_chain)
+        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain=args.peptide_chain)
 #         atomdict = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain = args.peptide_chain)
 #         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)

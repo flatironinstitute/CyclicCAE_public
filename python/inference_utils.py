@@ -13,6 +13,7 @@ import os
 import ast
 import matplotlib.pyplot as plt
 from typing import Union
+import numpy as np
 
 # xyz coordinates
 from terminal_error import TerminalPeptide
@@ -248,7 +249,12 @@ def extract_pdb_xyz(input_file: str,
         dict that holds every atom and its xyz coordinates
     """
     # chain string map
-    chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
+    chainint2str = dict(
+            zip(
+                list(range(1, 27)),
+                "A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z".split(",")
+                )
+            )
     if isinstance(peptide_chain, int):
         pep = chainint2str[peptide_chain]
     else:
@@ -271,21 +277,38 @@ def extract_pdb_xyz(input_file: str,
             }#0.005000}
 
     # generate tensor 
-    full_xyz = aa_values.coords
-    peptide_sigma = torch.zeros(len(peptide), dtype=torch.float)
-    peptide_epsilon = torch.zeros(len(peptide), dtype=torch.float)
-    target_sigma = torch.zeros(len(non_peptide), dtype=torch.float)
-    target_epsilon = torch.zeros(len(non_peptide), dtype=torch.float)
-    target_xyz = non_peptide.coords
-    peptide_xyz = peptide.coords
+    if full:
+        aa_values_filter = (aa_values.chain_id != pep) | ( (aa_values.chain_id == pep) & (np.isin(aa_values.atom_name,["N", "CA", "C", "O"])) )
+        peptide_non_full_mask = np.isin(peptide.atom_name,["N", "CA", "C", "O"])
+        peptide = peptide[peptide_non_full_mask]
+        full_xyz = torch.tensor(aa_values[aa_values_filter].coord, dtype=torch.float)
+        peptide_sigma = torch.zeros(len(peptide), dtype=torch.float)
+        peptide_epsilon = torch.zeros(len(peptide), dtype=torch.float)
+        target_sigma = torch.zeros(len(non_peptide), dtype=torch.float)
+        target_epsilon = torch.zeros(len(non_peptide), dtype=torch.float)
+        target_xyz = torch.tensor(non_peptide.coord, dtype=torch.float)
+        peptide_xyz = torch.tensor(peptide.coord, dtype=torch.float)
+    else:
+        aa_values_filter = ( (aa_values.chain_id != pep) & (np.isin(aa_values.atom_name,["N", "CA", "C", "O", "CB"])) ) | ( (aa_values.chain_id == pep) & (np.isin(aa_values.atom_name,["N", "CA", "C", "O"])) )
+        target_non_full_mask = np.isin(non_peptide.atom_name,["N", "CA", "C", "O", "CB"])
+        peptide_non_full_mask = np.isin(peptide.atom_name,["N", "CA", "C", "O"])
+        peptide = peptide[peptide_non_full_mask]
+        non_peptide = non_peptide[target_non_full_mask]
+        full_xyz = torch.tensor(aa_values[aa_values_filter].coord, dtype=torch.float)
+        peptide_sigma = torch.zeros(len(peptide), dtype=torch.float)
+        peptide_epsilon = torch.zeros(len(peptide), dtype=torch.float)
+        target_sigma = torch.zeros(len(non_peptide), dtype=torch.float)
+        target_epsilon = torch.zeros(len(non_peptide), dtype=torch.float)
+        target_xyz = torch.tensor(non_peptide.coord, dtype=torch.float)
+        peptide_xyz = torch.tensor(peptide.coord, dtype=torch.float)
 
     # Fill sigma / epsilon mats
     for k, a in enumerate(peptide):
         if a.atom_name == "CA":
             atom_name = "CA"
-        elif (not full) and (a.atom_name not in ["N", "CA", "C", "O", "CB"]):
+        elif a.atom_name not in ["N", "CA", "C", "O"]:
             continue
-        elif a.element_name not in ["N", "C", "O", "H"]:
+        elif a.element not in ["N", "C", "O", "H"]:
             atom_name = "C"
         else:
             atom_name = a.element
@@ -297,12 +320,15 @@ def extract_pdb_xyz(input_file: str,
             atom_name = "CA"
         elif (not full) and (a.atom_name not in ["N", "CA", "C", "O", "CB"]):
             continue
-        elif a.element_name not in ["N", "C", "O", "H"]:
+        elif a.element not in ["N", "C", "O", "H"]:
             atom_name = "C"
         else:
             atom_name = a.element
         target_epsilon[k] = epsilon_key[atom_name]
         target_sigma[k] = sigma_key[atom_name]
+
+    print("Target epsilon:", target_epsilon.shape)
+    print("Target sigma:", target_sigma.shape)
 
     return full_xyz, target_xyz, peptide_xyz, target_sigma, target_epsilon, peptide_sigma, peptide_epsilon
 
@@ -722,9 +748,11 @@ def interface_loss(
         Computed loss given interface and recomputed_xyz using a smooth distance cutoff
     """
     # Grab sizes
+    print("recomputed_xyz", recomputed_xyz.shape)
     B, Atoms, _ = recomputed_xyz.shape
     N = interface_atoms.shape[-2]
 
+    print("BEFORE GENERATE METRICS")
     # Generate our metrics
     sigma_peptide = torch.tensor([1.8025, 2.0118, 1.9167, 1.5406] * (Atoms // 4), dtype=torch.double, device=recomputed_xyz.device)
     epsilon_peptide = torch.tensor([0.1617, 0.0626, 0.1418, 0.1424] * (Atoms // 4), dtype=torch.double, device=recomputed_xyz.device)
@@ -732,23 +760,30 @@ def interface_loss(
     # check for size
     if interface_atoms.dim() == 2:
         interface_atoms = interface_atoms.unsqueeze(0).expand(B, -1, -1)
+    print("BEFORE pairwise distances")
     # get pairwise distances
     pairwise_distances = torch.cdist(recomputed_xyz, interface_atoms, p=2)
 
+    print("BEFORE LJ terms compute")
     # Compute LJ Terms
     S = sigma_peptide.view(1, Atoms, 1) + sigma_interface.view(1, 1, N)
     E = torch.sqrt(epsilon_peptide.view(1, Atoms, 1) * epsilon_interface.view(1, 1, N))
     S = S.expand(B, -1, -1)
     E = E.expand(B, -1, -1)
 
+    print("BEFORE Rep Compute")
     # Linear Repulse Term
     m = 20 * E / S * (-(5/3)**12 + (5/3)**6)
     b = E * (13*(5/3)**12 - 14*(5/3)**6 + 1)
     linear_term = m*pairwise_distances + b
 
+    print("BEFORE norm lj Compute")
     # normal LJ term
+    print(E.shape)
+    print((S/pairwise_distances).shape)
     lj_term = E*((S/pairwise_distances).pow(12) - 2*(S/pairwise_distances).pow(6) + 1)
 
+    print("BEFORE conditional loss")
     # Now conditional settings to compute loss (B, Atoms, N)
     loss = torch.where(
         pairwise_distances <= 0.6*S,
@@ -760,6 +795,7 @@ def interface_loss(
         )
     ) 
 
+    print("BEFORE return")
     return loss.sum((-2, -1)) #, pairwise_distances.min(-1)[0].min(-1).values < 1.0
 
 # def interface_loss(
@@ -1096,11 +1132,15 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
         Aligned DoF XYZ points
     """
     # Calc Translation
+    print("Q shape -- inference_utils:", Q.shape)
+    print("P shape -- inference_utils:", P.shape)
     if motif_input.size(0) == Q.size(0):
         Q_point = Q
     else:
         Q_point = Q[motif_input, :] # Same N atom
     P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
+    print("Q_piont shape -- inference_utils:", Q_point.shape)
+    print("P_point shape -- inference_utils:", P_point.shape)
 
     assert len(P_point.shape) == 3, f"Number of dimensions in our P_point is incorrect. P_point dim size: {P_point.shape}"
     assert len(Q_point.shape) == 2, f"Number of dimensions in our Q_point is incorrect. Q_point dim size: {Q_point.shape}"
@@ -1455,7 +1495,7 @@ def load_weights(size: int, device: str) -> torch.Tensor:
         return torch.load(find_weights("weights/7mer/model_8811_best_weights.pt"),
                           map_location = device)
     elif size == 8:
-        return torch.load(find_weights("weights/8mer/model_7731_best_weights.pt"),
+        return torch.load(find_weights("full_weights/8mer/model_7731_best_weights.pt"),
                           map_location = device)
     else:
         # return torch.load(find_weights("weights/9mer/model_9890_current_weights.pt"),
