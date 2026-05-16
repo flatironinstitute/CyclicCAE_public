@@ -327,9 +327,6 @@ def extract_pdb_xyz(input_file: str,
         target_epsilon[k] = epsilon_key[atom_name]
         target_sigma[k] = sigma_key[atom_name]
 
-    print("Target epsilon:", target_epsilon.shape)
-    print("Target sigma:", target_sigma.shape)
-
     return full_xyz, target_xyz, peptide_xyz, target_sigma, target_epsilon, peptide_sigma, peptide_epsilon
 
 
@@ -748,11 +745,9 @@ def interface_loss(
         Computed loss given interface and recomputed_xyz using a smooth distance cutoff
     """
     # Grab sizes
-    print("recomputed_xyz", recomputed_xyz.shape)
     B, Atoms, _ = recomputed_xyz.shape
     N = interface_atoms.shape[-2]
 
-    print("BEFORE GENERATE METRICS")
     # Generate our metrics
     sigma_peptide = torch.tensor([1.8025, 2.0118, 1.9167, 1.5406] * (Atoms // 4), dtype=torch.double, device=recomputed_xyz.device)
     epsilon_peptide = torch.tensor([0.1617, 0.0626, 0.1418, 0.1424] * (Atoms // 4), dtype=torch.double, device=recomputed_xyz.device)
@@ -760,30 +755,23 @@ def interface_loss(
     # check for size
     if interface_atoms.dim() == 2:
         interface_atoms = interface_atoms.unsqueeze(0).expand(B, -1, -1)
-    print("BEFORE pairwise distances")
     # get pairwise distances
     pairwise_distances = torch.cdist(recomputed_xyz, interface_atoms, p=2)
 
-    print("BEFORE LJ terms compute")
     # Compute LJ Terms
     S = sigma_peptide.view(1, Atoms, 1) + sigma_interface.view(1, 1, N)
     E = torch.sqrt(epsilon_peptide.view(1, Atoms, 1) * epsilon_interface.view(1, 1, N))
     S = S.expand(B, -1, -1)
     E = E.expand(B, -1, -1)
 
-    print("BEFORE Rep Compute")
     # Linear Repulse Term
     m = 20 * E / S * (-(5/3)**12 + (5/3)**6)
     b = E * (13*(5/3)**12 - 14*(5/3)**6 + 1)
     linear_term = m*pairwise_distances + b
 
-    print("BEFORE norm lj Compute")
     # normal LJ term
-    print(E.shape)
-    print((S/pairwise_distances).shape)
     lj_term = E*((S/pairwise_distances).pow(12) - 2*(S/pairwise_distances).pow(6) + 1)
 
-    print("BEFORE conditional loss")
     # Now conditional settings to compute loss (B, Atoms, N)
     loss = torch.where(
         pairwise_distances <= 0.6*S,
@@ -795,7 +783,6 @@ def interface_loss(
         )
     ) 
 
-    print("BEFORE return")
     return loss.sum((-2, -1)) #, pairwise_distances.min(-1)[0].min(-1).values < 1.0
 
 # def interface_loss(
@@ -1132,15 +1119,11 @@ def kabsch_rootatom(P: torch.Tensor, Q: torch.Tensor,
         Aligned DoF XYZ points
     """
     # Calc Translation
-    print("Q shape -- inference_utils:", Q.shape)
-    print("P shape -- inference_utils:", P.shape)
     if motif_input.size(0) == Q.size(0):
         Q_point = Q
     else:
         Q_point = Q[motif_input, :] # Same N atom
     P_point = torch.gather(P, 1, motif_output.unsqueeze(-1).expand(-1, -1, 3))
-    print("Q_piont shape -- inference_utils:", Q_point.shape)
-    print("P_point shape -- inference_utils:", P_point.shape)
 
     assert len(P_point.shape) == 3, f"Number of dimensions in our P_point is incorrect. P_point dim size: {P_point.shape}"
     assert len(Q_point.shape) == 2, f"Number of dimensions in our Q_point is incorrect. Q_point dim size: {Q_point.shape}"

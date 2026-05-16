@@ -734,20 +734,12 @@ class EnergyPath:
                                                           )
                 else:
                     # Non contiguous indexing of our outputs
-                    print("Coordsd before match_res_mask -- energy_gradient")
-                    print(coords.shape)
-                    print(match_res_mask.shape)
                     coords = coords[match_res_mask[:B, 0]]
-                    print("Coordsd after match_res_mask -- energy_gradient")
-                    print(coords.shape)
                     aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                           motif_output = self.motif[:B],
                                                           motif_input = self.motif_input,
                                                           )
-                    print("AlignedCoords after kabsch_rootatom -- energy_gradient")
-                    print(aligned_coordinates.shape)
 
-                print("BEFORE INTERFACE LOSS")
                 interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
                 interface_nonorm_loss= interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
                                                       sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
@@ -755,7 +747,6 @@ class EnergyPath:
                                                       sigma_interface = interface_dict["sigma_interface"][interface_nonhydrogen_mask],
                                                       epsilon_interface = interface_dict["epsilon_interface"][interface_nonhydrogen_mask])
                 interface_total_loss = interface_nonorm_loss # / aligned_coordinates.size(0)
-                print("AFTER INTERFACE LOSS")
             else:
                 interface_total_loss = torch.zeros(out.size(0), dtype=torch.bool, device=self.device)
 
@@ -775,15 +766,15 @@ class EnergyPath:
 
             # Determine which points are within the latent space cutoff
             int_mask = interface_total_loss <= self.interface_cutoff
-            terminal_mask = term_bond_loss[match_res_mask[:, 0]].view(-1) < 0.5 #2.0
-            ocnh_mask = ocnh_loss[match_res_mask[:, 0]].view(-1) < 0.5
-            hnc_mask = hnc_loss[match_res_mask[:, 0]].view(-1) < 0.5
-            nco_mask = nco_loss[match_res_mask[:, 0]].view(-1) < 0.5
+            terminal_mask = term_bond_loss[match_res_mask[:B, 0]].view(-1) < 0.5 #2.0
+            ocnh_mask = ocnh_loss[match_res_mask[:B, 0]].view(-1) < 0.5
+            hnc_mask = hnc_loss[match_res_mask[:B, 0]].view(-1) < 0.5
+            nco_mask = nco_loss[match_res_mask[:B, 0]].view(-1) < 0.5
 #                 harm_mask = harmonic_loss <= self.inpaint_dist
-            l_homochiral_mask = homochiral_mask[match_res_mask[:, 0]].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
+            l_homochiral_mask = homochiral_mask[match_res_mask[:B, 0]].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
             # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
             if self.contiguous:
-                harm_mask = loss <= self.inpaint_dist
+                harm_mask = loss[:B] <= self.inpaint_dist
                 mask = torch.logical_and(
                     ocnh_mask.view(-1, 1), torch.logical_and(
                         hnc_mask.view(-1, 1), torch.logical_and(
@@ -814,15 +805,15 @@ class EnergyPath:
 
             # Grab out specific points that only pass
             if self.freeze_residues != None:
-                preds = preds[match_res_mask[:, 0]]
-                scatter_latent = scatter_latent[match_res_mask[:, 0]]
+                preds = preds[match_res_mask[:B, 0]]
+                scatter_latent = scatter_latent[match_res_mask[:B, 0]]
                 # concat onto self.match_res
-                self.match_res_mask = torch.cat((self.match_res_mask, match_res_mask[mask]), dim=0)
+                self.match_res_mask = torch.cat((self.match_res_mask, match_res_mask[:B][mask]), dim=0)
             # add to set of scaffolds
             if not torch.is_tensor(scaffolds):
                 scaffolds = preds[mask, :-3].detach()
                 points = scatter_latent[mask].detach()
-                harm_values = loss[mask].detach()
+                harm_values = loss[:B][mask].detach()
             else:
                 scaffolds = torch.cat(
                     (
