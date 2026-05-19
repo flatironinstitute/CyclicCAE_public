@@ -14,6 +14,8 @@ import ast
 import matplotlib.pyplot as plt
 from typing import Union
 import numpy as np
+from pathlib import Path
+# Work on updating the Path, so that it is fixed and doesnt need to be setup manually.
 
 # xyz coordinates
 from terminal_error import TerminalPeptide
@@ -1447,7 +1449,7 @@ def kabsch_test():
     print("L2 R: {}".format(l2_R.mean()))
     return 0
 
-def find_weights(weights: str) -> str:
+def find_weights(weights: str, weight_path: str) -> str:
     """
     Find the correct path to the weights file should work for 
     either relative or google colab file path search
@@ -1455,13 +1457,19 @@ def find_weights(weights: str) -> str:
     PARAMS
     ------
     :weights: The relative path to our file.
+    :weight_path: A custom path to search
 
     RETURNS
     -------
     :path: The true path to our weights
     """
+    # If a weight path is given then load and return that 
+    if weight_path.endswith(".pt") and os.path.exists(weight_path):
+        return weight_path
+
     path_prefix = ["../", "/content/conformational_autoencoder/", 
-                   "/projects/parisahlab/apowers4/projects/conformational_autoencoder/"]
+                   "/projects/parisahlab/apowers4/projects/conformational_autoencoder/",
+                  weight_path,]
     for prefix in path_prefix:
         p = os.path.join(prefix, weights)
         if os.path.exists(p):
@@ -1469,20 +1477,20 @@ def find_weights(weights: str) -> str:
     raise FileNotFoundError(f"Seems that our weights {weights} cannot be found")
     
 
-def load_weights(size: int, device: str) -> torch.Tensor:
+def load_weights(size: int, device: str, weight_path: str) -> torch.Tensor:
     """Load in weights for a specific size"""
     if size == 6:
-        return torch.load(find_weights("weights/6mer/model_1610_current_weights.pt"),
+        return torch.load(find_weights("weights/6mer/model_1610_current_weights.pt", weight_path),
                           map_location = device)
     elif size == 7:
-        return torch.load(find_weights("weights/7mer/model_8811_best_weights.pt"),
+        return torch.load(find_weights("weights/7mer/model_8811_best_weights.pt", weight_path),
                           map_location = device)
     elif size == 8:
-        return torch.load(find_weights("full_weights/8mer/model_7731_best_weights.pt"),
+        return torch.load(find_weights("full_weights/8mer/model_7731_best_weights.pt", weight_path),
                           map_location = device)
     else:
         # return torch.load(find_weights("weights/9mer/model_9890_current_weights.pt"),
-        return torch.load(find_weights("weights/9mer/model_6049_best_weights.pt"),
+        return torch.load(find_weights("weights/9mer/model_6049_best_weights.pt", weight_path),
                           map_location = device)
 
 def size_help(size: int, params: dict) -> Union[dict, int]:

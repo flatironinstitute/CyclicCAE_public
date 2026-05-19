@@ -235,7 +235,9 @@ class EnergyPath:
             device            = self.device, #"cpu",
             **self.PARAMS,
         ).to(device).double()
-        weights = load_weights(self.PARAMS["protein_len"], self.device)
+        weights = load_weights(self.PARAMS["protein_len"], 
+                               self.device,
+                               self.weight_passed)
         self.model.load_state_dict(weights["model_state_dict"])
         self.model.eval()
 
@@ -1469,7 +1471,7 @@ if __name__ == "__main__":
           on CyclicCAE outputs.")
     p.add_argument("--output-path", type=str, default="./", help="Determines location PDBs/SilentFile are saved.")
     p.add_argument("--extract-minimize-input", action="store_true", help="Minimize a given input only")
-    p.add_argument("--weights-load", type=str, default=None, help="Specify Model Weights To Use. Only needs to be specified for custom weights.")
+    p.add_argument("--weights-load", type=str, default='.', help="Specify Model Weights To Use. Only needs to be specified for custom weights or custom default weight locations.")
     p.add_argument("--out-size", type=int, help="Specify the output size")
     p.add_argument("--lr", type=float, default=0.001, help="Optimizer Learning Rate")
     p.add_argument("--cutoff-true", action="store_true", help="Apply a distance cutoff")
