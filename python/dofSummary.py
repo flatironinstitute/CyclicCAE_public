@@ -275,42 +275,58 @@ class DoFSummary:
         #grab length of PDB
         res_len = full_pose.total_residue()
 
-        # Select the chain we want to extract
-        start_res = full_pose.chain_begin(peptide_chain_int)
-        end_res = full_pose.chain_end(peptide_chain_int)
+#         # Select the chain we want to extract
+#         start_res = full_pose.chain_begin(peptide_chain_int)
+#         end_res = full_pose.chain_end(peptide_chain_int)
 
         # Clone our pose for alignment at the end of the class (when dumping)
-        self.full_input = full_pose
+        self.full_input = full_pose.clone()
 
         # clone the pose
-        peptide_pose = full_pose.clone()
+#         peptide_pose = full_pose.clone()
+        peptide_pose = core.pose.Pose()
 
-        # grab pose numbering for our peptide
+        # grab pose numbering for our peptide and Input in general
         pdb_info = full_pose.pdb_info()
 
         # Problem:
         # Target = 200 Residues
         # Peptide = 8 residues
 
-        # Now delete all the non residues that are not our chain of interest
-        print("BEFORE")
-        if peptide_chain_int > 1:
-            assert peptide_pose.num_chains() > 1, "Peptide chain cant be > 1, but the pose not have multiple chains!"
-            peptide_pose.delete_residue_range_slow(1, start_res-1)
-            pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
-            # There are more chains after the peptide
-            if end_res != res_len:
-                peptide_pose.delete_residue_range_slow(end_res+1 - start_res, peptide_pose.total_residue())
-        elif (peptide_chain_int == 1) and (peptide_pose.num_chains() > 1):
-            peptide_pose.delete_residue_range_slow(end_res+1, res_len)
-            pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
-        # This means it is a peptide by itself with no other chains
-        else:
-            pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
+        # Extract out peptide of interest and load into new pose
+        chain_selector = core.select.residue_selector.ChainSelector(peptide_chain)
+        subset = chain_selector.apply(full_pose)
+        print("SUBSET:", subset)
+        pep_pose_values = [i for i, resi_sel in enumerate(subset, start=1) if resi_sel]
+        pep_pdb_values = [int(pdb_info.pose2pdb(i).split()[0]) for i in pep_pose_values]
+        print("pep pdb values:", pep_pdb_values, type(pep_pdb_values))
+        print("Selected Chain:", peptide_chain, "And grabbed values:", pep_pose_values)
+        pep_pose_vector1 = rosetta.utility.vector1_unsigned_long()
+        for resi in pep_pose_values: pep_pose_vector1.append(resi)
+        print("Pep vector1:", pep_pose_vector1)
+        core.pose.pdbslice(peptide_pose, full_pose, pep_pose_vector1)
+        print("pep pose:", peptide_pose.sequence())
+
+#         # Now delete all the non residues that are not our chain of interest
+#         print("BEFORE")
+#         if peptide_chain_int > 1:
+#             assert peptide_pose.num_chains() > 1, "Peptide chain cant be > 1, but the pose not have multiple chains!"
+#             peptide_pose.delete_residue_range_slow(1, start_res-1)
+#             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
+#             # There are more chains after the peptide
+#             if end_res != res_len:
+#                 peptide_pose.delete_residue_range_slow(end_res+1 - start_res, peptide_pose.total_residue())
+#         elif (peptide_chain_int == 1) and (peptide_pose.num_chains() > 1):
+#             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
+#             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
+#         # This means it is a peptide by itself with no other chains
+#         else:
+#             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
 
         # option for if we are extracting all dofs from peptide
         if self.extract_minimize_input:
-            residues_of_interest = torch.arange(peptide_pose.total_residue())
+#             residues_of_interest = torch.arange(peptide_pose.total_residue())
+            residues_of_interest = pep_pdb_values
 
         # Set the fold tree
         if peptide_pose.total_residue() >= len(residues_of_interest):
@@ -325,8 +341,10 @@ class DoFSummary:
 
             updated_residues = list()
             for ir in residues_of_interest:
-                ir -= pdb_start
-                updated_residues.append( ir )
+#                 ir -= pdb_start
+                ir -= pep_pdb_values[0]
+                updated_residues.append( ir+1 )
+            print("UPDATED RES FINISH:", updated_residues)
         else:
             assert peptide_pose.total_residue() == len(residues_of_interest), "Our motif & peptide have too many residues (there is a problem with the selection logic for this section as they are not equal)"
             # assert peptide_pose.total_residue() < len(residues_of_interest), "Our peptide has too few residues compared ot our motif (there is a problem with the selection logic for this section as they are not equal)"
