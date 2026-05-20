@@ -296,32 +296,11 @@ class DoFSummary:
         # Extract out peptide of interest and load into new pose
         chain_selector = core.select.residue_selector.ChainSelector(peptide_chain)
         subset = chain_selector.apply(full_pose)
-        print("SUBSET:", subset)
         pep_pose_values = [i for i, resi_sel in enumerate(subset, start=1) if resi_sel]
         pep_pdb_values = [int(pdb_info.pose2pdb(i).split()[0]) for i in pep_pose_values]
-        print("pep pdb values:", pep_pdb_values, type(pep_pdb_values))
-        print("Selected Chain:", peptide_chain, "And grabbed values:", pep_pose_values)
         pep_pose_vector1 = rosetta.utility.vector1_unsigned_long()
         for resi in pep_pose_values: pep_pose_vector1.append(resi)
-        print("Pep vector1:", pep_pose_vector1)
         core.pose.pdbslice(peptide_pose, full_pose, pep_pose_vector1)
-        print("pep pose:", peptide_pose.sequence())
-
-#         # Now delete all the non residues that are not our chain of interest
-#         print("BEFORE")
-#         if peptide_chain_int > 1:
-#             assert peptide_pose.num_chains() > 1, "Peptide chain cant be > 1, but the pose not have multiple chains!"
-#             peptide_pose.delete_residue_range_slow(1, start_res-1)
-#             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
-#             # There are more chains after the peptide
-#             if end_res != res_len:
-#                 peptide_pose.delete_residue_range_slow(end_res+1 - start_res, peptide_pose.total_residue())
-#         elif (peptide_chain_int == 1) and (peptide_pose.num_chains() > 1):
-#             peptide_pose.delete_residue_range_slow(end_res+1, res_len)
-#             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
-#         # This means it is a peptide by itself with no other chains
-#         else:
-#             pdb_start = int(pdb_info.pose2pdb(start_res).split(" ")[0]) - 1
 
         # option for if we are extracting all dofs from peptide
         if self.extract_minimize_input:
@@ -340,11 +319,11 @@ class DoFSummary:
             peptide_pose.fold_tree(ft)
 
             updated_residues = list()
+            self.pdb2pose_resi_pose = list()
             for ir in residues_of_interest:
-#                 ir -= pdb_start
+                self.pdb2pose_resi_pose.append( pdb_info.pdb2pose(peptide_chain, ir.item()) )
                 ir -= pep_pdb_values[0]
                 updated_residues.append( ir+1 )
-            print("UPDATED RES FINISH:", updated_residues)
         else:
             assert peptide_pose.total_residue() == len(residues_of_interest), "Our motif & peptide have too many residues (there is a problem with the selection logic for this section as they are not equal)"
             # assert peptide_pose.total_residue() < len(residues_of_interest), "Our peptide has too few residues compared ot our motif (there is a problem with the selection logic for this section as they are not equal)"
@@ -381,13 +360,6 @@ class DoFSummary:
                     peptide_pose.set_omega(ir, 180.0)
             # Debug purposes
             peptide_pose.dump_pdb("poly_gly_stub.pdb")
-            # print(peptide_pose.sequence())
-
-
-        # print("residues of interest:", residues_of_interest)
-        # print("Updated Residues:", updated_residues)
-
-        print("BEFORE POSE EXTRACT", peptide_pose.sequence())
         return peptide_pose, torch.tensor(updated_residues)
 
     def dof_extract(
@@ -1111,6 +1083,24 @@ class DoFSummary:
         :curpose: Threaded pose that was mutated
         :native_pose: PDB native peptide mutated
         """
+        # Now if it is the same size and is cyclic then we want to compare our backbones against the native
+        if (native_pose.total_residue() == curpose.total_residue() and self.is_cyclic):
+            # Grab the bbheavy atom of our full pose
+            bbheavy_atom_map_fullpose = self.grab_heavybb_atomid_map(
+                    native_pose,
+                    curpose,
+                    self.residues_of_interest,
+                    self.consistent_motif_resi,
+                    True,
+                    )
+            full_pose_heavybbrmsd = core.scoring.superimpose_pose(
+                    curpose,
+                    native_pose,
+                    bbheavy_atom_map_fullpose,
+                    )
+#             curpose.update_residue_neighbors()
+            curpose.scores["fullpose_bbHeavy_RMSD"] = full_pose_heavybbrmsd
+
         # Grab our atom id maps for RMS scoring (motif fullatom)
         atom_map_motif = self.grab_atomid_map(
                 native_pose,
@@ -1141,24 +1131,6 @@ class DoFSummary:
 #       # Add scores to our poses
         curpose.scores["motif_allatom_nothydrogens_RMSD"] = motif_specific_fullrmsd
         curpose.scores["motif_bbHeavy_RMSD"] = motif_specific_heavybbrmsd
-
-        # Now if it is the same size and is cyclic then we want to compare our backbones against the native
-        if (native_pose.total_residue() == curpose.total_residue() and self.is_cyclic):
-            # Grab the bbheavy atom of our full pose
-            bbheavy_atom_map_fullpose = self.grab_heavybb_atomid_map(
-                    native_pose,
-                    curpose,
-                    self.residues_of_interest,
-                    self.consistent_motif_resi,
-                    True,
-                    )
-            full_pose_heavybbrmsd = core.scoring.superimpose_pose(
-                    curpose,
-                    native_pose,
-                    bbheavy_atom_map_fullpose,
-                    )
-#             curpose.update_residue_neighbors()
-            curpose.scores["fullpose_bbHeavy_RMSD"] = full_pose_heavybbrmsd
         return 0
 
     def remove_term_variants(self,
@@ -1461,7 +1433,7 @@ class DoFSummary:
                     pose_reference = self.full_input,
                     pose_target = pose,
                     ref_chain = self.ref_chain,
-                    residue_anchors = self.residues_of_interest,
+                    residue_anchors = self.pdb2pose_resi_pose, #self.residues_of_interest,
                     target_start_resi = self.consistent_motif_resi,
                 )
         else:
