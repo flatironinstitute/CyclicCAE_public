@@ -1467,8 +1467,8 @@ if __name__ == "__main__":
         SilentFile (not implemented yet to save score to separate file when Silent not set).")
     p.add_argument("--apply-minmover-outputs", action="store_true", help="Apply the MinMover with ref2015 score to \
          our threaded poses.")
-    p.add_argument("--desired-motif-start-position", default=2, type=int, help="Specifies where the Moitf will start \
-          on CyclicCAE outputs.")
+    p.add_argument("--desired-motif-start-position", default=4, type=int, help="Specifies where the Moitf will start \
+          on CyclicCAE outputs. We suggest the middle of the peptide, so for an 8mer output, resi 4 for a singular AA.")
     p.add_argument("--output-path", type=str, default="./", help="Determines location PDBs/SilentFile are saved.")
     p.add_argument("--extract-minimize-input", action="store_true", help="Minimize a given input only")
     p.add_argument("--weights-load", type=str, default='.', help="Specify Model Weights To Use. Only needs to be specified for custom weights or custom default weight locations.")
