@@ -304,8 +304,8 @@ class DoFSummary:
 
         # option for if we are extracting all dofs from peptide
         if self.extract_minimize_input:
-#             residues_of_interest = torch.arange(peptide_pose.total_residue())
-            residues_of_interest = pep_pdb_values
+            residues_of_interest = torch.arange(peptide_pose.total_residue())
+#             residues_of_interest = pep_pdb_values
 
         # Set the fold tree
         if peptide_pose.total_residue() >= len(residues_of_interest):
@@ -630,7 +630,7 @@ class DoFSummary:
                     ), -1
                 )
 
-        return dofs
+        return dofs, (motif_torsion_dofs, motif_bondangle_dofs, motif_bondlength_dofs)
 
     def extract_pdb_pose_and_dof(
         self,

@@ -318,7 +318,7 @@ class EnergyPath:
         return out, latent_points
 
 
-    def encode_decode(self, pdb_input: str, dofsummary: DoFSummary, chain: int = 2):
+    def encode_decode(self, pdb_input: str, dofsummary: DoFSummary, chain: str = 'A'):
         """Pass a pdb structure, extract the DoFs from the pose, encode and then decode them
 
         PARAMS
@@ -326,14 +326,17 @@ class EnergyPath:
         :pdb_input: Path to our pdb chain
         :chain: The cyclic peptide chain
         """
-        extracted_dofs = dofsummary.extract_all_dofs_from_pdb(pdb_input, chain)
+        extracted_dofs, motif_dofs = dofsummary.extract_all_dofs_from_pdb(pdb_input, chain)
+        print(extracted_dofs.shape)
         out, _, latent_points, _ = self.model.forward( extracted_dofs, noise=False )
         out = out.detach().clone()
         torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
         bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
         preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
         self.dof_traj = preds.unsqueeze(0)
-        return latent_points.detach().clone()
+        print(latent_points.shape)
+        print(self.dof_traj.shape)
+        return motif_dofs, latent_points.detach().clone()
 
     def calc_angles(self, preds: torch.Tensor):
         """Display the Computed Angles"""
@@ -1142,13 +1145,23 @@ class EnergyPath:
         redo = 0
         # Calculate motif numbering
         if self.freeze_residues != None:
+            print("MATCH RESK MASK:", self.match_res_mask)
             self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
-                self.match_res_mask,
+                torch.zeros((1,1), dtype=torch.long) if self.extract_minimize_input else self.match_res_mask,
                 self.PARAMS["protein_len"],
                 self.freeze_residues.shape[0],
                 self.freeze_residues,
                 True,
             )
+#         if self.extract_minimize_input:
+#             self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
+#                 torch.zeros((1,1)),
+#                 self.PARAMS["protein_len"],
+#                 self.freeze_residues.shape[0],
+#                 self.freeze_residues,
+#                 True,
+#             )
+            print(self.motif, self.motif_input)
 
         while minimize_still: 
             original_point = self.start_latent_point.clone()
@@ -1220,6 +1233,10 @@ class EnergyPath:
                         ), dim=-1,
                     )
                     # Now compute which residues match our motif
+                    print(real_t_sin.shape)
+                    print(torsion_sin.shape)
+                    print(real_ba_sin.shape)
+                    print(bond_angle_sin.shape)
                     harmonic_loss, _ = discontig_funcs.harmonic_diff_inpaint(
                             real_t_sin,
                             real_t_cos,
@@ -1244,6 +1261,7 @@ class EnergyPath:
                             self.device,
                             True,
                             self.exclude_atom_positions,
+                            self.extract_minimize_input,
                             )
                 else:
                     harmonic_loss = torch.tensor([0.0], device=self.device)
@@ -1277,12 +1295,19 @@ class EnergyPath:
                     self.lambda_2 = 0.0
                     term_bond_coeff = 0.0
                     peptide_nonhydrogen_mask = interface_cb_dict["epsilon_peptide"] != 0.901681
-                    aligned_coordinates, rmsd_loss = kabsch_rootatom(
-                            P = coords, 
-                            Q = interface_cb_dict["peptide"][peptide_nonhydrogen_mask].double(),
-                            motif_input = torch.arange( interface_cb_dict["peptide"][peptide_nonhydrogen_mask].size(0) ),
-                            motif_output = torch.arange( coords.size(1) ),
-                            )
+                    print("energy_steps ---> extract_minimize_input:", coords.shape, interface_cb_dict["peptide"].shape)
+                    print(torch.arange( interface_cb_dict["peptide"].size(0) ) )
+                    print(torch.arange( coords.size(1) ) )
+                    aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_cb_dict["peptide"][peptide_nonhydrogen_mask].double(),
+                                                            motif_output = self.motif,
+                                                            motif_input = self.motif_input,
+                                                            )
+#                     aligned_coordinates, rmsd_loss = kabsch_rootatom(
+#                             P = coords, 
+#                             Q = interface_cb_dict["peptide"][peptide_nonhydrogen_mask].double(),
+#                             motif_input = torch.arange( interface_cb_dict["peptide"][peptide_nonhydrogen_mask].size(0) ),
+#                             motif_output = torch.arange( coords.size(1) ),
+#                             )
                 else:
                     rmsd_weight = 0.0
 
@@ -1536,7 +1561,8 @@ if __name__ == "__main__":
         cutoff = args.cutoff, 
         cutoff_true = args.cutoff_true,
         partial_optimization = args.partial_optimization,
-        freeze_residues = torch.tensor(args.freeze_residues) - 1 if args.inpaint else None,
+#         freeze_residues = torch.tensor(args.freeze_residues) - 1 if args.inpaint else None,
+        freeze_residues = torch.tensor(args.freeze_residues) - 1 if args.freeze_residues else None,
         freeze_torsion = args.freeze_torsion,
         freeze_bond_angle = args.freeze_bond_angle,
         freeze_bond_length = args.freeze_bond_length,
@@ -1677,15 +1703,15 @@ if __name__ == "__main__":
     #### encode-decode, so we want to encode and then decode directly. To check to see if we can have a minimized version of our structure
     elif args.extract_minimize_input:
         # Cb Pocket Context Extract
-        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=False)
+        full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain=args.peptide_chain)
 #         atomdict = extract_pdb_xyz(args.pdb_input, full=False)
 #         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
                           "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
-        latent_points = energySearch.encode_decode(args.pdb_input, dofsummary, args.peptide_chain)
-        energySearch.energy_steps(latent_points, interface_cb_dict = interface_cb_dict)
+        motif_dofs, latent_points = energySearch.encode_decode(args.pdb_input, dofsummary, args.peptide_chain)
+        energySearch.energy_steps(latent_points, interface_cb_dict = interface_cb_dict, motif_dofs = motif_dofs)
 
     # Write our outputs out to this location
     energySearch.output_GDS(skip_individual = args.skip_individual,

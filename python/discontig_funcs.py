@@ -122,6 +122,7 @@ def harmonic_diff_inpaint(
     device: str,
     dof_minimize: bool = False,
     exclude_positions: list[str] = [],
+    minimze_whole_peptide: bool = False,
     ):
     """Harmonic Difference"""
     # Grab DoF values of interest using our values
@@ -153,13 +154,20 @@ def harmonic_diff_inpaint(
             bond_length_dofs.expand(bond_length.shape[0], -1, -1),
         )
 
-        if exclude_positions == []:
+        print("EXCLUDE POS:", exclude_positions)
+        if not exclude_positions:
             mask_torsion = torch.ones_like(torsion_sin)
             mask_bondangle = torch.ones_like(bond_angle_sin)
         else:
             # Generate appropriate vector for exclusion atom DoF selection
             mask_torsion, mask_bondangle = generate_exclusion_vector(exclude_positions,
                                                                      freeze_residues)
+
+    elif minimze_whole_peptide:
+        torsion_sin = torsion_sin[..., :-1]
+        torsion_cos = torsion_cos[..., :-1]
+        mask_torsion = torch.ones_like(torsion_sin)
+        mask_bondangle = torch.ones_like(bond_angle_sin)
 
     else:
         # Grab our residue's of interest DoFs
@@ -176,7 +184,7 @@ def harmonic_diff_inpaint(
             match_res_mask,
         )
 
-        if exclude_positions == []:
+        if not exclude_positions:
             mask_torsion = torch.ones_like(torsion_sin)
             mask_bondangle = torch.ones_like(bond_angle_sin)
         else:
