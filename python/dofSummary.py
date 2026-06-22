@@ -192,7 +192,7 @@ class DoFSummary:
         outfile_name = "phi_psi_motif.csv"
         if not os.path.exists(outfile_name):
             outfile = open(outfile_name, "w")
-            print("res,phi,psi", file=outfile)
+#             print("res,phi,psi", file=outfile)
         else:
             outfile = open(outfile_name, "a")
         # iter through our original residue information
@@ -203,7 +203,7 @@ class DoFSummary:
             residue_number = residue_start.item() + 1 + ele
             if residue_number > pose.total_residue():
                 residue_number = residue_number - pose.total_residue()
-            print(str(ir) + "," + str(pose.phi(residue_number)) + "," + str(pose.psi(residue_number)), file=outfile)
+#             print(str(ir) + "," + str(pose.phi(residue_number)) + "," + str(pose.psi(residue_number)), file=outfile)
             mutateResidue.set_target(residue_number)
 
             # Determine chirality (This is important when masking atoms, as chirality may flip)
@@ -308,7 +308,7 @@ class DoFSummary:
 #             residues_of_interest = pep_pdb_values
 
         # Set the fold tree
-        if peptide_pose.total_residue() >= len(residues_of_interest):
+        if (peptide_pose.total_residue() >= len(residues_of_interest)) and (peptide_pose.total_residue() != 1):
             # Setup our fold tree
             root = self.foldtree_define(peptide_pose.total_residue())
             ft = core.kinematics.FoldTree()
@@ -353,13 +353,15 @@ class DoFSummary:
                     )
             stub_mover.apply(peptide_pose)
             peptide_pose.update_residue_neighbors()
-            updated_residues = [i+2 for i in range(1, len(residues_of_interest)+1)]
+#             updated_residues = [i+2 for i in range(1, len(residues_of_interest)+1)]
+            updated_residues = [i+3 for i in range(len(residues_of_interest))]
             # Set the correct our omega angels to 180.0, since placed as cis.
             for ir in range(1, peptide_pose.size()+1):
                 if peptide_pose.residue(ir).is_protein():
                     peptide_pose.set_omega(ir, 180.0)
             # Debug purposes
             peptide_pose.dump_pdb("poly_gly_stub.pdb")
+            self.pdb2pose_resi_pose = pep_pose_vector1
         return peptide_pose, torch.tensor(updated_residues)
 
     def dof_extract(
@@ -908,6 +910,53 @@ class DoFSummary:
 
         return dof_id
 
+    def minimize_pose_complex_full(
+            self, pose: Pose,
+            ) -> int:
+        """Allow the peptide to minimize, but not along the jump."""
+        # Clone our pose
+        pose_before = pose.clone()
+        pose.pdb_info( core.pose.PDBInfo( pose ) )
+
+        # Set up a movemap
+        mm = core.kinematics.MoveMap()
+        mm.set_bb(False)
+        mm.set_chi(False)
+        chainA = select.ChainSelector(1)
+        neighborhoodSelector = select.NeighborhoodResidueSelector(chainA, 4.0, True)
+        neighborhood_subset = neighborhoodSelector.apply(pose)
+        for ir in range(1, pose.total_residue()+1):
+            if neighborhood_subset[ir]:
+                if pose.residue(ir).chain() == 1:
+                    mm.set_bb(ir, True)
+                    mm.set_chi(ir, True)
+                else:
+                    mm.set_chi(ir, True)
+            else:
+                mm.set_bb(ir, False)
+                mm.set_chi(ir, False)
+
+        # Setup cart scorefxn
+        scorefxn_cart = self.scorefxn.clone()
+        scorefxn_cart.set_weight(core.scoring.cart_bonded, 0.5)
+        scorefxn_cart.set_weight(core.scoring.pro_close, 0.0)
+
+        # Set up minimover
+        minmover = protocols.minimization_packing.MinMover()
+        minmover.movemap(mm)
+        minmover.cartesian(True)
+        minmover.score_function(scorefxn_cart)
+        minmover.min_type("lbfgs_armijo_nonmonotone")
+        minmover.max_iter(200)
+        minmover.apply(pose)
+
+        self.declare_terminal_bond(pose)
+
+        rmsd = core.scoring.bb_rmsd_including_O(pose_before, pose)
+        # print(f"RMSD all heavy atom after minimization: {rmsd:.3f}")
+        pose.scores["MinMover_bbheavy_RMSD"] = rmsd
+        return 0
+
     def minimize_pose(
         self,
         pose: Pose,
@@ -1191,11 +1240,8 @@ class DoFSummary:
         :target_peptide: A new pose where our receptor and macrocycle/peptide are now
             placed together.
         """
-        # Chain string map
-        chainint2str = dict(zip([1,2,3,4,5,6,7], ["A", "B", "C", "D", "E", "F", "G"]))
-
         # We want to make sure that our ref pose doesnt have any weird term variant types
-        for ir in range(pose_reference.chain_begin(ref_chain), pose_reference.chain_end(ref_chain)+1): 
+        for ir in range(pose_reference.chain_begin(self.chainstr2int[ref_chain]), pose_reference.chain_end(self.chainstr2int[self.ref_chain])+1): 
             self.remove_term_variants(pose_reference, ir, ir)
 
         # grab pose numbering for our peptide
@@ -1204,10 +1250,12 @@ class DoFSummary:
 
         # Set the fold tree
         for ir in residue_anchors:
-            if isinstance(ref_chain, int):
-                updated_residues.append(pdb_info.pdb2pose( chainint2str[ref_chain], ir ))
-            else:
-                updated_residues.append(pdb_info.pdb2pose( ref_chain, ir ))
+#             if isinstance(ref_chain, str):
+#                 updated_residues.append(pdb_info.pose2pdb( self.ref_chain, ir ))
+#                 print(self.ref_chain, ir, pdb_info.pose2pdb( self.ref_chain, ir ))
+#             else:
+#                 updated_residues.append(pdb_info.pose2pdb( self.chainint2str[self.ref_chain], ir ))
+            updated_residues.append( ir )
 
         # generate an atom map 
         atom_map = self.grab_atomid_map(
@@ -1227,8 +1275,8 @@ class DoFSummary:
         # Now delete our ref chain
         ref_pose = pose_reference.clone()
         ref_pose.delete_residue_range_slow(
-                ref_pose.chain_begin(ref_chain),
-                ref_pose.chain_end(ref_chain),
+                ref_pose.chain_begin(self.chainstr2int[self.ref_chain]),
+                ref_pose.chain_end(self.chainstr2int[ref_chain]),
                 )
 
         # Now combine the two poses
@@ -1440,7 +1488,12 @@ class DoFSummary:
             self.full_cyclize_pose_withoutbond(pose)
             self.declare_terminal_bond(pose)
 
-        if minimize_pose:
+        if minimize_pose and complex_out:
+            self.minimize_pose_complex_full(pose)
+            # Calculate internal hbonds
+            hbond_set = pose.get_hbonds(exclude_sc=True, exclude_scb=True, exclude_bsc=True)
+            pose.scores["bb_hbonds"] = hbond_set.nhbonds()
+        elif minimize_pose:
             self.minimize_pose(pose)
             if (self.peptide_native != None) and (not self.extract_minimize_input):
                 self.calculate_rmsd_between_native(pose, self.peptide_native)
