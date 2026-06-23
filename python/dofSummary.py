@@ -99,7 +99,7 @@ class DoFSummary:
         self.peptide_native = None
 
         # init instance of pyrosetta with params
-        params = "-mute all -score:weights ref2015.wts -write_all_connect_info -detect_disulf false"
+        params = "-mute all -score:weights ref2015.wts -write_all_connect_info -detect_disulf false -ignore_unrecognized_res true -in:auto_setup_metals"
         # params = "-score:weights ref2015.wts -write_all_connect_info"
         init(params)
 
@@ -1241,7 +1241,9 @@ class DoFSummary:
             placed together.
         """
         # We want to make sure that our ref pose doesnt have any weird term variant types
-        for ir in range(pose_reference.chain_begin(self.chainstr2int[ref_chain]), pose_reference.chain_end(self.chainstr2int[self.ref_chain])+1): 
+        chain_pdb2pose = pose_reference.residue( residue_anchors[0] ).chain()
+#         for ir in range(pose_reference.chain_begin(self.chainstr2int[ref_chain]), pose_reference.chain_end(self.chainstr2int[self.ref_chain])+1): 
+        for ir in range(pose_reference.chain_begin(chain_pdb2pose), pose_reference.chain_end(chain_pdb2pose)+1): 
             self.remove_term_variants(pose_reference, ir, ir)
 
         # grab pose numbering for our peptide
@@ -1274,10 +1276,18 @@ class DoFSummary:
 
         # Now delete our ref chain
         ref_pose = pose_reference.clone()
-        ref_pose.delete_residue_range_slow(
-                ref_pose.chain_begin(self.chainstr2int[self.ref_chain]),
-                ref_pose.chain_end(self.chainstr2int[ref_chain]),
+        chain_pdb2pose = ref_pose.residue( residue_anchors[0] ).chain()
+
+        chain_remover = protocols.grafting.simple_movers.DeleteRegionMover(
+                ref_pose.chain_begin(chain_pdb2pose),
+                ref_pose.chain_end(chain_pdb2pose),
                 )
+        chain_remover.set_rechain(True)
+        chain_remover.apply(ref_pose)
+#         ref_pose.delete_residue_range_slow(
+#                 ref_pose.chain_begin(chain_pdb2pose),
+#                 ref_pose.chain_end(chain_pdb2pose),
+#                 )
 
         # Now combine the two poses
         core.pose.append_pose_to_pose(
