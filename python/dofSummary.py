@@ -1290,13 +1290,21 @@ class DoFSummary:
 #                 )
 
         # Now combine the two poses
-        core.pose.append_pose_to_pose(
-                pose_target,
-                ref_pose,
-                new_chain = True,
-                )
+#         core.pose.append_pose_to_pose(
+#                 pose_target,
+#                 ref_pose,
+#                 new_chain = True,
+#                 )
+        pose_target.append_pose_by_jump(
+                ref_pose, 1)
+#         core.pose.append_pose_to_pose(
+#                 pose_target,
+#                 ref_pose,
+#                 new_chain = True,
+#                 )
 
         pose_target.update_residue_neighbors()
+
 
         core.pose.renumber_pdbinfo_based_on_conf_chains(pose_target)
         # This added because disulfides werent detected and found here:
