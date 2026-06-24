@@ -201,3 +201,19 @@ options:
   --shards              If the dataset is large indicate this, and we will search for the 'shards' files in the same location.
 ```
 
+## Rosetta Patch
+
+Although CyclicCAE is a standalone neural network, various Rosetta modifications were needed to facilitate the generation of training data, or the visualization of CyclicCAE-generated structures.  These are made available as a patch for Rosetta 3.15.  This has been tested with Rosetta Git SHA1 `bbb6a2d27c70be05b2fb2409f3920b5894967d60`.
+
+To apply the patch, copy it to the `Rosetta/main` directory.  Then navigate to this directory and run this command:
+
+```
+patch -p 1 -i cycliccae_patch_for_rosetta.txt
+```
+
+The effect of the patch is to add the `extract_dof_vectors` application used for generating training data, the `dof_vectors_to_poses` application used to visualize CyclicCAE output, and the `align_ml_backbones_to_original_target` application used to place CyclicCAE-generated backbones in a binding pocket on a target during binder design.  The support class `protocols::conformational_autoencoder::DoFSummary` is also added by the patch.
+
+The patch also makes modifications to `Rosetta/main/source/src/basic/options/options_rosetta.py` to add the `conformational_autoencoder` options group, which contains commandline options for the `extract_dof_vectors` and `dof_vectors_to_poses` applications.  It also makes small adjustments to the `core::import_pose::pose_stream::PDBPoseInputStream` class, defined in `Rosetta/main/source/src/core/import_pose/pose_stream/PDBPoseInputStream.cc`, and to the `core::import_pose::pose_stream::SilentFilePoseInputStream` class, defined in `Rosetta/main/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.cc`, to permit more efficient processing of many structures.
+
+This patch is released under a free and open-source BSD 3-clause licence.
+
