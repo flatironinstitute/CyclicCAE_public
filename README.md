@@ -205,7 +205,7 @@ options:
 
 Although CyclicCAE is a standalone neural network, various Rosetta modifications were needed to facilitate the generation of training data, or the visualization of CyclicCAE-generated structures.  These are made available as a patch for Rosetta 3.15.  This has been tested with Rosetta Git SHA1 `bbb6a2d27c70be05b2fb2409f3920b5894967d60`.
 
-To apply the patch, copy it to the `Rosetta/main` directory.  Then navigate to this directory and run this command:
+The patch is `rosetta_patch/cycliccae_patch_for_rosetta.txt` in this repository.  To apply the patch, copy it to the `Rosetta/main` directory.  Then navigate to this directory and run this command:
 
 ```
 patch -p 1 -i cycliccae_patch_for_rosetta.txt
