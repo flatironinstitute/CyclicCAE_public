@@ -1,10 +1,11 @@
-# Continuous Structural Latent Space for Macrocyclic Peptide Backbone Design
+# CyclicCAE: A Conformational Autoencoder Producing a Continuous Structural Latent Space for Macrocyclic Peptide Backbone Design
 
 ## Authors
 
-Vikram K. Mulligan (vmulligan@flatironinstitute.org)
-
 Andrew Powers (apowers@flatironinstitute.org)
+P. Douglas Renfrew (pdrenfrew@flatironinstitute.org)
+Parisa Hosseinzadeh (parisah@uoregon.edu)
+Vikram K. Mulligan (vmulligan@flatironinstitute.org)
 
 ![](./pictures/backbones.gif)
 
