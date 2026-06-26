@@ -4,4 +4,18 @@ __pycache__*
 # datatype files
 *.csv
 *.tsv
+*.pt
+*.dat
+*.png
+*.html
+*.tar.*
+
+# Structures
+*.pdb
+
+# Rosetta misc
+*.log
+
+# pymol outputs
+*.pse
 

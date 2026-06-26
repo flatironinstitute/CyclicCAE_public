@@ -1,4 +1,33 @@
 #!/usr/bin/env python
+
+# Copyright 2026 Vikram K. Mulligan and Andrew Powers.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its contributors
+# may be used to endorse or promote products derived from this software without
+# specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.s
+
 ################################################################################
 ##
 ## @file python/binary_import/BinaryDoFReader.py
@@ -20,6 +49,7 @@ from collections import defaultdict
 import time
 import re
 import datetime
+import argparse
 
 # import torch
 import torch
@@ -63,14 +93,17 @@ class DoFBinaryReader:
                           "bond_angle_main_bool", "bond_angle_side_bool", "bond_length_main_bool", 
                           "bond_length_side_bool", "jump_bool", "energy_bool", "torsion_main_n", 
                           "torsion_side_n", "bond_angle_main_n", "bond_angle_side_n", "bond_length_main_n",
-                          "bond_length_side_n", "jump_n", "energy_n", "nstructs", "bytes_to_skip"] 
+                          "bond_length_side_n", "jump_n", "energy_n", "total_n_dof", "nstructs", "bytes_to_skip"]
 
         # Format to use for unpacking the binary information
-        self.format = [("Q", 8), ("Q", 8), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8)]
+        self.format = [("Q", 8), ("Q", 8), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("?", 1), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8), ("Q", 8)] 
 
         # fill in metadata_info
         print("***EXTRATING HEADER METADATA***")
         self.skip_chunk, self.data_per_sample = self.read_header
+
+        version_number = str(self.metadata_info["filetype_major"]) + "." + str(self.metadata_info["filetype_minor"])
+        assert version_number == "1.3", f"Version Number is incorrect, we have {version_number} instead of 1.3"
 
         # build extract information data format
         self.data_format, self.num_values = self.binary_data_format
@@ -84,6 +117,8 @@ class DoFBinaryReader:
         # build format given header info for grabbing data
         print("***EXTRACTING BINARY RAW DoF VALUES***")
         with open(self.binary_file, 'rb') as f:
+
+            print('Amount of Bytes to Skip:', self.skip_chunk)
             
             # Skip the amount we need to skip
             header = f.read(self.skip_chunk)
@@ -91,6 +126,21 @@ class DoFBinaryReader:
             # grab out the size of the protein
             protein_seq = re.search(r"SEQUENCE:.*?([A-Za-z]+)\n", header.decode('latin-1'))
             self.protein_len = len(protein_seq.group(1))
+
+            # Grab info
+            # skip_amount = 104 # 8mer
+            skip_amount = 2555 # 8mer
+            reference_pose = header.decode('latin-1')[skip_amount:] 
+            print(header.decode('latin-1')[skip_amount:])
+
+            # Encode info
+            test_utf = reference_pose.encode('utf-8')
+            len_utf = len(test_utf)
+
+            # assign info
+            # self.reference_pose = struct.pack(f'I{len_utf}s', len_utf, test_utf)
+            self.reference_pose = test_utf
+            self.ref_pose_len = len_utf
 
             # track sample idx
             tensor_sample = 0
@@ -128,7 +178,7 @@ class DoFBinaryReader:
 
                     # Visual Update on binary read in process
                     if tensor_sample % 10000 == 0:
-                        print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info["nstructs"]} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
+                        print(f"***Sample {tensor_sample} PROCESSED OUT OF {self.metadata_info['nstructs']} SAMPLES. ELAPSED TIME {round(time.time() - dt0, 0)}***")
 
                     # increment sample idx and reset data idx
                     tensor_sample += 1
@@ -138,9 +188,8 @@ class DoFBinaryReader:
         # extract rmsd information if able
         if self.rmsd:
             self.rmsd_tensor = self.rmsd_calc
-
-            
-
+        else:
+            self.rmsd_tensor = None
 
     #################################################################################################################
     #                                        Class Functions
@@ -155,10 +204,15 @@ class DoFBinaryReader:
 
             # extract out params that are useful for the model
             n_param_dict = {k:v for k,v in self.metadata_info.items() if k.endswith("_n")}
+            n_param_dict["filetype_major"] = self.metadata_info["filetype_major"]
+            n_param_dict["filetype_minor"] = self.metadata_info["filetype_minor"]
             n_param_dict["output_size"] = self.num_values
             n_param_dict["input_size"]  = self.num_values
             n_param_dict["normalize"]   = True
             n_param_dict["protein_len"] = self.protein_len
+            n_param_dict["reference_pose"] = self.reference_pose
+            n_param_dict["ref_pose_len"] = self.ref_pose_len
+            n_param_dict["dof_residue_metadata"] = self.metadata_info["dof_residue_metadata"]
             
             # Generate the output file name
             out_file_pre = self.binary_file.split("/")[-1].split(".")[0]
@@ -183,6 +237,7 @@ class DoFBinaryReader:
                     },
                     out_file,
                 )
+        print("DATA TENSOR SHAPE:", self.data_tensor.shape)
         return self.data_tensor
 
     @property
@@ -204,17 +259,47 @@ class DoFBinaryReader:
         # init the amount of values in total that should are available
         avail_vals = 0
 
+        # for 1.3 entry addition
+        format_res = "QQB"
+        bytes_res = 17
+        bytes_skip_dof = 0
+
         # fill in metadata_info
         with open(self.binary_file, 'rb') as bf:
 
             # loop through known header format information
             for i, entry in enumerate(self.format):
 
-                # Pull out specific amount of bytes specified in format entry tuple
-                chunk = bf.read(entry[1])
+                if self.param_set[i] == "total_n_dof":
+                    # Pull out specific amount of bytes specified in format entry tuple
+                    chunk = bf.read(entry[1])
 
-                # Assign the correct decoded value from the header for each of the param options
-                self.metadata_info[self.param_set[i]] = struct.unpack(entry[0], chunk)[0]
+                    # Assign the correct decoded value from the header for each of the param options
+                    dof_n = struct.unpack(entry[0], chunk)[0]
+                    self.metadata_info[self.param_set[i]] = dof_n
+
+                    # generate torch tensor
+                    dof_residue_metadata = torch.zeros((dof_n, 3), dtype=torch.float64)
+
+                    # grab specific 1.3 added info
+                    for dof_i in range(dof_n):
+
+                        #pull specific 
+                        chunk = bf.read(bytes_res)
+
+                        dof_residue_metadata[dof_i, :] = torch.tensor(struct.unpack(format_res, chunk))
+
+                        bytes_skip_dof += bytes_res
+
+                    # Add to metadata and include amount to skip
+                    self.metadata_info["dof_residue_metadata"] = dof_residue_metadata
+                    total_bytes_to_skip += bytes_skip_dof
+                else:
+                    # Pull out specific amount of bytes specified in format entry tuple
+                    chunk = bf.read(entry[1])
+
+                    # Assign the correct decoded value from the header for each of the param options
+                    self.metadata_info[self.param_set[i]] = struct.unpack(entry[0], chunk)[0]
 
                 # total bytes to skip
                 total_bytes_to_skip += entry[1]
@@ -330,13 +415,18 @@ class DoFBinaryReader:
 ##################################################################################################################
 if __name__ == "__main__":
     # If main then test out class
+    p = argparse.ArgumentParser(description="Binary to Pyotrch")
+    p.add_argument("--binary-dof", type=str, help="Define DoF .dat file to convert", required=True)
+    p.add_argument("--binary-rmsd", type=str, help="Define RMSD .dat file to convert", required=False)
+    p.add_argument("--rmsd", action="store_true", help="Compute RMSD")
+    args = p.parse_args()
 
     # explicit file
-    file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/dof_vectors.dat"
-    rmsd_file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/rmsd_matrix.dat"
+    # file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/dof_vectors.dat"
+    # rmsd_file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/rmsd_matrix.dat"
 
     # init class
-    dofclass = DoFBinaryReader(file, rmsd_file, True, True)
+    dofclass = DoFBinaryReader(args.binary_dof, args.binary_rmsd, True, args.rmsd)
 
     # check out tensor
     out = dofclass.extract_tensor

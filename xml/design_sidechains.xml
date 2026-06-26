@@ -1,0 +1,205 @@
+
+<!--
+Copyright 2026 Vikram K. Mulligan and Andrew Powers.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS” AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+-->
+
+<ROSETTASCRIPTS>
+      <SCOREFXNS>
+            <!--ScoreFunction for the known bug with ddG filter that can't have disulfide bonds with it-->
+            <ScoreFunction name="ddGscore" weights="ref2015.wts">
+                  <Reweight scoretype="dslf_fa13" weight="0.0"/>
+            </ScoreFunction>
+            <!--Default score function for non specific functions-->
+            <ScoreFunction name="default" weights="ref2015.wts"/>
+            <!--Specific Score function for the broken InternalHBondFilter Roseeta Filter-->
+            <ScoreFunction name="filter_def" weights="ref2015.wts">
+                  <Set decompose_bb_hb_into_pair_energies="true"/>
+            </ScoreFunction> 
+            <!--Cart scorefunction-->
+            <ScoreFunction name="ref_cart" weights="ref2015_cart.wts">
+                  <Reweight scoretype="hbond_lr_bb" weight="11.7"/>
+                  <Reweight scoretype="hbond_sr_bb" weight="11.7"/>
+                  <Reweight scoretype="chainbreak" weight="10.0"/>
+                  <Reweight scoretype="coordinate_constraint" weight="1"/>
+                  <Reweight scoretype="atom_pair_constraint" weight="1.0"/>
+                  <Reweight scoretype="dihedral_constraint" weight="1.0"/>
+                  <Reweight scoretype="angle_constraint" weight="1.0"/>
+                  <Reweight scoretype="aa_composition" weight="1.0"/>
+            </ScoreFunction>
+            <!--Score with Reweights specifically for the FastDesign Mover-->
+            <ScoreFunction name="designscore" weights="ref2015.wts">
+                  <Reweight scoretype="hbond_lr_bb" weight="11.7"/>
+                  <Reweight scoretype="hbond_sr_bb" weight="11.7"/>
+                  <Reweight scoretype="coordinate_constraint" weight="1"/>
+                  <Reweight scoretype="atom_pair_constraint" weight="1.0"/>
+                  <Reweight scoretype="dihedral_constraint" weight="1.0"/>
+                  <Reweight scoretype="angle_constraint" weight="1.0"/>
+                  <Reweight scoretype="aa_composition" weight="1.0"/>
+                  <Reweight scoretype="chainbreak" weight="10.0"/>
+            </ScoreFunction>
+
+      </SCOREFXNS>
+
+      <RESIDUE_SELECTORS>
+            <!--Chain selectors-->
+            <Chain name="ChainA" chains="A"/>
+            <!--Grab the particular psotive/negative Phi angel residues so we can apply specific 
+            functions to them-->
+            <Phi name="posPhi" select_positive_phi="true"/>
+            <And name="peptide_posPhi" selectors="ChainA,posPhi"/>
+            <Phi name="negPhi" select_positive_phi="false"/>
+            <And name="peptide_negPhi" selectors="ChainA,negPhi"/>
+            <!--Select residue that can be D-pro or L-pro-->
+            <Bin name="select_d_pro_positions" bin="DPRO" bin_params_file="PRO_DPRO"/>
+            <Bin name="select_l_pro_positions" bin="LPRO" bin_params_file="PRO_DPRO"/>
+            <And name="DPRO_all_select" selectors="select_d_pro_positions,peptide_posPhi"/>
+            <And name="PRO_all_select" selectors="select_l_pro_positions,peptide_negPhi"/>
+            <!-- <Logic name="DPRO_select" selector="DPRO_all_select and (not anchor)"/> -->
+            <!-- <Logic name="PRO_select" selector="PRO_all_select and (not anchor)"/> -->
+      </RESIDUE_SELECTORS>
+
+      <TASKOPERATIONS>
+            <!--Read in the resfiles specified outside of Rosetta-->
+            <ReadResfile name="d_res" filename="d_res.txt"
+                  selector="posPhi"/>
+            <ReadResfile name="l_res" filename="l_res.txt"
+                  selector="negPhi"/>
+      </TASKOPERATIONS>
+
+      <MOVE_MAP_FACTORIES>
+            <!--Allow the backbone and Chi of specific parts of Chain A and all of Chain B to move-->
+            <MoveMapFactory name='pepMove'>
+                  <Backbone residue_selector='ChainA' enable="true"/>
+                  <Chi residue_selector="ChainA" enable="true"/>
+            </MoveMapFactory>
+      </MOVE_MAP_FACTORIES>
+
+      <SIMPLE_METRICS>
+      </SIMPLE_METRICS>
+
+      <PACKER_PALETTES>
+            <!--Include DAA for design-->
+            <CustomBaseTypePackerPalette name="palette"
+                  additional_residue_types="DALA,DLEU,DILE,DVAL,DTHR,DSER,DASP,DASN,DGLN,DGLU,DMET,DARG,DHIS,DLYS,DPHE,DTRP,DTYR,DPRO"/>
+      </PACKER_PALETTES>
+
+
+      <MOVERS>
+            <!--Cyclize the Peptide-->
+            <PeptideCyclizeMover name="cyclize" residue_selector="ChainA"/>
+            <!--Pass in constraints to the Design process-->
+            <AddCompositionConstraintMover name="add_comp"
+                  filename="desired_makeup.comp" selector="ChainA"/>
+            <!--Design the peptide-->
+            <FastDesign name="design" scorefxn="designscore" repeats="5"
+                  task_operations="d_res,l_res"
+                  movemap_factory="pepMove" packer_palette="palette"
+                  batch="false" cartesian="false" bondangle="false" bondlength="false"
+                  min_type="lbfgs_armijo_nonmonotone" ramp_down_constraints="false"/>
+            <!--MutateResidue to Pro or DPRO-->
+            <MutateResidue name="pro_mutate" residue_selector="PRO_all_select" new_res="PRO" 
+                  preserve_atom_coords="false"
+                  mutate_self="false"/>
+            <MutateResidue name="dpro_mutate" residue_selector="DPRO_all_select" new_res="DPRO" 
+                  preserve_atom_coords="false"
+                  mutate_self="false"/>
+            <FavorNativeResidue name="favor_native" bonus="3"/>
+            <!--FastRelax the peptide only afterwards-->
+            <FastRelax name="relax" disable_design="1" repeats="3"
+                  ramp_down_constraints="false" scorefxn="ref_cart" cartesian="true"
+                  packer_palette="palette" 
+                  min_type="lbfgs_armijo_nonmonotone">
+                  <MoveMap name="relax_mm">
+                        <Chain number="1" chi="1" bb="1"/>
+                  </MoveMap>
+            </FastRelax>
+
+
+      </MOVERS>
+
+      <FILTERS>
+            <!--Check that our proline position isn't involved in a Hbond-->
+            <HbondsToResidue name="hbond_proline" scorefxn="default"
+            <!--Count the number of proline residues that are present in the peptide-->
+            <ResidueCount name="pro_count" residue_types="PRO,DPR"
+                  min_residue_count="0" residue_selector="ChainA"/>
+            <!--Get rid of any designs that have multiple/many hydrogen bonds to one residue-->
+            <OversaturatedHbondAcceptorFilter name="oversat" scorefxn="default" 
+                  max_allowed_oversaturated="0"
+                  consider_mainchain_only="false"
+                  donor_selector="ChainA"
+                  confidence="0"/>
+            <!--Set design to only output peptides that have 2 lr InternalHBond in the mainchain-->
+            <PeptideInternalHbondsFilter name='h_bonds' backbone_backbone="true" 
+                  confidence="1" hbond_cutoff="2" residue_selector="ChainA"
+                  backbone_sidechain="false" sidechain_sidechain="false" 
+                  exclusion_distance="2" 
+                  scorefxn="filter_def" />
+            <!--Set design to only output peptides that have no gamma turns in the mainchain-->
+            <PeptideInternalHbondsFilter name='gamma' backbone_backbone="true" 
+                  confidence="1" residue_selector="ChainA"
+                  backbone_sidechain="false" sidechain_sidechain="false" 
+                  exclusion_distance="1" hbond_cutoff="0"
+                  scorefxn="filter_def" />
+            <!--Compute the total number of hbonds weighting lr hbonds negatively and gamma hbonds positively-->
+            <CombinedValue name="no_gamma" threshold="0">
+                  <Add filter_name="h_bonds" factor="-1"/>
+                  <Add filter_name="gamma" factor="1"/>
+            </CombinedValue>
+            <!--Compute sasa of interface: total, hydrophobic, and polar-->
+            <Sasa name="interface_buried_sasa" confidence="0"/>
+            <Sasa name="interface_hydrophobic_sasa" confidence="0" hydrophobic="true"/>
+            <Sasa name="interface_polar_sasa" confidence="0" polar="true"/>
+            <!--ddG w/ w/o repack/min default score compute binding energy-->
+            <!-- <Ddg name="ddg" threshold="-1" -->
+            <!-- repeats="5" repack="1" confidence="0" -->
+            <!-- scorefxn="ddGscore"/> -->
+            <!-- <Ddg name="ddg_norepack" threshold="-1" -->
+            <!-- repack="0" confidence="0" -->
+            <!-- scorefxn="ddGscore"/>  -->
+            <!-- <ddG name="ddg" scorefxn="ddGscore" chain_num="1" repack_unbound="false"/> -->
+            <!--Get the score for chain B without being washed out by the main Protien/Chain A-->
+            <ResidueSetChainEnergy name="pep_score" scorefxn="default" score_type="total_score"
+                  chain="1" threshold="20" resnums="1,2,3,4,5,6,7,8"/>
+            <!--RMSD of Pose-->
+            <Rmsd name="rmsd" confidence="0"
+                  threshold="1" chains="1"/>
+            <!--Get an RMSD value-->
+            <MoveBeforeFilter name="rmsd_mover" mover="relax"
+                  filter="rmsd" confidence="0"/>
+      </FILTERS>
+
+      <PROTOCOLS>
+            <Add mover="cyclize"/>
+            <Add mover="add_comp"/>
+            <Add mover="pro_mutate"/>
+            <Add mover="dpro_mutate"/>
+            <Add mover="favor_native"/>
+            <Add mover="design"/>
+            <Add mover="relax"/>
+
+            <!-- <Add filter="no_gamma"/> -->
+            <Add filter="oversat"/>
+            <Add filter="pep_score"/>
+            <!-- <Add filter="ddg"/> -->
+            <!-- <Add filter="ddg_norepack"/> -->
+            <!-- <Add filter="interface_buried_sasa"/> -->
+            <!-- <Add filter="interface_hydrophobic_sasa"/> -->
+            <!-- <Add filter="interface_polar_sasa"/> -->
+            <Add filter="pro_count"/>
+            <Add filter="rmsd_mover"/>
+      </PROTOCOLS>
+
+      <OUTPUT scorefxn="default"/>
+
+</ROSETTASCRIPTS>
