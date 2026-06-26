@@ -10,8 +10,20 @@ Vikram K. Mulligan (vmulligan@flatironinstitute.org)
 ![](./pictures/backbones.gif)
 
 ## Description
-Given an anchor, failed design, or motif allow the heterochiral design/redesign of backbone/scaffold for macrocycles.
-Structure minimzation and Markov Chain Monte Carlo (MCMC) structure search.
+
+CyclicCAE is a conformational autoencoder that represents the full set of conformations accessible to a peptide macrocycle backbone of a given size as an N-dimensional latent space, and which permits rapid sampling from these conformations, denoising to these conformations, or Monte Carlo searches or energy minimization in the latent space.
+
+## Licence
+
+The CyclicCAE repository is made publicly avialable under a free and open-source BSD 3-clause licence.  Please see the `LICENCE` file for details.
+
+## Citing
+
+If you make use of this repository or apply or build on this work, please cite:
+
+```
+Andrew Powers, P. Douglas Renfrew, Parisa Hosseinzadeh, and Vikram Khipple Mulligan.  (2026.) CyclicCAE: A Conformational Autoencoder for Efficient Heterochiral Macrocyclic Backbone Sampling. Manuscript in preparation.
+```
 
 ## Inference
 
