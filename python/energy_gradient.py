@@ -1468,7 +1468,7 @@ class EnergyPath:
 if __name__ == "__main__":
     start_time = time.perf_counter()
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--steps", type=int, default=1000, help="Search Steps Max")
+    p.add_argument("--steps", type=int, default=10, help="Gradient Descent Number Of Steps. Energy Minimization always happens, unless you specify this as 1.")
     p.add_argument("--prefix-outfile", type=str, default="test", help="PDB/SilentFile prefix")
     p.add_argument("--silentfile", action="store_true", help="Save Model outputs in a SilentFile format \
        if not specified then individual PDBs are produced.")
@@ -1496,15 +1496,15 @@ if __name__ == "__main__":
     p.add_argument("--lambda-partial", type=float, default=1.0, help="Reweight Partial Freezing")
     p.add_argument("--energy-search", action="store_true", help="Gradient Search on dE/d(latent space)")
     p.add_argument("--mcmc", action="store_true", help="Markov Chain Monte Carlo Metropolis Hastings Search, you do not need to set this with --inpaint")
-    p.add_argument("--batch-size", type=int, default=10, help="Used with mcmc. Set number of trajectories")
+    p.add_argument("--batch-size", type=int, default=10000, help="Used with mcmc. Set number of trajectories")
     p.add_argument("--sigma", type=float, default=0.01, help="Used with mcmc. Set sigma of normal movement to add to latent point")
     p.add_argument("--temperature", type=float, default=1, help="Used with mcmc. Set Temperature")
     p.add_argument("--initial-steps", type=int, default=0, help="Used with mcmc. Set initial steps to accept no matter what")
     p.add_argument("--ramp-down", type=int, default=0, help="Used with mcmc. Steps to go from temperature to 1")
     p.add_argument("--retain-structure", action="store_true", help="Used with mcmc. Walks path closer to input structure")
     p.add_argument("--inpaint", action="store_true", help="Provide Frozen Residues and generate scaffolds")
-    p.add_argument("--inpaint-dist", type=float, default=300.0, help="Cutoff distance (p1norm) to consider a scaffold a success")
-    p.add_argument("--scaffold-num", type=int, default=30, help="Number of Inpainted Scaffolds to generate")
+    p.add_argument("--inpaint-dist", type=float, default=0.1, help="Cutoff distance (p1norm) to consider a scaffold a success")
+    p.add_argument("--scaffold-num", type=int, default=100, help="Number of Inpainted Scaffolds to generate")
     p.add_argument("--sgd-optim", action="store_true", help="Use SGD optimizer with momentum 0.9. AdamW is used by default")
     p.add_argument("--gpu", action="store_true", help="Use a GPU for inference")
     p.add_argument("--termbond-test", action="store_true", help="Run Terminal Bond Constraint Generation")
@@ -1517,8 +1517,6 @@ if __name__ == "__main__":
     p.add_argument("--interface-cutoff", type=float, default=20.0, help="Metric for accepting a not clashing peptide [10.0 for compact pockets, 20.0 for others] ")
     p.add_argument("--treat-input-binder-as-cyclic", action="store_true", help="Apply Rosetta cyclic constraints to our Motif Chain (--peptide-chain) \
             Only specify this if the Motif Chain is a N-C cyclic peptide.")
-#     p.add_argument("--peptide-chain", type=int, default=2, help="Chain Index (1-index) that contains our motif of interest. The model \
-#             expects input PDBS to have two chains currently (target & binder/peptide.)")
     p.add_argument("--peptide-chain", type=str, default="B", help="Chain String that contains our motif of interest. The model \
             expects input PDBS to have two chains currently (target & binder/peptide.)")
     p.add_argument("--interface-distance-cutoff", type=float, default=15.0, help="Atoms within this distance cutoff of the target will be considered \
@@ -1529,7 +1527,7 @@ if __name__ == "__main__":
                         Then for the last 0.50 switches to full pocket context (all heavy atoms). If not set then uses passed pocket specification throughout")
     p.add_argument("--complex-output", action="store_true", help="Output scaffolds in complex with target structure")
     p.add_argument("--exclude-atom-from-dof", nargs="+", default=[], type=str, help="Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N,phi(0), Ca(1), C,psi(2), O(3), NH(4), Omega: 6) \
-            as the numbering. (e.g. --exclude-atom-from-dof 1:0 1:3)")
+            as the numbering. (e.g. --exclude-atom-from-dof 1:0 1:3) (STILL IN DEVELOPMENT)")
     p.add_argument("--energy-weight", default=1.0, type=float, help="Energy weight term to be used during gradient descent energy minimization.")
     p.add_argument("--latent-space-exploration", action="store_true", help="This is only used to extract latent space information, so we can plot and extract metadata")
     p.add_argument("--latent-space-training-dataset", type=str, help="If using --latent-space-exploration, then pass this as well. This should be an already extracted .pt dataset used in training")
@@ -1545,7 +1543,6 @@ if __name__ == "__main__":
         cutoff = args.cutoff, 
         cutoff_true = args.cutoff_true,
         partial_optimization = args.partial_optimization,
-#         freeze_residues = torch.tensor(args.freeze_residues) - 1 if args.inpaint else None,
         freeze_residues = torch.tensor(args.freeze_residues) - 1 if args.freeze_residues else None,
         freeze_torsion = args.freeze_torsion,
         freeze_bond_angle = args.freeze_bond_angle,
@@ -1627,16 +1624,12 @@ if __name__ == "__main__":
         #### information for inpainting and gradient-marching
         # All atoms are Extracted within cutoff distance
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=True, peptide_chain=args.peptide_chain)
-#         atomdict = extract_pdb_xyz(args.pdb_input, full=True, peptide_chain = args.peptide_chain)
-#         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         interface_full_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
                           "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
         # Cb Pocket Context Extract
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain=args.peptide_chain)
-#         atomdict = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain = args.peptide_chain)
-#         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
@@ -1688,8 +1681,6 @@ if __name__ == "__main__":
     elif args.extract_minimize_input:
         # Cb Pocket Context Extract
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain=args.peptide_chain)
-#         atomdict = extract_pdb_xyz(args.pdb_input, full=False)
-#         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide, color_target = gen_xyz_tensor(atomdict, args.peptide_chain)
         interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
         interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
                           "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),

@@ -1,16 +1,29 @@
-# Continuous Structural Latent Space for Macrocyclic Peptide Backbone Design
+# CyclicCAE: A Conformational Autoencoder Producing a Continuous Structural Latent Space for Macrocyclic Peptide Backbone Design
 
 ## Authors
 
-Vikram K. Mulligan (vmulligan@flatironinstitute.org)
-
 Andrew Powers (apowers@flatironinstitute.org)
+P. Douglas Renfrew (pdrenfrew@flatironinstitute.org)
+Parisa Hosseinzadeh (parisah@uoregon.edu)
+Vikram K. Mulligan (vmulligan@flatironinstitute.org)
 
 ![](./pictures/backbones.gif)
 
 ## Description
-Given an anchor, failed design, or motif allow the heterochiral design/redesign of backbone/scaffold for macrocycles.
-Structure minimzation and Markov Chain Monte Carlo (MCMC) structure search.
+
+CyclicCAE is a conformational autoencoder that represents the full set of conformations accessible to a peptide macrocycle backbone of a given size as an N-dimensional latent space, and which permits rapid sampling from these conformations, denoising to these conformations, or Monte Carlo searches or energy minimization in the latent space.
+
+## Licence
+
+The CyclicCAE repository is made publicly avialable under a free and open-source BSD 3-clause licence.  Please see the `LICENCE` file for details.
+
+## Citing
+
+If you make use of this repository or apply or build on this work, please cite:
+
+```
+Andrew Powers, P. Douglas Renfrew, Parisa Hosseinzadeh, and Vikram Khipple Mulligan.  (2026.) CyclicCAE: A Conformational Autoencoder for Efficient Heterochiral Macrocyclic Backbone Sampling. Manuscript in preparation.
+```
 
 ## Inference
 
@@ -23,30 +36,27 @@ You can perform inference for any of the methods below:
 - Energy Minimization
     `--energy-search`
 
-The general approach for running inference is as such:
-```
-# base run
-python ./python/energy_gradient.py --weights-load <path/to/weights> --dataset <binary/file/of/input/dofs> --<method> --<extra method specific params>
-```
+An example script of how to run motif-inpainting can be found in: `python/submit_ndm1_generation.sh`
+You will need to fetch the 6XBF PDB and rename it to 6xbf_nochanges.pdb or rename the input PDB name.
 
 All of the method specifc params are shown here:
-
 ```
 usage: energy_gradient.py [-h] [--steps STEPS] [--prefix-outfile PREFIX_OUTFILE] [--silentfile] [--score-outputs] [--apply-minmover-outputs]
-                          [--desired-motif-start-position DESIRED_MOTIF_START_POSITION] [--output-path OUTPUT_PATH] [--extract-minimize-input] [--weights-load WEIGHTS_LOAD]
-                          [--out-size OUT_SIZE] [--lr LR] [--cutoff-true] [--cutoff CUTOFF] [--latent-dim LATENT_DIM] [--partial-optimization]
-                          [--freeze-residues FREEZE_RESIDUES [FREEZE_RESIDUES ...]] [--l-homochiral] [--freeze-torsion] [--freeze-bond-angle] [--freeze-bond-length]
-                          [--lambda-partial LAMBDA_PARTIAL] [--energy-search] [--mcmc] [--batch-size BATCH_SIZE] [--sigma SIGMA] [--temperature TEMPERATURE]
-                          [--initial-steps INITIAL_STEPS] [--ramp-down RAMP_DOWN] [--retain-structure] [--inpaint] [--inpaint-dist INPAINT_DIST] [--scaffold-num SCAFFOLD_NUM]
-                          [--sgd-optim] [--gpu] [--termbond-test] [--minimize-steps MINIMIZE_STEPS] [--mcmc-steps MCMC_STEPS] [--mcmc-paths MCMC_PATHS] [--pdb-input PDB_INPUT]
-                          [--random-sample] [--skip-individual] [--interface-cutoff INTERFACE_CUTOFF] [--treat-input-binder-as-cyclic] [--peptide-chain PEPTIDE_CHAIN]
+                          [--desired-motif-start-position DESIRED_MOTIF_START_POSITION] [--output-path OUTPUT_PATH] [--extract-minimize-input]
+                          [--weights-load WEIGHTS_LOAD] [--out-size OUT_SIZE] [--lr LR] [--cutoff-true] [--cutoff CUTOFF] [--latent-dim LATENT_DIM]
+                          [--partial-optimization] [--freeze-residues FREEZE_RESIDUES [FREEZE_RESIDUES ...]] [--l-homochiral] [--freeze-torsion]
+                          [--freeze-bond-angle] [--freeze-bond-length] [--lambda-partial LAMBDA_PARTIAL] [--energy-search] [--mcmc] [--batch-size BATCH_SIZE]
+                          [--sigma SIGMA] [--temperature TEMPERATURE] [--initial-steps INITIAL_STEPS] [--ramp-down RAMP_DOWN] [--retain-structure] [--inpaint]
+                          [--inpaint-dist INPAINT_DIST] [--scaffold-num SCAFFOLD_NUM] [--sgd-optim] [--gpu] [--termbond-test] [--minimize-steps MINIMIZE_STEPS]
+                          [--mcmc-steps MCMC_STEPS] [--mcmc-paths MCMC_PATHS] [--pdb-input PDB_INPUT] [--random-sample] [--skip-individual]
+                          [--interface-cutoff INTERFACE_CUTOFF] [--treat-input-binder-as-cyclic] [--peptide-chain PEPTIDE_CHAIN]
                           [--interface-distance-cutoff INTERFACE_DISTANCE_CUTOFF] [--fullpocket-minimize] [--ramp-interface-constraint] [--complex-output]
                           [--exclude-atom-from-dof EXCLUDE_ATOM_FROM_DOF [EXCLUDE_ATOM_FROM_DOF ...]] [--energy-weight ENERGY_WEIGHT] [--latent-space-exploration]
                           [--latent-space-training-dataset LATENT_SPACE_TRAINING_DATASET]
 
 options:
   -h, --help            show this help message and exit
-  --steps STEPS         Search Steps Max (default: 1000)
+  --steps STEPS         Gradient Descent Number Of Steps. Energy Minimization always happens, unless you specify this as 1. (default: 10)
   --prefix-outfile PREFIX_OUTFILE
                         PDB/SilentFile prefix (default: test)
   --silentfile          Save Model outputs in a SilentFile format if not specified then individual PDBs are produced. (default: False)
@@ -54,7 +64,8 @@ options:
   --apply-minmover-outputs
                         Apply the MinMover with ref2015 score to our threaded poses. (default: False)
   --desired-motif-start-position DESIRED_MOTIF_START_POSITION
-                        Specifies where the Moitf will start on CyclicCAE outputs. We suggest the middle of the peptide, so for an 8mer output, resi 4 for a singular AA. (default: 4)
+                        Specifies where the Moitf will start on CyclicCAE outputs. We suggest the middle of the peptide, so for an 8mer output, resi 4 for a
+                        singular AA. (default: 4)
   --output-path OUTPUT_PATH
                         Determines location PDBs/SilentFile are saved. (default: ./)
   --extract-minimize-input
@@ -70,7 +81,8 @@ options:
   --partial-optimization
                         Apply partial optimization to a structure (default: False)
   --freeze-residues FREEZE_RESIDUES [FREEZE_RESIDUES ...]
-                        Used wth partial-optimization. If no sub freeze flags specified all are frozen Specify residues in a whitespace manner to freeze (e.g. 1 2 3) (default: None)
+                        Used wth partial-optimization. If no sub freeze flags specified all are frozen Specify residues in a whitespace manner to freeze (e.g. 1 2
+                        3) (default: None)
   --l-homochiral        Generate only L-homochiral outputs (default: False)
   --freeze-torsion      Use with partial-optimization (default: False)
   --freeze-bond-angle   Use with partial-optimization (default: False)
@@ -80,7 +92,7 @@ options:
   --energy-search       Gradient Search on dE/d(latent space) (default: False)
   --mcmc                Markov Chain Monte Carlo Metropolis Hastings Search, you do not need to set this with --inpaint (default: False)
   --batch-size BATCH_SIZE
-                        Used with mcmc. Set number of trajectories (default: 10)
+                        Used with mcmc. Set number of trajectories (default: 10000)
   --sigma SIGMA         Used with mcmc. Set sigma of normal movement to add to latent point (default: 0.01)
   --temperature TEMPERATURE
                         Used with mcmc. Set Temperature (default: 1)
@@ -91,19 +103,20 @@ options:
   --retain-structure    Used with mcmc. Walks path closer to input structure (default: False)
   --inpaint             Provide Frozen Residues and generate scaffolds (default: False)
   --inpaint-dist INPAINT_DIST
-                        Cutoff distance (p1norm) to consider a scaffold a success (default: 300.0)
+                        Cutoff distance (p1norm) to consider a scaffold a success (default: 0.1)
   --scaffold-num SCAFFOLD_NUM
-                        Number of Inpainted Scaffolds to generate (default: 30)
+                        Number of Inpainted Scaffolds to generate (default: 100)
   --sgd-optim           Use SGD optimizer with momentum 0.9. AdamW is used by default (default: False)
   --gpu                 Use a GPU for inference (default: False)
   --termbond-test       Run Terminal Bond Constraint Generation (default: False)
   --minimize-steps MINIMIZE_STEPS
                         Number of energy minimization steps to take when using --minimize-mcmc (default: 1000)
   --mcmc-steps MCMC_STEPS
-                        Number of MCMC steps (t), this needs to be passed and > 0 to work if you want MCMC search after finding scaffolds with --inpaint. (default: 0)
+                        Number of MCMC steps (t), this needs to be passed and > 0 to work if you want MCMC search after finding scaffolds with --inpaint. (default:
+                        0)
   --mcmc-paths MCMC_PATHS
-                        Number of MCMC Paths that use B_i as a starting point. This generates (B) -> (B, mcmc_paths) number paths. Only the lowest energy path for a B_i is selected at
-                        the end of MCMC. (default: 10)
+                        Number of MCMC Paths that use B_i as a starting point. This generates (B) -> (B, mcmc_paths) number paths. Only the lowest energy path for
+                        a B_i is selected at the end of MCMC. (default: 10)
   --pdb-input PDB_INPUT
                         PDB input that has our target proteins and our motif reference. (default: None)
   --random-sample       Sample latent space randomly, without a reference. (default: False)
@@ -111,27 +124,30 @@ options:
   --interface-cutoff INTERFACE_CUTOFF
                         Metric for accepting a not clashing peptide [10.0 for compact pockets, 20.0 for others] (default: 20.0)
   --treat-input-binder-as-cyclic
-                        Apply Rosetta cyclic constraints to our Motif Chain (--peptide-chain) Only specify this if the Motif Chain is a N-C cyclic peptide. (default: False)
+                        Apply Rosetta cyclic constraints to our Motif Chain (--peptide-chain) Only specify this if the Motif Chain is a N-C cyclic peptide.
+                        (default: False)
   --peptide-chain PEPTIDE_CHAIN
-                        Chain String that contains our motif of interest. The model expects input PDBS to have two chains currently (target & binder/peptide.) (default: B)
+                        Chain String that contains our motif of interest. The model expects input PDBS to have two chains currently (target & binder/peptide.)
+                        (default: B)
   --interface-distance-cutoff INTERFACE_DISTANCE_CUTOFF
                         Atoms within this distance cutoff of the target will be considered when gradient-marching peptide (default: 15.0)
   --fullpocket-minimize
-                        Specify if pocket context takes into account all non-hydrgoen bb and side-chain atoms or only bb-heavy + Cb atoms (which is default if you don't specify this
-                        flag) (default: False)
+                        Specify if pocket context takes into account all non-hydrgoen bb and side-chain atoms or only bb-heavy + Cb atoms (which is default if you
+                        don't specify this flag) (default: False)
   --ramp-interface-constraint
-                        This sets the first 0.50 of the energy minimize steps to bb-heavy + Cb pocket context. Then for the last 0.50 switches to full pocket context (all heavy atoms).
-                        If not set then uses passed pocket specification throughout (default: False)
+                        This sets the first 0.50 of the energy minimize steps to bb-heavy + Cb pocket context. Then for the last 0.50 switches to full pocket
+                        context (all heavy atoms). If not set then uses passed pocket specification throughout (default: False)
   --complex-output      Output scaffolds in complex with target structure (default: False)
   --exclude-atom-from-dof EXCLUDE_ATOM_FROM_DOF [EXCLUDE_ATOM_FROM_DOF ...]
-                        Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N,phi(0), Ca(1), C,psi(2), O(3), NH(4), Omega: 6) as the
-                        numbering. (e.g. --exclude-atom-from-dof 1:0 1:3) (default: [])
+                        Exclude an atom's DoFs from consideration by passing in the residue index number and atom number with (N,phi(0), Ca(1), C,psi(2), O(3),
+                        NH(4), Omega: 6) as the numbering. (e.g. --exclude-atom-from-dof 1:0 1:3) (STILL IN DEVELOPMENT) (default: [])
   --energy-weight ENERGY_WEIGHT
                         Energy weight term to be used during gradient descent energy minimization. (default: 1.0)
   --latent-space-exploration
                         This is only used to extract latent space information, so we can plot and extract metadata (default: False)
   --latent-space-training-dataset LATENT_SPACE_TRAINING_DATASET
-                        If using --latent-space-exploration, then pass this as well. This should be an already extracted .pt dataset used in training (default: None)
+                        If using --latent-space-exploration, then pass this as well. This should be an already extracted .pt dataset used in training (default:
+                        None)
 ```
 
 
@@ -200,4 +216,20 @@ options:
                         Works in conjunction with shuffle-samples
   --shards              If the dataset is large indicate this, and we will search for the 'shards' files in the same location.
 ```
+
+## Rosetta Patch
+
+Although CyclicCAE is a standalone neural network, various Rosetta modifications were needed to facilitate the generation of training data, or the visualization of CyclicCAE-generated structures.  These are made available as a patch for Rosetta 3.15.  This has been tested with Rosetta Git SHA1 `bbb6a2d27c70be05b2fb2409f3920b5894967d60`.
+
+The patch is `rosetta_patch/cycliccae_patch_for_rosetta.txt` in this repository.  To apply the patch, copy it to the `Rosetta/main` directory.  Then navigate to this directory and run this command:
+
+```
+patch -p 1 -i cycliccae_patch_for_rosetta.txt
+```
+
+The effect of the patch is to add the `extract_dof_vectors` application used for generating training data, the `dof_vectors_to_poses` application used to visualize CyclicCAE output, and the `align_ml_backbones_to_original_target` application used to place CyclicCAE-generated backbones in a binding pocket on a target during binder design.  The support class `protocols::conformational_autoencoder::DoFSummary` is also added by the patch.
+
+The patch also makes modifications to `Rosetta/main/source/src/basic/options/options_rosetta.py` to add the `conformational_autoencoder` options group, which contains commandline options for the `extract_dof_vectors` and `dof_vectors_to_poses` applications.  It also makes small adjustments to the `core::import_pose::pose_stream::PDBPoseInputStream` class, defined in `Rosetta/main/source/src/core/import_pose/pose_stream/PDBPoseInputStream.cc`, and to the `core::import_pose::pose_stream::SilentFilePoseInputStream` class, defined in `Rosetta/main/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.cc`, to permit more efficient processing of many structures.
+
+This patch is released under a free and open-source BSD 3-clause licence.
 
