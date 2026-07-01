@@ -327,15 +327,12 @@ class EnergyPath:
         :chain: The cyclic peptide chain
         """
         extracted_dofs, motif_dofs = dofsummary.extract_all_dofs_from_pdb(pdb_input, chain)
-        print(extracted_dofs.shape)
         out, _, latent_points, _ = self.model.forward( extracted_dofs, noise=False )
         out = out.detach().clone()
         torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
         bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
         preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
         self.dof_traj = preds.unsqueeze(0)
-        print(latent_points.shape)
-        print(self.dof_traj.shape)
         return motif_dofs, latent_points.detach().clone()
 
     def calc_angles(self, preds: torch.Tensor):
@@ -728,10 +725,6 @@ class EnergyPath:
             if interface_dict != None:
                 peptide_nonhydrogen_mask = interface_dict["epsilon_peptide"] != 0.901681
                 if not self.contiguous:
-                    print(self.motif)
-                    print(self.motif_input)
-                    print(self.regions_atoms)
-                    print(self.regions_atoms[0])
                     aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
 #                                                           motif_input_ = self.regions_atoms[0],
                                                           motif_input = self.regions_atoms[0].unsqueeze(0),
@@ -1145,7 +1138,6 @@ class EnergyPath:
         redo = 0
         # Calculate motif numbering
         if self.freeze_residues != None:
-            print("MATCH RESK MASK:", self.match_res_mask)
             self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
                 torch.zeros((1,1), dtype=torch.long) if self.extract_minimize_input else self.match_res_mask,
                 self.PARAMS["protein_len"],
@@ -1161,7 +1153,6 @@ class EnergyPath:
 #                 self.freeze_residues,
 #                 True,
 #             )
-            print(self.motif, self.motif_input)
 
         while minimize_still: 
             original_point = self.start_latent_point.clone()
@@ -1233,10 +1224,6 @@ class EnergyPath:
                         ), dim=-1,
                     )
                     # Now compute which residues match our motif
-                    print(real_t_sin.shape)
-                    print(torsion_sin.shape)
-                    print(real_ba_sin.shape)
-                    print(bond_angle_sin.shape)
                     harmonic_loss, _ = discontig_funcs.harmonic_diff_inpaint(
                             real_t_sin,
                             real_t_cos,
@@ -1295,9 +1282,6 @@ class EnergyPath:
                     self.lambda_2 = 0.0
                     term_bond_coeff = 0.0
                     peptide_nonhydrogen_mask = interface_cb_dict["epsilon_peptide"] != 0.901681
-                    print("energy_steps ---> extract_minimize_input:", coords.shape, interface_cb_dict["peptide"].shape)
-                    print(torch.arange( interface_cb_dict["peptide"].size(0) ) )
-                    print(torch.arange( coords.size(1) ) )
                     aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_cb_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                             motif_output = self.motif,
                                                             motif_input = self.motif_input,

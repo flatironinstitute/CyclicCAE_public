@@ -1,7 +1,6 @@
 #!/bin/bash
 # Example script to generte 100 backbones given NDMi-1G
 
-#  --silentfile \
 python energy_gradient.py --steps 10 \
   --prefix-outfile ndm1_example \
   --output-path ndm1_example \
@@ -13,6 +12,7 @@ python energy_gradient.py --steps 10 \
   --inpaint-dist 0.1 \
   --scaffold-num 100 \
   --pdb-input ../tests/6xbf_nochanges.pdb \
+  --silentfile \
   --skip-individual \
   --peptide-chain I \
   --complex-output
