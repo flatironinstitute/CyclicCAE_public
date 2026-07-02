@@ -1,0 +1,3809 @@
+diff --git a/source/src/apps.src.settings b/source/src/apps.src.settings
+index fbd0326dfad..1f3d21c5093 100644
+--- a/source/src/apps.src.settings
++++ b/source/src/apps.src.settings
+@@ -136,7 +136,10 @@ sources = {
+ 		"coupled_moves",
+ 	],
+ 	"public/cyclic_peptide": [
++		"align_ml_backbones_to_original_target",
+ 		"count_cycpep_sequences",
++		"dof_vectors_to_poses",
++		"extract_dof_vectors",
+ 		"simple_cycpep_predict",
+ 	],
+ 	"public/darc": [
+diff --git a/source/src/apps/public/cyclic_peptide/align_ml_backbones_to_original_target.cc b/source/src/apps/public/cyclic_peptide/align_ml_backbones_to_original_target.cc
+new file mode 100644
+index 00000000000..2c418b39136
+--- /dev/null
++++ b/source/src/apps/public/cyclic_peptide/align_ml_backbones_to_original_target.cc
+@@ -0,0 +1,591 @@
++// -*- mode:c++;tab-width:2;indent-tabs-mode:t;show-trailing-whitespace:t;rm-trailing-spaces:t -*-
++// vi: set ts=2 noet:
++//
++// Copyright 2026 Vikram K. Mulligan
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions are met:
++//
++// 1. Redistributions of source code must retain the above copyright notice,
++// this list of conditions and the following disclaimer.
++//
++// 2. Redistributions in binary form must reproduce the above copyright notice,
++// this list of conditions and the following disclaimer in the documentation
++// and/or other materials provided with the distribution.
++//
++// 3. Neither the name of the copyright holder nor the names of its
++// contributors may be used to endorse or promote products derived from this
++// software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
++// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++// THE POSSIBILITY OF SUCH DAMAGE.
++
++/// @file apps/public/cyclic_peptide/align_ml_backbones_to_original_target.cc
++/// @brief Process peptide macrocycle conformations predicted by Andrew Powers' neural nets, 
++/// and align them to Ekaterina Maximova's initial designs, restoring the sequence of the part
++/// in contact with thet target.
++/// @note This is a companion application to extract_dof_vectors.  This file is
++/// released under a BSD 3-clause licence, unlike Rosetta's source code.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org)
++
++// Devel headers
++#include <devel/init.hh>
++
++// Utility headers
++#include <utility/excn/Exceptions.hh>
++#include <utility/options/OptionCollection.hh>
++#include <utility/file/file_sys_util.hh>
++#include <utility/io/ozstream.hh>
++
++// Basic headers
++#include <basic/Tracer.hh>
++#include <basic/options/keys/in.OptionKeys.gen.hh>
++#include <basic/options/keys/out.OptionKeys.gen.hh>
++#include <basic/options/option.hh>
++#include <basic/options/keys/OptionKeys.hh>
++#include <basic/options/option_macros.hh>
++#include <basic/citation_manager/CitationManager.hh>
++#include <basic/citation_manager/UnpublishedModuleInfo.hh>
++
++// Core headers
++#include <core/pose/Pose.hh>
++#include <core/import_pose/pose_stream/util.hh>
++#include <core/import_pose/pose_stream/MetaPoseInputStream.hh>
++#include <core/import_pose/pose_stream/PDBPoseInputStream.hh>
++#include <core/import_pose/import_pose.hh>
++#include <core/scoring/rms_util.hh>
++#include <core/id/AtomID.hh>
++#include <core/id/DOF_ID.hh>
++#include <core/conformation/Residue.hh>
++#include <core/io/silent/BinarySilentStruct.hh>
++#include <core/io/silent/SilentFileOptions.hh>
++#include <core/select/residue_selector/ResidueIndexSelector.hh>
++#include <core/pose/subpose_manipulation_util.hh>
++
++// Protocols headers
++#include <protocols/simple_moves/ModifyVariantTypeMover.hh>
++#include <protocols/simple_moves/DeclareBond.hh>
++#include <protocols/simple_moves/MutateResidue.hh>
++
++// C++ headers
++#include <set>
++#include <map>
++
++static basic::Tracer TR("apps.public.cyclic_peptide.align_ml_backbones_to_original_target");
++
++
++OPT_KEY( IntegerVector, frozen_positions )
++OPT_KEY( Integer, peptide_chain_in_native )
++OPT_KEY( Boolean, dump_intermediate_pdbs )
++
++/// @brief Indicate which commandline flags are relevant to this application.
++void register_options() {
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	utility::vector1< int > const empty_list{};
++	NEW_OPT( frozen_positions, "A list of peptide positons (indexed for the peptide in isolation) that are considered frozen -- i.e. fixed to the target.  These are used for alignment.  Required input.", empty_list );
++	NEW_OPT( peptide_chain_in_native, "The chain of the peptide in the native structure.  The default value, 0, means that the last chain will be assumed to be the peptide.", 0 );
++	NEW_OPT( dump_intermediate_pdbs, "If true, PDB files for intermediate states are dumped.  Only intended for debugging; false by default.", false );
++
++	option.add_relevant( in::file::s );
++	option.add_relevant( in::file::silent );
++	option.add_relevant( in::file::l );
++	option.add_relevant( in::file::native );
++	option.add_relevant( out::prefix );
++	option.add_relevant( out::file::o );
++	option.add_relevant( out::file::silent );
++
++}
++
++/// @brief Register this app with the citation manager.
++void
++register_with_citation_manager() {
++	using namespace basic::citation_manager;
++
++	CitationManager::get_instance()->add_citation(
++		utility::pointer::make_shared< UnpublishedModuleInfo >(
++			"align_ml_backbones_to_original_target", CitedModuleType::Application,
++			"Vikram K. Mulligan", "Biomolecular Design Group, Center for "
++			"Computational Biology, Flatiron Institute",
++			"vmulligan@flatironinstitute.org",
++			"Wrote the align_ml_backbones_to_original_target application."
++		)
++	);
++}
++
++/// @brief Write out a message that indicates how to use this application.
++std::string
++write_usage_text() {
++	return "align_ml_backbones_to_original_target application usage:\n"
++		"\n"
++		"align_ml_backbones_to_original_target.<build>.<os compiler buildmode> /\n"
++		"\t-in:file:native <original peptide or peptide/target complex> /\n"
++		"\t-peptide_chain_in_native <the index of the peptide chain in the native structure> /\n"
++		"\t-in:file:s/-in:file:l/-in:file:silent <new peptide backbones> /\n"
++		"\t-frozen_positions <whitespace-separated indices of positions to align, based on peptide indices starting from 1> /\n"
++		"\t-out:prefix <prefix of output files> /\n"
++		"\t-out:file:o <output pdb file name, if using pdb output> /\n"
++		"\t-out:file:silent <output silent file name, if using silent file output> /\n"
++		"\t-dump_intermediate_pdbs <true if and only if you want debugging output; can be omitted otherwise> /\n"
++		"\n"
++		"This application performs the following steps:\n"
++		"\t1. The native structure is loaded.\n"
++		"\t2. One by one, each new backbone is loaded.\n"
++		"\t3. Frozen positions in the new backbone are mutated to the corresponding residue types from the old.\n"
++		"\t4. The new backbone is aligned to the old, based on all heavyatoms of the frozen residues.\n"
++		"\t5. The old peptide is deleted, and replaced with the new.\n";
++}
++
++/// @brief Check whether the user has set reasonable application options.
++void
++check_options(
++	basic::options::OptionCollection const & opts
++) {
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	std::stringstream problem_ss;
++	bool something_wrong(false);
++
++	if( !opts[ in::file::native ].user() ) {
++		something_wrong = true;
++		problem_ss << "\t- The user must provide an input structure with the -in:file:native option.  This is the original peptide (or peptide-target complex) structure.\n";
++	}
++	if( !( opts[ in::file::s ].user() || opts[ in::file::silent ].user() || opts[ in::file::l ].user() ) ) {
++		something_wrong = true;
++		problem_ss << "\t- The user must provide one or more input backbones with some combination of the -in:file:s, -in:file:silent, or -in:file:l options.  These are the predicted backbone conformations from the conformational autoencoder.\n";
++	}
++	if( !opts[frozen_positions].user() || opts[frozen_positions]().empty() ) {
++		something_wrong = true;
++		problem_ss << "\t- The user must provide a non-empty list of peptide positions to use for aligning hte predicted backbones to the native structure with the -frozen_positions option.  These should be numbered based on peptide numbering.\n";
++	} else {
++		utility::vector1< int > fpos( opts[frozen_positions]() );
++		std::set< int > positions_seen;
++		std::set< int > duplicate_positions;
++		std::set< int > bad_positions;
++		for( core::Size i(1); i<=fpos.size(); ++i ) {
++			if( positions_seen.count(fpos[i]) != 0 ) { duplicate_positions.insert( fpos[i] ); }
++			else { positions_seen.insert( fpos[i] ); }
++			
++			if( fpos[i] < 1 && bad_positions.count(fpos[i]) == 0 ) { bad_positions.insert(fpos[i]); }
++		}
++		if( !duplicate_positions.empty() ) {
++			something_wrong = true;
++			problem_ss << "\t- The following positions appeared multiple times in the frozen positions list: ";
++			bool first(true);
++			for( auto const entry : duplicate_positions ) {
++				if( first ) { first = false; }
++				else{ problem_ss << ", "; }
++				problem_ss << entry;
++			}
++			problem_ss << "\n";
++		}
++		if( !bad_positions.empty() ) {
++			something_wrong = true;
++			problem_ss << "\t- Frozen positions are indexed from 1, so the following positions are invalid: ";
++			bool first(true);
++			for( auto const entry : bad_positions ) {
++				if( first ) { first = false; }
++				else { problem_ss << ", "; }
++				problem_ss << entry;
++			}
++			problem_ss << "\n";
++		}
++ 	}
++	if( opts[out::file::o].user() && opts[out::file::silent].user() ) {
++		something_wrong = true;
++		problem_ss << "\t- Only one of -out:file:o or -out:file:silent should be used.  The user must choose PDB or silent output.\n";
++	}
++
++	runtime_assert_string_msg( !something_wrong, "Error in align_ml_backbones_to_original_target application, check_options() function: "
++		"The following issues were detected with the commandline options set by the user:\n"
++		+ problem_ss.str()
++		+ write_usage_text()
++	);
++}
++
++/// @brief Cyclize the peptide.
++void
++set_up_termini( 
++	core::pose::Pose & pose,
++	core::Size const pepchain_start,
++	core::Size const pepchain_end
++) {
++	using namespace protocols::simple_moves;
++	using namespace core::select::residue_selector;
++
++	ResidueIndexSelectorOP nterm_index( utility::pointer::make_shared< ResidueIndexSelector >(pepchain_start) );
++	ResidueIndexSelectorOP cterm_index( utility::pointer::make_shared< ResidueIndexSelector >(pepchain_end) );
++
++	ModifyVariantTypeMover strip_upper_types, strip_lower_types;
++	strip_upper_types.set_residue_selector( nterm_index );
++	strip_upper_types.set_additional_type_to_remove( "CUTPOINT_UPPER" );
++	strip_upper_types.set_additional_type_to_remove( "LOWER_TERMINUS_VARIANT" );
++	strip_upper_types.set_additional_type_to_remove( "ACETYLATED_NTERMINUS_VARIANT" );
++	strip_upper_types.set_additional_type_to_remove( "ACETYLATED_NTERMINUS_CONNECTION_VARIANT" );
++
++	strip_lower_types.set_residue_selector( cterm_index );
++	strip_lower_types.set_additional_type_to_remove( "CUTPOINT_LOWER" );
++	strip_lower_types.set_additional_type_to_remove( "UPPER_TERMINUS_VARIANT" );
++	strip_lower_types.set_additional_type_to_remove( "DIMETHYLATED_CTERMINUS_VARIANT" );
++
++	strip_upper_types.apply(pose);
++	strip_lower_types.apply(pose);
++
++	DeclareBond decbond;
++	decbond.set( pepchain_end, "C", pepchain_start, "N", true );
++	decbond.apply( pose );
++}
++
++/// @brief Load the native structure, and check its validity.
++/// @details Also, set up the terminal peptide bond.
++core::pose::PoseOP
++load_native(
++	std::string const & native_structure,
++	utility::vector1< core::Size > const & fzn_posits,
++	core::Size & pepchain
++) {
++	std::string const errmsg( "Error in align_ml_backbones_to_original_target application, load_native() function: " );
++	core::pose::PoseOP natpose( core::import_pose::pose_from_file( native_structure ) );
++	if( pepchain == 0 ) {
++		pepchain = natpose->num_chains();
++	} else {
++		runtime_assert_string_msg( natpose->num_chains() <= pepchain, errmsg + "The native pose has only "
++			+ std::to_string(natpose->num_chains()) + ", yet the user specified that chain "
++			+ std::to_string(pepchain) + " is the peptide chain."
++		);
++	}
++
++	// Check frozen residues:
++	core::Size const pepchain_start( natpose->chain_begin( pepchain ) );
++	core::Size const pepchain_end( natpose->chain_end( pepchain ) );
++	core::Size const pepchain_len( 1 + pepchain_end - pepchain_start );
++	for( auto const pos : fzn_posits ) {
++		runtime_assert_string_msg( pos > 0 && pos <= pepchain_len, errmsg + "The peptide chain has " + std::to_string(pepchain_len) + " residues, but position " + std::to_string( pos ) + " was specified as a frozen residue!" );
++	}
++
++	// Set up cyclic geometry:
++	set_up_termini( *natpose, pepchain_start, pepchain_end );
++
++	return natpose;
++}
++
++/// @brief Mutate one frozen position to match the native pose,
++/// and set all side-chain DoFs to match.
++void
++mutate_frozen_position(
++	core::pose::Pose const & native_pose,
++	core::pose::Pose & curpose,
++	core::Size const natpos,
++	core::Size const curpos
++) {
++	using protocols::simple_moves::MutateResidue;
++	using core::conformation::Residue;
++	using core::id::AtomID;
++	using core::id::DOF_ID;
++	using core::id::DOF_Type;
++
++	MutateResidue mutres( curpos, native_pose.residue( natpos ).name() );
++	mutres.apply( curpose );
++
++	Residue const curres( curpose.residue(curpos) );
++	for( core::Size ia( 1 ); ia<=curres.natoms(); ++ia ) {
++		if( curres.atom_is_backbone(ia) ) { continue; }
++		curpose.set_dof(
++			DOF_ID( AtomID(ia, curpos), DOF_Type::D ),
++			native_pose.dof( DOF_ID( AtomID( ia, natpos ), DOF_Type::D ) )
++		);
++		curpose.set_dof(
++			DOF_ID( AtomID(ia, curpos), DOF_Type::THETA ),
++			native_pose.dof( DOF_ID( AtomID( ia, natpos ), DOF_Type::THETA ) )
++		);
++		curpose.set_dof(
++			DOF_ID( AtomID(ia, curpos), DOF_Type::PHI ),
++			native_pose.dof( DOF_ID( AtomID( ia, natpos ), DOF_Type::PHI ) )
++		);
++	}
++	curpose.update_residue_neighbors();
++}
++
++/// @brief Align frozen positions of curpose to native_pose.
++/// @details Uses all heavyatoms of frozen positions.
++void
++align_frozen_positions(
++	core::pose::Pose const & native_pose,
++	core::pose::Pose & curpose,
++	core::Size const nat_pos_offset,
++	utility::vector1< core::Size > const & fzn_posits
++) {
++	using core::id::AtomID;
++	std::map< AtomID, AtomID > atid_map;
++	
++	// Set up the atom ID map:
++	for( core::Size const fzn_posit : fzn_posits ) {
++		core::Size const nat_fzn_posit( nat_pos_offset + fzn_posit );
++		core::conformation::Residue const & curres( curpose.residue( fzn_posit ) );
++		core::conformation::Residue const & natres( native_pose.residue( nat_fzn_posit ) );
++		runtime_assert( curres.name() == natres.name() ); // Should be true.
++		runtime_assert( curres.natoms() == natres.natoms() ); // Should be true.
++		for( core::Size ia( 1 ); ia <= curres.natoms(); ++ia ) {
++			if( curres.atom_is_hydrogen( ia ) ) { continue; }
++			atid_map[ AtomID( ia, fzn_posit ) ] = AtomID( ia, nat_fzn_posit );
++		}
++	}
++
++	// Align the poses:
++	core::scoring::superimpose_pose( curpose, native_pose, atid_map );
++}
++
++/// @brief Remove N-methylation from the current pose.
++void
++remove_nme(
++	core::pose::Pose & pose
++) {
++	using namespace protocols::simple_moves;
++	ModifyVariantTypeMover modvartype;
++	modvartype.set_additional_type_to_remove( "N_METHYLATION" );
++	modvartype.apply(pose);
++	pose.update_residue_neighbors();
++}
++
++/// @brief Copy the native pose chains that are NOT the peptide to the current pose.
++void
++copy_native_to_curpose(
++	core::pose::Pose const & native_pose,
++	core::pose::Pose & curpose,
++	core::Size const pepchain
++) {
++	using protocols::simple_moves::DeclareBond;
++
++	core::pose::Pose curpose_copy;
++	curpose_copy.detached_copy( curpose );
++	curpose.clear();
++	core::Size const pepstart( native_pose.chain_begin(pepchain) );
++	core::Size const pepend( native_pose.chain_end(pepchain) );
++
++	if( pepstart > 1 ) {
++		core::pose::append_subpose_to_pose( curpose, native_pose, 1, pepstart - 1, true );
++	}
++	core::pose::append_pose_to_pose( curpose, curpose_copy, true );
++	if( pepend < native_pose.total_residue() ) {
++		core::pose::append_subpose_to_pose( curpose, native_pose, pepend + 1, native_pose.total_residue(), true );
++	}
++
++	DeclareBond decbond;
++	decbond.set( pepend, "C", pepstart, "N", true );
++	decbond.apply( curpose );
++
++	curpose.update_residue_neighbors();
++}
++
++/// @brief Mutate the frozen positions to match the native (including side-chain
++/// conformation), and align the resulting pose to the native by the frozen
++/// positions.
++void
++mutate_and_align_frozen_positions(
++	core::pose::Pose const & native_pose,
++	core::pose::Pose & curpose,
++	core::Size const pepchain,
++	utility::vector1< core::Size > const & fzn_posits
++) {
++	runtime_assert( native_pose.num_chains() >= pepchain ); // Should be true.
++	core::Size const nat_pos_offset( native_pose.chain_begin(pepchain) - 1 );
++
++	for( core::Size const fzn_posit : fzn_posits ) {
++		mutate_frozen_position( native_pose, curpose, fzn_posit + nat_pos_offset, fzn_posit );
++	}
++
++	align_frozen_positions( native_pose, curpose, nat_pos_offset, fzn_posits );
++
++	remove_nme( curpose );
++
++	copy_native_to_curpose( native_pose, curpose, pepchain );
++}
++
++/// @brief Write the structure to disk as a silent file.
++void
++write_silent_output(
++	core::pose::Pose const & curpose,
++	std::string const & prefixstring,
++	std::string const & numstring,
++	basic::options::OptionCollection const & opts
++) {
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	std::stringstream silent_fname( prefixstring );
++	if( !opts[out::file::silent]().empty() ) {
++		silent_fname << "_" << opts[out::file::silent]();
++	}
++	silent_fname << ".silent";
++	utility::io::ozstream outstream( silent_fname.str() );
++
++	core::io::silent::SilentFileOptions silent_opts( opts );
++	silent_opts.set_binary_output(true);
++	std::string const curtag( prefixstring + "_" + numstring );
++	core::io::silent::BinarySilentStruct ss( silent_opts, curpose, curtag );
++	ss.print_header( outstream );
++	ss.print_conformation( outstream );
++}
++
++/// @brief Actualy write the structure to disk.
++void
++write_output(
++	core::pose::Pose const & curpose,
++	bool const do_silent_output,
++	std::string const & prefixstring,
++	std::string const & numstring,
++	basic::options::OptionCollection const & opts
++) {
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	if( do_silent_output ) {
++		write_silent_output( curpose, prefixstring, numstring, opts );
++	} else {
++		std::string const pdbstring(
++			opts[out::file::o]().empty() ?
++			"" :
++			"_" + opts[out::file::o]()
++		);
++		curpose.dump_pdb( prefixstring + pdbstring + "_" + numstring + ".pdb" );
++	}
++}
++
++/// @brief Iterate through all backbones provided with -in:file:s, -in:file:l, or -in:file:silent,
++/// mutate fixed positions to match the native, align to the native pose, and write to disk.
++void
++load_and_mutate_and_align_backbones(
++	core::pose::PoseCOP const & native_pose,
++	basic::options::OptionCollection const & opts,
++	core::Size const pepchain,
++	utility::vector1< core::Size > const & fzn_posits
++) {
++	std::string const errmsg( "Error in align_ml_backbones_to_original_target application, load_and_mutate_and_align_backbones() function: " );
++
++	using utility::pointer::dynamic_pointer_cast;
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++	using namespace core::import_pose::pose_stream;
++	using namespace protocols::simple_moves;
++
++	// A quick check -- should be true:
++	runtime_assert( !( opts[out::file::o].user() && opts[out::file::silent].user() ));
++	bool const do_silent_output( opts[out::file::silent].user() );
++	bool const do_dump( opts[dump_intermediate_pdbs].value() );
++
++	// A stream for all input files:
++	MetaPoseInputStream input_stream( streams_from_cmd_line( false ) );
++	utility::vector1 < PoseInputStreamOP > posestreams( input_stream.get_input_streams() );
++
++	// Prefix string for file output:
++	utility::file::FileName natfilename( opts[in::file::native]() );
++	std::string const prefixstring(
++		( opts[out::prefix].user() ? opts[out::prefix]() + "_" : "" )
++		+ ( natfilename.base() )
++	);
++	if( do_silent_output ) {
++		runtime_assert_string_msg( !utility::file::file_exists( prefixstring + ".silent" ), errmsg + "File " + prefixstring + ".silent already exists!" );
++	}
++
++	// Iterate over all inputs:
++	core::Size posecounter(0);
++	for( auto const & posestream : posestreams ) {
++		PDBPoseInputStreamOP pdbstream( dynamic_pointer_cast< PDBPoseInputStream >( posestream ) );
++			while( posestream->has_another_pose() ) {
++				++posecounter;
++				std::string const numstring( utility::pad_left( std::to_string(posecounter), 6, '0' ) );
++
++				core::pose::PoseOP curpose( utility::pointer::make_shared< core::pose::Pose >() );
++				posestream->fill_pose( *curpose );
++				if( pdbstream != nullptr ) {
++					// Set up cyclic geometry:
++					set_up_termini( *curpose, 1, curpose->total_residue() );
++				}
++
++				// Mutate the frozen positions to match the native, and align the pose to the native:
++				if( do_dump ) {
++					curpose->dump_pdb( "temp1_" + numstring + ".pdb" );
++				}
++				mutate_and_align_frozen_positions( *native_pose, *curpose, pepchain, fzn_posits );
++				if( do_dump ) {
++					curpose->dump_pdb( "temp2_" + numstring + ".pdb" );
++				}
++
++				// Write to disk:
++				write_output( *curpose, do_silent_output, prefixstring, numstring, option );
++				
++				if( posecounter % 100 == 0 ) {
++					TR << "\tProcessed " << posecounter << " poses." << std::endl;
++				}
++			}
++	}
++
++}
++
++
++/// @brief Program entry point.
++int
++main( int argc, char * argv [] )
++{
++	try {
++		using namespace basic::options;
++		using namespace basic::options::OptionKeys;
++
++		register_options();
++		devel::init( argc, argv );
++
++		TR << "Beginning align_ml_backbones_to_original_target application." << std::endl;
++		TR << "Application created 7 June 2024 by Vikram K. Mulligan, Biomolecular Design Group, "
++			<< "Center for Computational Biology, Flatiron Institute (vmulligan@flatironinstitute.org)."
++			<< std::endl;
++
++		// Register this app with the citation manager.
++		register_with_citation_manager();
++
++		// Check that the user has provided reasonable options.
++		check_options( option );
++
++		// Write out a message explaining how this application is to be used.
++		TR << write_usage_text() << std::endl;
++
++		utility::vector1< core::Size > fzn_posits( option[frozen_positions]().size() );
++		for( core::Size i(1); i<=fzn_posits.size(); ++i ) {
++			fzn_posits[i] = static_cast<core::Size>( option[frozen_positions]()[i] );
++		}
++		core::Size pepchain( static_cast<core::Size>( option[peptide_chain_in_native]() ) );
++
++		// 1. The native structure is loaded:
++		core::pose::PoseOP original_structure(
++			load_native(
++				option[in::file::native](),
++				fzn_posits,
++				pepchain
++			)
++		);
++
++		// Load the backbones, mutate/copy frozen positions, align them to the original structure,
++		// and write out files:
++		load_and_mutate_and_align_backbones( original_structure, option, pepchain, fzn_posits );
++
++		// Write the citations.
++		basic::citation_manager::CitationManager::get_instance()->write_all_citations_and_unpublished_author_info();
++		TR << "Successfully finished execution of align_ml_backbones_to_original_target application." << std::endl;
++
++	} catch ( utility::excn::Exception const & e ) {
++		e.display();
++		return -1;
++	}
++
++	return 0;
++}
+diff --git a/source/src/apps/public/cyclic_peptide/dof_vectors_to_poses.cc b/source/src/apps/public/cyclic_peptide/dof_vectors_to_poses.cc
+new file mode 100644
+index 00000000000..8d3bd74f487
+--- /dev/null
++++ b/source/src/apps/public/cyclic_peptide/dof_vectors_to_poses.cc
+@@ -0,0 +1,219 @@
++// -*- mode:c++;tab-width:2;indent-tabs-mode:t;show-trailing-whitespace:t;rm-trailing-spaces:t -*-
++// vi: set ts=2 noet:
++
++// Copyright 2026 Vikram K. Mulligan
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions are met:
++//
++// 1. Redistributions of source code must retain the above copyright notice,
++// this list of conditions and the following disclaimer.
++//
++// 2. Redistributions in binary form must reproduce the above copyright notice,
++// this list of conditions and the following disclaimer in the documentation
++// and/or other materials provided with the distribution.
++//
++// 3. Neither the name of the copyright holder nor the names of its
++// contributors may be used to endorse or promote products derived from this
++// software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
++// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++// THE POSSIBILITY OF SUCH DAMAGE.
++
++/// @file apps/public/cyclic_peptide/dof_vectors_to_poses.cc
++/// @brief An application to convert a binary DoF vector file to a set of poses, to visualize a
++/// motion trajectory produced by a conformational autoencoder.
++/// @note This is a companion application to extract_dof_vectors.  This file is
++/// released under a BSD 3-clause licence, unlike Rosetta's source code.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org)
++
++// devel headers
++#include <devel/init.hh>
++
++// protocol headers
++
++// utility headers
++#include <utility/excn/Exceptions.hh>
++#include <utility/file/file_sys_util.hh>
++#include <utility/io/ozstream.hh>
++
++// basic headers
++#include <basic/Tracer.hh>
++#include <basic/options/option.hh>
++#include <basic/options/keys/OptionKeys.hh>
++#include <utility/options/OptionCollection.hh>
++#include <basic/options/option_macros.hh>
++#include <basic/options/keys/conformational_autoencoder.OptionKeys.gen.hh>
++#include <basic/options/keys/out.OptionKeys.gen.hh>
++#include <basic/citation_manager/UnpublishedModuleInfo.hh>
++#include <basic/citation_manager/CitationManager.hh>
++
++// protocols headers
++#include <protocols/conformational_autoencoder/DoFSummary.hh>
++
++// STL headers
++#include <fstream>
++#include <memory>
++
++static basic::Tracer TR("apps.public.cyclic_peptide.dof_vectors_to_poses");
++
++
++/// @brief Indicate which commandline flags are relevant to this application.
++void register_options() {
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	option.add_relevant( out::file::silent );
++	option.add_relevant( out::file::o );
++	option.add_relevant( conformational_autoencoder::dofs_to_poses::dof_vector_input_filename );
++	option.add_relevant( conformational_autoencoder::dofs_to_poses::preserve_ideal_geometry );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::ignore_virtual_atoms );
++}
++
++/// @brief Register this app with the citation manager.
++void
++register_with_citation_manager() {
++	using namespace basic::citation_manager;
++
++	CitationManager::get_instance()->add_citation(
++		utility::pointer::make_shared< UnpublishedModuleInfo >(
++			"dof_vectors_to_poses", CitedModuleType::Application,
++			"Vikram K. Mulligan", "Biomolecular Design Group, Center for "
++			"Computational Biology, Flatiron Institute",
++			"vmulligan@flatironinstitute.org",
++			"Wrote the dof_vectors_to_poses application."
++		)
++	);
++}
++
++/// @brief Check that needed options have been set.
++void
++check_options(
++	basic::options::OptionCollection const & opts
++) {
++	using namespace basic::options::OptionKeys;
++
++	std::string const errmsg(
++		"Error in dof_vectors_to_poses application, check_options() function."
++	);
++
++	runtime_assert_string_msg(
++		opts[ conformational_autoencoder::dofs_to_poses::dof_vector_input_filename ].user() &&
++		!(opts[ conformational_autoencoder::dofs_to_poses::dof_vector_input_filename ]().empty()),
++		errmsg + "A non-empty input filename must be provided with the -conformational_autoencoder:dofs_to_poses:dof_vector_input_filename "
++		"commandline option."
++	);
++	runtime_assert_string_msg(
++		utility::file::file_exists( opts[ conformational_autoencoder::dofs_to_poses::dof_vector_input_filename ]() ),
++		errmsg + "The file \"" + opts[ conformational_autoencoder::dofs_to_poses::dof_vector_input_filename ]() + " does not exist!"
++	);
++
++	runtime_assert_string_msg(
++		( opts[ out::file::silent ].user() && !(opts[ out::file::silent ]().empty()) ) ||
++		( opts[ out::file::o ].user() && !(opts[ out::file::o ]().empty()) ),
++		errmsg + "A non-empty output filename must be provided with either the "
++		"-out:file:silent or -out:file:o commandline options."
++	);
++
++	if( opts[ out::file::silent ].user() ) {
++		runtime_assert_string_msg( !opts[ out::file::o ].user(),
++			errmsg + "The -out:file:silent and -out:file:o options cannot be used together."
++		);
++	}
++
++	if( opts[ conformational_autoencoder::dofs_to_poses::preserve_ideal_geometry ].value() ) {
++		TR << "Preserving ideal bond angles and bond lengths." << std::endl;
++	}
++	if( opts[ conformational_autoencoder::poses_to_dofs::ignore_virtual_atoms ].value() ) {
++		TR << "Ignoring virtual atoms." << std::endl;
++	}
++}
++
++/// @brief Read in the input DoFs and write poses to a
++/// binary silent file.
++void
++convert_input_dofs_and_write_poses(
++	basic::options::OptionCollection const & opts
++) {
++	using namespace basic::options::OptionKeys;
++	using protocols::conformational_autoencoder::DoFSummary;
++	
++	std::string const & input_file( opts[ conformational_autoencoder::dofs_to_poses::dof_vector_input_filename ]() );
++	bool const silent_output( opts[ out::file::silent ].user() );
++
++	// Input file:
++	std::ifstream inhandle( input_file, std::ios::binary | std::ios::in );
++	runtime_assert( inhandle.good() && (!inhandle.fail()) );
++
++	// Output file:
++	std::shared_ptr< utility::io::ozstream > outhandle;
++	if( silent_output ) {
++		outhandle = utility::pointer::make_shared< utility::io::ozstream >( opts[ out::file::silent ]() );
++	}
++
++	// Read first DoF summary:
++	core::Size counter(0);
++	DoFSummary first_dof_summary( inhandle, opts );
++	if( silent_output ) {
++		first_dof_summary.write_silent_file_reference_pose( *outhandle, opts, true );
++		first_dof_summary.write_silent_file( *outhandle, opts, counter+1, false );
++	} else {
++		first_dof_summary.write_pdb_file_reference_pose( opts[ out::file::o ]() );
++		first_dof_summary.write_pdb_file( opts[ out::file::o ](), counter+1 );
++	}
++	++counter;
++
++	// Read the rest of the files:
++	while( !inhandle.eof() ) {
++		DoFSummary next_dof_summary( first_dof_summary );
++		next_dof_summary.reset_initialization_state();
++		next_dof_summary.read_dofs_from_dof_file( inhandle );
++		if( silent_output ) {
++			next_dof_summary.write_silent_file( *outhandle, opts, counter+1, false );
++		} else {
++			next_dof_summary.write_pdb_file( opts[ out::file::o ](), counter+1 );
++		}
++		++counter;
++	}
++
++	TR << "Read " << counter << " DoF vectors from " << input_file << " and wrote poses to disk." << std::endl;
++}
++
++
++/// @brief Program entry point.
++int
++main( int argc, char * argv [] )
++{
++	try {
++		using namespace basic::options;
++		using namespace basic::options::OptionKeys;
++
++		register_options();
++		devel::init( argc, argv );
++
++		// Register this app with the citation manager.
++		register_with_citation_manager();
++
++		check_options( option );
++		convert_input_dofs_and_write_poses( option );
++
++		// Write the citations.
++		basic::citation_manager::CitationManager::get_instance()->write_all_citations_and_unpublished_author_info();
++		TR << "Successfully finished execution of dof_vectors_to_poses application.";
++
++	} catch ( utility::excn::Exception const & e ) {
++		e.display();
++		return -1;
++	}
++
++	return 0;
++}
+diff --git a/source/src/apps/public/cyclic_peptide/extract_dof_vectors.cc b/source/src/apps/public/cyclic_peptide/extract_dof_vectors.cc
+new file mode 100644
+index 00000000000..cb63e7de256
+--- /dev/null
++++ b/source/src/apps/public/cyclic_peptide/extract_dof_vectors.cc
+@@ -0,0 +1,1002 @@
++// -*- mode:c++;tab-width:2;indent-tabs-mode:t;show-trailing-whitespace:t;rm-trailing-spaces:t -*-
++// vi: set ts=2 noet:
++
++// Copyright 2026 Vikram K. Mulligan
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions are met:
++//
++// 1. Redistributions of source code must retain the above copyright notice,
++// this list of conditions and the following disclaimer.
++//
++// 2. Redistributions in binary form must reproduce the above copyright notice,
++// this list of conditions and the following disclaimer in the documentation
++// and/or other materials provided with the distribution.
++//
++// 3. Neither the name of the copyright holder nor the names of its
++// contributors may be used to endorse or promote products derived from this
++// software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
++// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++// THE POSSIBILITY OF SUCH DAMAGE.
++
++/// @file apps/public/cyclic_peptide/extract_dof_vectors.cc
++/// @brief An application for extracting DoF vectors from conformational ensembles, for use in
++/// training autoencoders capable of mapping conformations in an ensemble to a low-dimensional
++/// latent space.
++/// @details History of DoF vector file format:
++/// - Version 1.0: Initial DoF vector format.
++/// - Version 1.1: Add field for number of records.
++/// - Version 1.2: Correct writing of records to ensure that records after the first have energies.
++/// - Version 1.3: Write identities of all DoFs.
++///
++/// History of RMSD matrix file format:
++/// - Version 1.0: inital RMSD matrix format.
++/// - Version 1.1: Switched to using 32-bit floats instead of 64-bit floats for the RMSD matrix.
++///
++/// @note This assumes that the endianness of this system is standard (little-endian).  This is
++/// a companion application to dof_vectors_to_poses.  This file is released
++/// under a BSD 3-clause licence, unlike Rosetta's source code.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org)
++
++// devel headers
++#include <devel/init.hh>
++
++// protocol headers
++#include <protocols/jd2/JobDistributor.hh>
++#include <protocols/simple_moves/ModifyVariantTypeMover.hh>
++#include <protocols/conformational_autoencoder/DoFSummary.hh>
++
++// numeric headers
++#include <numeric/conversions.hh>
++
++// utility headers
++#include <utility/excn/Exceptions.hh>
++#include <utility/options/OptionCollection.hh>
++#include <utility/file/file_sys_util.hh>
++#include <utility/fixedsizearray1.hh>
++#include <utility/string_util.hh>
++
++// core headers
++#include <core/scoring/ScoreFunction.hh>
++#include <core/scoring/ScoreFunctionFactory.hh>
++#include <core/import_pose/pose_stream/MetaPoseInputStream.hh>
++#include <core/import_pose/pose_stream/PDBPoseInputStream.hh>
++#include <core/import_pose/pose_stream/util.hh>
++#include <core/import_pose/import_pose.hh>
++#include <core/pose/Pose.hh>
++#include <core/chemical/ResidueType.hh>
++#include <core/conformation/Conformation.hh>
++#include <core/conformation/Residue.hh>
++#include <core/kinematics/FoldTree.hh>
++#include <core/select/residue_selector/ResidueIndexSelector.hh>
++#include <core/scoring/rms_util.hh>
++
++// basic headers
++#include <basic/Tracer.hh>
++#include <basic/citation_manager/CitationManager.hh>
++#include <basic/citation_manager/UnpublishedModuleInfo.hh>
++#include <basic/options/keys/in.OptionKeys.gen.hh>
++#include <basic/options/keys/out.OptionKeys.gen.hh>
++#include <basic/options/keys/conformational_autoencoder.OptionKeys.gen.hh>
++#include <basic/options/keys/multithreading.OptionKeys.gen.hh>
++#include <basic/options/option.hh>
++#include <basic/options/keys/OptionKeys.hh>
++#include <basic/options/option_macros.hh>
++#include <basic/thread_manager/RosettaThreadManager.hh>
++#include <basic/thread_manager/RosettaThreadAssignmentInfo.hh>
++
++// Eigen headers
++#include <Eigen/Dense>
++
++// STL headers
++#include <set>
++#include <fstream> // Note: deliberately using fstream and not utility::io::ozstream since we're writing true binary files, not Rosetta's ASCII-as-binary.
++#ifdef MULTI_THREADED
++#include <mutex>
++#endif
++
++static basic::Tracer TR("apps.public.cyclic_peptide.extract_dof_vectors");
++
++#define RMSDMATRIX_FILE_MAJOR_VERSION 1
++#define RMSDMATRIX_FILE_MINOR_VERSION 1
++
++/// @brief How we're computing RMSD.
++enum class RMSDMode {
++	INVALID = 0, // Keep this first.
++	ALL_HEAVYATOMS = 1, // Keep this second.
++	ALL_MAINCHAIN_HEAVYATOMS,
++	CA_ONLY
++};
++
++using protocols::conformational_autoencoder::DoFSummary;
++using protocols::conformational_autoencoder::DoFSummaryOP;
++using protocols::conformational_autoencoder::DoFSummaryCOP;
++
++/// @brief Indicate which commandline flags are relevant to this application.
++void register_options() {
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	option.add_relevant( in::file::s );
++	option.add_relevant( in::file::l );
++	option.add_relevant( in::file::silent );
++	option.add_relevant( out::overwrite );
++	option.add_relevant( multithreading::total_threads );
++
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_mainchain_torsions );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_mainchain_bondangles );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_mainchain_bondlengths );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_jumps );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_sidechain_torsions );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_sidechain_bondangles );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_sidechain_bondlengths );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::dof_vector_output_filename );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::rmsd_matrix_computation_batch_size );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::rmsd_computation_mode );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::weights_files );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::include_scores_from_input_files );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::dump_pdbs );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::set_up_cyclic_geometry_for_pdbs );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::custom_foldtree );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::correct_cutpoints );
++	option.add_relevant( conformational_autoencoder::poses_to_dofs::ignore_virtual_atoms );
++}
++
++/// @brief Register this app with the citation manager.
++void
++register_with_citation_manager() {
++	using namespace basic::citation_manager;
++
++	CitationManager::get_instance()->add_citation(
++		utility::pointer::make_shared< UnpublishedModuleInfo >(
++			"extract_dof_vectors", CitedModuleType::Application,
++			"Vikram K. Mulligan", "Biomolecular Design Group, Center for "
++			"Computational Biology, Flatiron Institute",
++			"vmulligan@flatironinstitute.org",
++			"Wrote the extract_dof_vectors application."
++		)
++	);
++}
++
++/// @brief Check input options and throw an informative error message if options are bad.
++void
++check_opts(
++	basic::options::OptionCollection const & opts
++) {
++	std::string const errmsg( "Error in extract_dof_vectors application, check_opts() function: " );
++
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	bool has_dof_vect_options(false);
++
++	runtime_assert_string_msg(
++		(opts[in::file::s].user() && !opts[in::file::s].value().empty()) ||
++		(opts[in::file::l].user() && !(opts[in::file::l]().empty())) ||
++		(opts[in::file::silent].user() && !(opts[in::file::silent]().empty())),
++		errmsg + "At least one input structure file must be provided with the -in:file:s, -in:file:l, or -in:file:silent options."
++	);
++
++	if(
++		opts[conformational_autoencoder::poses_to_dofs::include_jumps].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::include_mainchain_torsions].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::include_mainchain_bondangles].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::include_mainchain_bondlengths].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::include_sidechain_torsions].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::include_sidechain_bondangles].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::include_sidechain_bondlengths].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::weights_files].user() ||
++		opts[conformational_autoencoder::poses_to_dofs::include_scores_from_input_files].user()
++	) {
++		has_dof_vect_options = true;
++	}
++
++	if( opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename].user() ) {
++		runtime_assert_string_msg(
++			!opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename]().empty(), 
++			"The filename provided with the -dof_vector_output_filename option cannot be empty."
++		);
++		runtime_assert_string_msg(
++			has_dof_vect_options,
++			errmsg + "At least one degree of freedom must be included in the DoF vectors "
++				"that are written, if the -dof_vector_output_filename option is used."
++		);
++
++		// Check for file existence:
++		if( !opts[out::overwrite]() ) {
++			runtime_assert_string_msg( !utility::file::file_exists( opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename]() ),
++				errmsg + "File " + opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename]() + " already exists!  To overwrite, use the -out:overwrite option."
++			);
++		}
++	}
++
++	if( opts[conformational_autoencoder::poses_to_dofs::custom_foldtree].user() ) {
++		runtime_assert_string_msg( !opts[conformational_autoencoder::poses_to_dofs::custom_foldtree]().empty(), errmsg + "If the -custom_foldtree option is used, a fold tree file must be specified." );
++	}
++
++	if( has_dof_vect_options ) {
++		runtime_assert_string_msg(
++			opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename].user() && !opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename].value().empty(),
++			errmsg + "The output filename must be provided with the -output_filename option if DoF vector options are provided."
++		);
++	}
++
++	if( opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename].user() ) {
++		runtime_assert_string_msg(
++			!opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename]().empty(), errmsg + "The filename provided with the -rmsd_matrix_output_filename "
++				"option cannot be empty."
++		);
++		runtime_assert_string_msg( opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_computation_batch_size].value() >= 0, errmsg + "The RMSD matrix batch size "
++			"(-rmsd_matrix_computation_batch_size option) must be non-negative."
++		);
++
++		// Check for file existence:
++		if( !opts[out::overwrite]() ) {
++			runtime_assert_string_msg( !utility::file::file_exists( opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename]() ),
++				errmsg + "File " + opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename]() + " already exists!  To overwrite, use the -out:overwrite option."
++			);
++		}
++	} else {
++		runtime_assert_string_msg( opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename].user(), errmsg + "At least one of -dof_vector_output_filename "
++			"or -rmsd_matrix_output_filename must be provided."
++		);
++		runtime_assert_string_msg(
++			!opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_computation_batch_size].user(),
++			errmsg + "The -rmsd_matrix_computation_batch_size option can only be used if -rmsd_matrix_output_filename "
++				"is also specified."
++		);
++		runtime_assert_string_msg(
++			!opts[conformational_autoencoder::poses_to_dofs::rmsd_computation_mode].user(),
++			errmsg + "The -rmsd_computation_mode option can only be used if -rmsd_matrix_output_filename "
++				"is also specified."
++		);
++	}
++
++	runtime_assert_string_msg(
++		sizeof( core::Real ) == 8, errmsg + "This application assumes that we are using 64-bit double-precision floats, yet "
++		"this system uses " + std::to_string( sizeof( core::Real ) * 8 ) + "-bit double-precision floats.  This will create "
++		"problems."
++	);
++	runtime_assert_string_msg(
++		sizeof( float ) == 4, errmsg + "This application assumes that we are using 32-bit single-precision floats, yet "
++		"this system uses " + std::to_string( sizeof( float ) * 8 ) + "-bit single-precision floats.  This will create "
++		"problems."
++	);
++	runtime_assert_string_msg(
++		sizeof( core::Size ) == 8, errmsg + "This application assumes that we are using 64-bit unsigned long integers, yet "
++		"this system uses " + std::to_string( sizeof( core::Size ) * 8 ) + "-bit unsigned long integers.  This will create "
++		"problems."
++	);
++	runtime_assert_string_msg(
++		sizeof( bool ) == 1, errmsg + "This application assumes that we are using 8-bit Booleans, yet "
++		"this system uses " + std::to_string( sizeof( bool ) * 8 ) + "-bit booleans.  This will create "
++		"problems."
++	);
++}
++
++/// @brief Extracts data from each pose and writes it to an output file stream.
++/// @details Does the following:
++/// - Scores pose with each scorefunction (if any).
++/// - Constructs DoF vector for pose (appending scores, if any).
++/// - If first record, populates dof_summary; otherwise, compares DoF vector to dof_summary to
++/// confirm that the pose has the same DoFs.
++/// - Writes the DoFs to the file stream.
++void
++write_dof_vects(
++	core::pose::Pose const & pose,
++	utility::vector1< core::scoring::ScoreFunctionOP > const & sfxns,
++	core::Size const n_total_poses,
++	bool const first,
++	std::ofstream & fhandle,
++	DoFSummary & dof_summary,
++	basic::options::OptionCollection const & opts
++) {
++	std::string const errmsg( "Error in extract_dof_vectors application, write_dof_vects() function: " );
++	
++	// Make a copy of the pose and score it with each scorefunction in turn:
++	utility::vector1< core::Real > scores( sfxns.size(), 0.0 );
++	{
++		core::pose::Pose pose_copy;
++		pose_copy.detached_copy( pose );
++		pose_copy.update_residue_neighbors();
++		for( core::Size i(1), imax(scores.size()); i<=imax; ++i ) {
++			scores[i] = (*sfxns[i])(pose_copy);
++		}
++	}
++
++	// Construct the DoF vector for the pose:
++	if( first ) {
++		dof_summary.initialize_from_pose( pose );
++		if( !scores.empty() ) {
++			dof_summary.append_scores( scores );
++		}
++		dof_summary.write_headers( fhandle, pose, n_total_poses, opts );
++		dof_summary.write_pose_dofs( fhandle );
++	} else {
++		DoFSummary new_dof_summary( opts, pose );
++		if( !scores.empty() ) {
++			new_dof_summary.append_scores( scores );
++		}
++		runtime_assert_string_msg( new_dof_summary == dof_summary, errmsg + "DoF vectors for poses did not match!" );
++		new_dof_summary.write_pose_dofs( fhandle );
++	}
++}
++
++/// @brief Process the structure as needed.
++void
++set_up_cyclization(
++	core::pose::Pose & pose
++) {
++	using namespace protocols::simple_moves;
++	using namespace core::select::residue_selector;
++
++	core::Size const nres( pose.total_residue() );
++	runtime_assert( nres > 1 );
++	runtime_assert( pose.residue(1).is_polymer() );
++	runtime_assert( pose.residue( nres ).is_polymer() );
++
++	ResidueIndexSelectorOP select_first_res( utility::pointer::make_shared< ResidueIndexSelector >(1) );
++	ResidueIndexSelectorOP select_last_res( utility::pointer::make_shared< ResidueIndexSelector >(nres) );
++
++	// Remove terminal variant types:
++	{
++		ModifyVariantTypeMover remove_lower_termus;
++		remove_lower_termus.set_additional_type_to_remove( "LOWER_TERMINUS_VARIANT" );
++		remove_lower_termus.set_additional_type_to_remove( "ACETYLATED_NTERMINUS_CONNECTION_VARIANT" );
++		remove_lower_termus.set_residue_selector( select_first_res );
++		remove_lower_termus.apply(pose);
++	}
++	{
++		ModifyVariantTypeMover remove_upper_termus;
++		remove_upper_termus.set_additional_type_to_remove( "UPPER_TERMINUS_VARIANT" );
++		remove_upper_termus.set_residue_selector( select_last_res );
++		remove_upper_termus.apply(pose);
++	}
++
++	// Declare the bond:
++	core::chemical::ResidueType const & restype1( pose.residue_type(1) );
++	core::chemical::ResidueType const & restypeN( pose.residue_type(nres) );
++	std::string const ntermatom( restype1.atom_name( restype1.lower_connect_atom() ) );
++	std::string const ctermatom( restypeN.atom_name( restypeN.upper_connect_atom() ) );
++	pose.conformation().declare_chemical_bond( 1, ntermatom, nres, ctermatom );
++
++	// Add cutpoint types:
++	{
++		ModifyVariantTypeMover add_cutpoint_to_first;
++		add_cutpoint_to_first.set_additional_type_to_add( "CUTPOINT_UPPER" ); // The FIRST residue gets cutpoint UPPER, since this is a cyclic petpide
++		add_cutpoint_to_first.set_residue_selector( select_first_res );
++		add_cutpoint_to_first.apply(pose);
++	}
++	{
++		ModifyVariantTypeMover add_cutpoint_to_last;
++		add_cutpoint_to_last.set_additional_type_to_add( "CUTPOINT_LOWER" ); // The LAST residue gets cutpoint LOWER, since this is a cyclic petpide
++		add_cutpoint_to_last.set_residue_selector( select_last_res );
++		add_cutpoint_to_last.apply(pose);
++	}
++
++	pose.update_residue_neighbors();
++
++}
++
++/// @brief Load a fold tree from a file.
++core::kinematics::FoldTreeCOP
++load_custom_foldtree(
++	std::string const & fold_tree_file
++) {
++	using namespace core::kinematics;
++	FoldTreeOP ft( utility::pointer::make_shared< FoldTree >() );
++	std::string const ft_file_contents( utility::stripped_whitespace( utility::replace_in( utility::file_contents(fold_tree_file), "\n", " " ) ) ); // foldtree definition all on one line.
++	std::istringstream ss( ft_file_contents );
++	ss >> (*ft);
++
++	TR << "Loaded custom fold tree from file " << fold_tree_file << "." << std::endl;
++	TR << "Custom fold tree: " << ft->to_string() << std::endl;
++
++	return ft;
++}
++
++/// @brief Given a pose, remove cutpoint variants that are not at foldtree cutpoints,
++/// and add cutpoint variants where there are foldtree cutpoints.
++void
++fix_cutpoint_variants(
++	core::pose::Pose & pose
++) {
++	using protocols::simple_moves::ModifyVariantTypeMover;
++	using core::kinematics::FoldTree;
++	using core::select::residue_selector::ResidueIndexSelector;
++	using core::select::residue_selector::ResidueIndexSelectorOP;
++
++	{
++		//First, remove all cutpoint variants.
++		ModifyVariantTypeMover remove_cutpoints;
++		remove_cutpoints.set_additional_type_to_remove( "CUTPOINT_LOWER" );
++		remove_cutpoints.set_additional_type_to_remove( "CUTPOINT_UPPER" );
++		remove_cutpoints.apply(pose);
++	}
++
++	{
++		// Next, identify upper and lower positions, and add back cutpoints at those positions.
++		FoldTree const & ft( pose.fold_tree() );
++		std::set< core::Size > upper_positions, lower_positions;
++		for( core::Size ir(1); ir<=pose.total_residue(); ++ir ) {
++			core::conformation::Residue const & res( pose.residue(ir) );
++			core::Size const res_at_lower( res.connected_residue_at_lower() ); // 0 if no connection.
++			core::Size const res_at_upper( res.connected_residue_at_upper() ); // 0 if no connection.
++
++			bool upper_connected_by_jump(false);
++			core::Size const upper_parent( ft.get_parent_residue( res_at_upper, upper_connected_by_jump ) );
++			bool lower_connected_by_jump(false);
++			core::Size const lower_parent( ft.get_parent_residue( res_at_lower, lower_connected_by_jump ) );
++			bool this_connected_by_jump(false);
++			core::Size const this_parent( ft.get_parent_residue( ir, this_connected_by_jump ) );
++
++			bool const ft_connection_to_lower(
++				( (!this_connected_by_jump) && this_parent == res_at_lower ) ||
++				( (!lower_connected_by_jump) && lower_parent == ir )
++			);
++			bool const ft_connection_to_upper(
++				( (!this_connected_by_jump) && this_parent == res_at_upper ) ||
++				( (!upper_connected_by_jump) && upper_parent == ir )
++			);
++
++			if( !ft_connection_to_lower ) {
++				upper_positions.insert( ir );
++				lower_positions.insert( res_at_lower );
++			}
++			if( !ft_connection_to_upper ) {
++				lower_positions.insert( ir );
++				upper_positions.insert( res_at_upper );
++			}
++
++			ResidueIndexSelectorOP select_upper( utility::pointer::make_shared< ResidueIndexSelector >() );
++			ResidueIndexSelectorOP select_lower( utility::pointer::make_shared< ResidueIndexSelector >() );
++			for( auto const & entry : upper_positions ) {
++				select_upper->append_index( entry );
++			}
++			for( auto const & entry : lower_positions ) {
++				select_lower->append_index( entry );
++			}
++
++			ModifyVariantTypeMover add_upper, add_lower;
++			add_upper.set_additional_type_to_add( "CUTPOINT_UPPER" );
++			add_upper.set_residue_selector( select_upper );
++			add_lower.set_additional_type_to_add( "CUTPOINT_LOWER" );
++			add_lower.set_residue_selector( select_lower );
++			add_upper.apply(pose);
++			add_lower.apply(pose);
++		}
++	}
++}
++
++/// @brief Read input structures and write torsion vectors.
++/// @details Calls write_dof_vects(), which PERFORMS FILE OUTPUT.
++void
++read_inputs_and_write_dof_vects(
++	basic::options::OptionCollection const & opts,
++	core::Size const n_total_poses
++) {
++	std::string const errmsg( "Error in extract_dof_vectors application, read_inputs_and_write_dof_vects() function: " );
++
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++	using namespace core::import_pose::pose_stream;
++
++	utility::vector1< std::string > const & weightsfiles( opts[conformational_autoencoder::poses_to_dofs::weights_files]() );
++	utility::vector1< core::scoring::ScoreFunctionOP > sfxns;
++	if( !weightsfiles.empty() ) {
++		sfxns.reserve( weightsfiles.size() );
++		for( std::string const & weightsfile : weightsfiles ) {
++			sfxns.push_back( core::scoring::ScoreFunctionFactory::get_instance()->create_score_function( weightsfile ) );
++			TR << "Loaded " << weightsfile << "." << std::endl;
++		}
++	}
++
++	MetaPoseInputStream input_stream( streams_from_cmd_line( false ) );
++	utility::vector1 < PoseInputStreamOP > posestreams( input_stream.get_input_streams() );
++	bool first( true );
++	core::Size posecounter(0);
++	DoFSummary dof_summary(opts); // Stores expected DoFs from first pose; confirms that all subsequent poses have these DoFs.
++
++	if( !opts[out::overwrite]() ) {
++		runtime_assert_string_msg( !utility::file::file_exists( opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename]() ),
++			errmsg + "File " + opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename]() + " already exists!  To overwrite, use the -out:overwrite option."
++		);
++	}
++
++	// Next, actually extract DoF vectors:
++	if( opts[ conformational_autoencoder::poses_to_dofs::dof_vector_output_filename ].user() && !opts[ conformational_autoencoder::poses_to_dofs::dof_vector_output_filename ]().empty() ) {
++		TR << "Reading pose(s) and extracting DoF vector(s)..." << std::endl;
++		std::ofstream fhandle( opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename](), std::ios::binary | std::ios::out | std::ios::trunc );
++		bool const dumppdbs( opts[conformational_autoencoder::poses_to_dofs::dump_pdbs]() );
++		bool const use_custom_foldtree( opts[conformational_autoencoder::poses_to_dofs::custom_foldtree].user() );
++		core::kinematics::FoldTreeCOP ftree( (use_custom_foldtree ? load_custom_foldtree( opts[conformational_autoencoder::poses_to_dofs::custom_foldtree]() ) : nullptr) );
++		bool const do_cyclization( opts[conformational_autoencoder::poses_to_dofs::set_up_cyclic_geometry_for_pdbs]() );
++		bool const correct_cutpoint_variants( opts[conformational_autoencoder::poses_to_dofs::correct_cutpoints] );
++		for ( auto const & posestream : posestreams ) {
++			core::import_pose::pose_stream::PDBPoseInputStreamOP pdbstream( utility::pointer::dynamic_pointer_cast< core::import_pose::pose_stream::PDBPoseInputStream >( posestream ) );
++			while( posestream->has_another_pose() ) {
++				++posecounter;
++
++				core::pose::PoseOP curpose( utility::pointer::make_shared< core::pose::Pose >() );
++				posestream->fill_pose( *curpose );
++				if( do_cyclization && pdbstream != nullptr ) {
++					set_up_cyclization( *curpose );
++				}
++				if( use_custom_foldtree ) {
++					debug_assert( ftree != nullptr );
++					curpose->fold_tree( *ftree );
++				}
++				if( correct_cutpoint_variants ) {
++					fix_cutpoint_variants( *curpose );
++				}
++				
++				if( dumppdbs ) {
++					std::stringstream outfname;
++					outfname << "pose_" << posecounter << ".pdb";
++					curpose->dump_pdb( outfname.str() );
++				}
++
++				write_dof_vects( *curpose, sfxns, n_total_poses, first, fhandle, dof_summary, opts );
++				if( first ) { first = false; }
++				if( (!TR.Debug.visible()) && posecounter % 1000 == 0 ) {
++					TR << "\tProcessed " << posecounter << " poses." << std::endl;
++				}
++			}
++		}
++		fhandle.close();
++
++		runtime_assert_string_msg( posecounter == n_total_poses, errmsg + "Expected " + std::to_string(n_total_poses)
++			+ " poses, but actually processed " + std::to_string( posecounter ) + "!"
++		);
++
++		TR << "Finished processing poses and extracting DoF vectors.  " << posecounter << " poses processed, and "
++			"DoFs written to " << opts[conformational_autoencoder::poses_to_dofs::dof_vector_output_filename]() << "." << std::endl;
++	}
++
++}
++
++/// @brief Count how many input poses we have.
++core::Size
++count_input_poses(
++	utility::vector1< core::Size > & first_pose_index_by_stream_index
++) {
++	std::string const errmsg( "Error in extract_dof_vectors application, count_input_poses() function: " );
++
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++	using namespace core::import_pose::pose_stream;
++
++	core::Size n_total_poses(0);
++	MetaPoseInputStream input_stream( streams_from_cmd_line( false ) );
++	utility::vector1 < PoseInputStreamOP > posestreams( input_stream.get_input_streams() );
++
++	first_pose_index_by_stream_index.clear();
++	first_pose_index_by_stream_index.reserve( posestreams.size() );
++
++	TR << "Counting input poses..." << std::endl;
++	for( auto const & posestream : posestreams ) {
++		runtime_assert_string_msg( posestream->has_another_pose(), errmsg + "Pose stream contained no poses!" );
++		first_pose_index_by_stream_index.push_back( n_total_poses + 1 );
++		while( posestream->has_another_pose() ) {
++			// Inefficient way to count poses...  Constructing a pose for each one.
++			++n_total_poses;
++			posestream->next_pose();
++			if( n_total_poses % 1000 == 0 ) {
++				TR << "\tCounted " << n_total_poses << " poses." << std::endl;
++			}
++		}
++		posestream->reset();
++	}
++	TR << "Counted a total of " << n_total_poses << " pose(s) from " << posestreams.size() << " pose stream(s)." << std::endl;
++	return n_total_poses;
++}
++
++utility::vector1< core::pose::Pose const * >
++load_poses_for_rmsd_calculation(
++	core::Size const start_pose_index,
++	core::Size const end_pose_index,
++	utility::vector1< core::Size > const & first_pose_index_by_stream_index
++) {
++	using namespace core::import_pose::pose_stream;
++	std::string const errmsg( "Error in extract_dof_vectors application, load_poses_for_rmsd_calculation() function: " );
++
++	// Find the stream that we need to start with.
++	core::Size start_stream_index(first_pose_index_by_stream_index.size());
++	for( core::Size i(1); i<=first_pose_index_by_stream_index.size(); ++i ) {
++		if( first_pose_index_by_stream_index[i] > start_pose_index ) {
++			start_stream_index = i-1;
++			break;
++		} else if( first_pose_index_by_stream_index[i] == start_pose_index ) {
++			start_stream_index = i;
++			break;
++		}
++	}
++
++	// Allocate space for the return vector.
++	utility::vector1< core::pose::Pose const * > outvec( end_pose_index - start_pose_index + 1 );
++	core::Size counter(0);
++
++	// Get the pose streams
++	MetaPoseInputStream input_stream( streams_from_cmd_line( false ) );
++	utility::vector1 < PoseInputStreamOP > posestreams( input_stream.get_input_streams() );
++	runtime_assert( posestreams.size() == first_pose_index_by_stream_index.size() );
++	runtime_assert( first_pose_index_by_stream_index[start_stream_index] > 0 ); // Should be guaranteed true.
++	core::Size ipose( first_pose_index_by_stream_index[start_stream_index] - 1 );
++	bool first_found( false ), last_found( false );
++	for( core::Size iposestream(start_stream_index); iposestream <= posestreams.size(); ++iposestream ) {
++		PoseInputStream & posestream( *posestreams[iposestream] );
++		runtime_assert( posestream.has_another_pose() ); // Already checked this when counting poses.
++		while( posestream.has_another_pose() ) {
++			++ipose;
++			if( ipose >= start_pose_index && ipose <= end_pose_index ) {
++				first_found = true;
++				++counter;
++				core::pose::Pose * pose( new core::pose::Pose() ); //Ugh.  Need to use raw pointers, since shared pointers kill threaded performance.
++				posestream.fill_pose( *pose );
++				outvec[counter] = pose;
++				if( ipose == end_pose_index ) {
++					last_found = true;
++					break;
++				}
++			} else {
++				posestream.next_pose();
++			}
++		}
++		posestream.reset();
++		if( last_found ) { break; }
++	}
++
++	runtime_assert_string_msg( first_found, errmsg + "Unable to find first pose in pose streams!" );
++	runtime_assert_string_msg( last_found, errmsg + "Unable to find last pose in pose streams!" );
++	runtime_assert( counter == end_pose_index - start_pose_index + 1 ); // Should be true.
++
++	return outvec;
++}
++
++/// @brief Compute the RMSD between two poses, using alpha carbons only.
++core::Real
++compute_ca_rmsd(
++	core::pose::Pose const & pose1,
++	core::pose::Pose const & pose2
++) {
++	return core::scoring::CA_or_equiv_rmsd( pose1, pose2 );
++}
++
++/// @brief Compute the RMSD between two poses, using all mainchain heavyatoms.
++core::Real
++compute_all_mainchain_heavyatom_rmsd(
++	core::pose::Pose const & pose1,
++	core::pose::Pose const & pose2
++) {
++	return core::scoring::rms_at_corresponding_heavy_atoms( pose1, pose2 );
++}
++
++/// @brief Compute the RMSD between two poses, using all heavyatoms.
++core::Real
++compute_all_heavyatom_rmsd(
++	core::pose::Pose const & pose1,
++	core::pose::Pose const & pose2
++) {
++	return core::scoring::all_atom_rmsd( pose1, pose2 ); //This function actually excludes hydrogens, its name notwithstanding.
++}
++
++/// @brief Compute the RMSD between two poses, depending on the RMSD mode.
++/// @details Note that this deliberately returns a float, not a double.
++float
++compute_rmsd(
++	RMSDMode const rmsd_mode,
++	core::pose::Pose const & pose1,
++	core::pose::Pose const & pose2
++) {
++	std::string const errmsg( "Error in extract_dof_vectors application, compute_rmsd() function: " );
++
++	switch( rmsd_mode ) {
++		case RMSDMode::CA_ONLY :
++			return static_cast<float>( compute_ca_rmsd( pose1, pose2 ) );
++		case RMSDMode::ALL_MAINCHAIN_HEAVYATOMS :
++			return static_cast<float>( compute_all_mainchain_heavyatom_rmsd( pose1, pose2 ) );
++		case RMSDMode::ALL_HEAVYATOMS :
++			return static_cast<float>( compute_all_heavyatom_rmsd( pose1, pose2 ) );
++		default:
++			utility_exit_with_message( errmsg + "Unrecognized RMSD mode." );
++	}
++	return 0.0; // Keep older compilers happy.
++}
++
++/// @brief Compute the upper triangle of the RMSD matrix.
++/// @details Note that there's no locking: we can put results directly
++/// into the RMSD matrix since each calculation writes to a different cell.
++void
++compute_rmsd_submatrix(
++	RMSDMode const rmsd_mode,
++	core::Size const start_pose_index_1, core::Size const end_pose_index_1,
++	core::Size const start_pose_index_2, core::Size const end_pose_index_2,
++	utility::vector1< core::pose::Pose const * > const & poses1,
++	utility::vector1< core::pose::Pose const * > const & poses2,
++	Eigen::MatrixXf & rmsd_matrix
++) {
++	for( core::Size iglobal(start_pose_index_1); iglobal <= end_pose_index_1; ++iglobal ) {
++		core::Size const ilocal( iglobal - start_pose_index_1 + 1 );
++		core::Size const imatrix( iglobal - 1 );
++		for( core::Size jglobal( start_pose_index_2 ); jglobal <= end_pose_index_2; ++jglobal ) {
++			core::Size const jlocal( jglobal - start_pose_index_2 + 1 );
++			core::Size const jmatrix( jglobal - 1 );
++			if( jglobal <= iglobal ) { continue; }
++			rmsd_matrix( imatrix, jmatrix ) = compute_rmsd( rmsd_mode, *poses1[ilocal], *poses2[jlocal] );
++		}
++	}
++}
++
++/// @brief Load a subset of poses, and compute the RMSD matrix for the subset.
++/// @note The two ranges may or may not be identical.  If they are not identical, then they do not overlap.
++void
++load_poses_and_compute_rmsd_submatrix(
++	RMSDMode const rmsd_mode,
++	core::Size const start_pose_index_1,
++	core::Size const end_pose_index_1,
++	core::Size const start_pose_index_2,
++	core::Size const end_pose_index_2,
++	utility::vector1< core::Size > const & first_pose_index_by_stream_index,
++	Eigen::MatrixXf & rmsd_matrix
++) {
++	bool const same_range( start_pose_index_1 == start_pose_index_2 && end_pose_index_1 == end_pose_index_2 );
++
++	// Load the poses that we're working with:
++	utility::vector1< core::pose::Pose const * > poses1(
++		load_poses_for_rmsd_calculation(
++			start_pose_index_1,
++			end_pose_index_1,
++			first_pose_index_by_stream_index
++		)
++	);
++	utility::vector1< core::pose::Pose const * > poses2(
++		same_range ?
++		poses1 :
++		load_poses_for_rmsd_calculation(
++			start_pose_index_2,
++			end_pose_index_2,
++			first_pose_index_by_stream_index
++		)
++	);
++
++	// Compute the RMSD matrix.  Note that there's no locking: we can put results directly
++	// into the RMSD matrix since each calculation writes to a different cell.
++	compute_rmsd_submatrix(
++		rmsd_mode,
++		start_pose_index_1, end_pose_index_1,
++		start_pose_index_2, end_pose_index_2,
++		poses1, poses2,
++		rmsd_matrix
++	);
++
++	// We're using raw pointers since owning pointers kill threaded performance.  We
++	// need to manually deallocate.
++	for( core::Size i(1); i<=poses1.size(); ++i ) {
++		delete poses1[i];
++	}
++	poses1.clear();
++	if( !same_range ) {
++		for( core::Size i(1); i<=poses2.size(); ++i ) {
++			delete poses2[i]; // If ever this function is applied to overlapping ranges, this will result in a double-free error.
++		}
++	}
++	poses2.clear();
++
++
++	if( TR.visible() ) {
++		if( same_range ) {
++			TR << "Computed RMSD values for poses " << start_pose_index_1
++				<< " through " << end_pose_index_1 << " against themselves."
++				<< std::endl;
++		} else {
++			TR << "Computed RMSD values for poses " << start_pose_index_1
++				<< " through " << end_pose_index_1 << " against poses "
++				<< start_pose_index_2 << " through " << end_pose_index_2 << "."
++				<< std::endl;
++		}
++	}
++}
++
++/// @brief Actually write the RMSD matrix to a binary file.
++/// @details THIS FUNCTION WRITES TO DISK.  Currently, it performs no mutex locking, since the threaded steps
++/// have finished by this point.
++/// @note Only the upper triangle is written to save space.
++void
++write_rmsd_matrix_to_file(
++	Eigen::MatrixXf const & rmsd_matrix,
++	basic::options::OptionCollection const & opts
++) {
++	std::string const errmsg( "Error in extract_dof_vectors application, write_rmsd_matrix_to_file() function: " );
++
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	runtime_assert( opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename].user() && !opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename]().empty() ); // Should have already been verified.
++	std::string const & output_filename( opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename]() );
++
++	// Check for file existence:
++	if( !opts[out::overwrite]() ) {
++		runtime_assert_string_msg( !utility::file::file_exists( output_filename ),
++			errmsg + "File " + output_filename + " already exists!  To overwrite, use the -out:overwrite option."
++		);
++	}
++
++	// Open file:
++	TR << "Writing RMSD matrix to file " << output_filename << "..." << std::endl;
++	std::ofstream fhandle( output_filename, std::ios::binary | std::ios::out | std::ios::trunc );
++
++	// Write header.
++	// - Major version (unsigned int64).
++	// - Minor version (unsigned int64).
++	// - Row count (unsigned int64).
++	// - Column count (unsigned int64).
++	uint64_t const majvers( RMSDMATRIX_FILE_MAJOR_VERSION ), minvers( RMSDMATRIX_FILE_MINOR_VERSION );
++	uint64_t const rowcount( rmsd_matrix.rows() ), colcount( rmsd_matrix.cols() );
++	fhandle.write( reinterpret_cast< char const * >( &majvers ), sizeof(majvers) );
++	fhandle.write( reinterpret_cast< char const * >( &minvers ), sizeof(minvers) );
++	fhandle.write( reinterpret_cast< char const * >( &rowcount ), sizeof(rowcount) );
++	fhandle.write( reinterpret_cast< char const * >( &colcount ), sizeof(colcount) );
++
++	// Write body.  The ith record is:
++	// j - i RMSDs, for all (i,j) row/column pairs where j>i (float64).
++	for( core::Size irow(0), nrows(rmsd_matrix.rows()); irow < nrows; ++irow ) {
++		for( core::Size jcol(irow + 1), ncols(rmsd_matrix.cols()); jcol<ncols; ++jcol ) {
++			fhandle.write( reinterpret_cast< char const * >( &rmsd_matrix(irow, jcol) ), sizeof( float ) );
++			if( TR.Debug.visible()) {
++				TR.Debug << ( jcol == irow + 1 ? "" : " " ) << rmsd_matrix( irow, jcol );
++			}
++		}
++		if( TR.Debug.visible() ) {
++			TR.Debug << std::endl;
++		} else {
++			if( irow % 1000 == 999 ) {
++				TR << "\tWrote " << irow + 1 << " (of " << nrows << ") rows of RMSD matrix..." << std::endl;
++			}
++		}
++	}
++	fhandle.close();
++	TR << "Finished writing RMSD matrix to file " << output_filename << "." << std::endl;
++}
++
++/// @brief Compute the pairwise RMSD matrix for all poses, one batch at a time, and
++/// WRITE THE RESULT TO DISK.  (Performs disk i/o, obviously.)
++void
++read_inputs_and_write_rmsd_matrix(
++	basic::options::OptionCollection const & opts,
++	RMSDMode const rmsd_mode,
++	core::Size const n_total_poses,
++	utility::vector1< core::Size > const & first_pose_index_by_stream_index
++) {
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++	using namespace basic::thread_manager;
++
++	core::Size const batchsize( static_cast<core::Size>( opts[conformational_autoencoder::poses_to_dofs::rmsd_matrix_computation_batch_size]() ) );
++	core::Size const batch_increment( batchsize == 0 ? n_total_poses : batchsize );
++	Eigen::MatrixXf rmsd_matrix; // Twice the size we need, but Eigen doesn't offer an efficient upper-triangular matrix.
++	rmsd_matrix.resize( n_total_poses, n_total_poses );
++	rmsd_matrix.fill(0.0);
++
++	// Construct work vector:
++	utility::vector1< RosettaThreadFunction > workvec;
++	for( core::Size i(1); i<=n_total_poses; i+=batch_increment ) {
++		for( core::Size j(i); j<=n_total_poses; j+=batch_increment ) {
++			workvec.push_back(
++				std::bind(
++					&load_poses_and_compute_rmsd_submatrix,
++					rmsd_mode,
++					i, std::min( i+batch_increment-1, n_total_poses ),
++					j, std::min( j+batch_increment-1, n_total_poses ),
++					std::cref( first_pose_index_by_stream_index ),
++					std::ref( rmsd_matrix )
++				)
++			);
++		}
++	}
++
++	// Do the work in threads:
++	RosettaThreadAssignmentInfo thread_assignment( RosettaThreadRequestOriginatingLevel::APPLICATIONS_OR_APPLICATION_PROTOCOLS );
++	RosettaThreadManager::get_instance()->do_work_vector_in_threads( workvec, 0, thread_assignment );
++
++#ifdef MULTI_THREADED
++	TR << "Completed computation of RMSD matrix in " << thread_assignment.get_assigned_total_thread_count() << " threads ("
++		<< thread_assignment.get_requested_thread_count() << " threads requested)." << std::endl;
++#endif
++
++	// Write result:
++	write_rmsd_matrix_to_file( rmsd_matrix, opts );
++}
++
++/// @brief Convert an RMSD mode string into an RMSDMode enum.
++RMSDMode
++parse_rmsd_mode(
++	std::string const & modestring
++) {
++	std::string const errmsg( "Error in extract_dof_vectors application, parse_rmsd_mode() function: " );
++
++	if( modestring == "CA_only" ) { return RMSDMode::CA_ONLY; }
++	else if( modestring == "all_mainchain" ) { return RMSDMode::ALL_MAINCHAIN_HEAVYATOMS; }
++	else if( modestring == "all" ) { return RMSDMode::ALL_HEAVYATOMS; }
++	else{
++		utility_exit_with_message( errmsg + "Could not parse \"" + modestring + "\" as a valid RMSD mode.  Valid "
++			"options are \"CA_only\", \"all_mainchain\", or \"all\"."
++		);
++	}
++	return RMSDMode::INVALID; //Keep older compilers happy, even though we never reach here.
++}
++
++/// @brief Program entry point.
++int
++main( int argc, char * argv [] )
++{
++	try {
++		using namespace basic::options;
++		using namespace basic::options::OptionKeys;
++
++		// Initialize:
++		register_options();
++		devel::init( argc, argv );
++
++		// Start application.
++		TR << "Starting extract_dof_vectors application." << std::endl;
++		TR << "Application written on 6 February 2024 by Vikram K. Mulligan "
++			"(vmulligan@flatironinstitute.org), Biomolecular Design Group, Center "
++			"for Computational Biology, Flatiron Institute." << std::endl;
++
++		// Register this app with the citation manager.
++		register_with_citation_manager();
++
++		// Check that options are reasonable.
++		check_opts( option );
++
++		// Figure out the RMSD mode.
++		RMSDMode const rmsd_mode( parse_rmsd_mode( option[conformational_autoencoder::poses_to_dofs::rmsd_computation_mode].value() ) );
++
++		// Determine what we're actually doing:
++		bool do_dofvector_output(false), do_rmsdmatrix_output(false);
++		if( option[ conformational_autoencoder::poses_to_dofs::dof_vector_output_filename ].user() && !option[ conformational_autoencoder::poses_to_dofs::dof_vector_output_filename ]().empty() ) {
++			do_dofvector_output = true;
++		}
++		if( option[ conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename ].user() && !option[ conformational_autoencoder::poses_to_dofs::rmsd_matrix_output_filename ]().empty() ) {
++			do_rmsdmatrix_output = true;
++		}
++
++		// Count input poses.
++		utility::vector1< core::Size > first_pose_index_by_stream_index; // For each pose stream, what is the global count of the first pose?
++		core::Size const n_total_poses( count_input_poses( first_pose_index_by_stream_index /*Set by this function*/ ) );
++
++		// Read input structures and write DoF vectors.
++		if( do_dofvector_output ) {
++			read_inputs_and_write_dof_vects( option, n_total_poses );
++		}
++
++		// Read input structures again and compute RMSD matrix.
++		if( do_rmsdmatrix_output ) {
++			read_inputs_and_write_rmsd_matrix( option, rmsd_mode, n_total_poses, first_pose_index_by_stream_index );
++		}
++
++		// Write the citations.
++		basic::citation_manager::CitationManager::get_instance()->write_all_citations_and_unpublished_author_info();
++		TR << "Successfully finished execution of extract_dof_vectors application.  ";
++		if( do_dofvector_output ) {
++			TR << "DoF vectors were written to " << option[ conformational_autoencoder::poses_to_dofs::dof_vector_output_filename ]() << "." << std::endl;
++		}
++
++	} catch ( utility::excn::Exception const & e ) {
++		e.display();
++		return -1;
++	}
++
++	return 0;
++}
+diff --git a/source/src/basic/options/options_rosetta.py b/source/src/basic/options/options_rosetta.py
+index 98989706998..c448fef9763 100755
+--- a/source/src/basic/options/options_rosetta.py
++++ b/source/src/basic/options/options_rosetta.py
+@@ -5041,6 +5041,38 @@ EX_SIX_QUARTER_STEP_STDDEVS   7          +/- 0.25, 0.5, 0.75, 1, 1.25 & 1.5 sd;
+ 		), # -cm:hybridize
+ 	), # -cm
+ 
++	##############################################################################
++	## -conformational_autoencoder group: options for training and using a
++	## Pytorch-based conformational autoencoder in Rosetta.
++	##############################################################################
++	Option_Group( 'conformational_autoencoder',
++        Option_Group( 'poses_to_dofs',
++			Option( 'include_mainchain_torsions', 'Boolean', desc="If true, the mainchain torsions are included in the DoF vector.  True by default.", default='true' ),
++			Option( 'include_mainchain_bondangles', 'Boolean', desc="If true, the mainchain bond angles are included in the DoF vector.  True by default.", default='true' ),
++			Option( 'include_mainchain_bondlengths', 'Boolean', desc="If true, the mainchain bond lengths are included in the DoF vector.  True by default.", default='true' ),
++			Option( 'include_jumps', 'Boolean', desc="If true, jumps are included in the DoF vector.  True by default.", default='true' ),
++			Option( 'include_sidechain_torsions', 'Boolean', desc="If true, the sidechain torsions are included in the DoF vector.  False by default.", default='false' ),
++			Option( 'include_sidechain_bondangles', 'Boolean', desc="If true, the sidechain bond angles are included in the DoF vector.  False by default.", default='false' ),
++			Option( 'include_sidechain_bondlengths', 'Boolean', desc="If true, the sidechain bond lengths are included in the DoF vector.  False by default.", default='false' ),
++			Option( 'dof_vector_output_filename', 'String', desc="The binary DoF file to write.  Required input if DoF vectors are being written.", default="" ),
++			Option( 'rmsd_matrix_output_filename', 'String', desc="The binary RMSD matrix to write.  Required input if RMSD values are being written.", default="" ),
++			Option( 'rmsd_matrix_computation_batch_size', 'Integer', desc="If the -rmsd_matrix_output_filename option is used, this is the size of the sub-matrix processed at any given time by each thread.  It can be prohbitive to store all poses in memory at a time, so an N-by-N sub-matrix is considered at any given time.  Defaults to 0 (which means load all poses into memory).", default='0' ),
++			Option( 'rmsd_computation_mode', 'String', desc="If the -rmsd_matrix_output_filename option is used, how should the RMSD be computed?  Options are 'CA_only' (only use alpha carbons, or sidechain base atom), 'all_mainchain' (use all mainchain heavyatoms), or 'all' (use both mainchain and sidechain heavyatoms).  Defaults to 'all_mainchain'.", default="all_mainchain" ),
++			Option( 'weights_files', 'StringVector', desc="If provided, each input structure is scored with each weights file, and these scores are appended to the DoF vector." ),
++			Option( 'include_scores_from_input_files', 'Boolean', desc="If true, then scores found in input files are appended to the score vector.  Note that this assumes that all inputs contain the same scores in the same order.  False by default.", default="false" ),
++			Option( 'dump_pdbs', 'Boolean', desc="If true, we dump a PDB file for every structure loaded.  False by default.  Intended only for debugging.", default="false" ),
++			Option( 'set_up_cyclic_geometry_for_pdbs', 'Boolean', desc="If true, PDB files are treated as cyclic peptides, and a peptide bond connecting the N- and C-termini is declared (plus cutpoint variants are added).  False by default.", default="false" ),
++			Option( 'custom_foldtree', 'String', desc="If provided, a custom fold tree will be read from this file and applied to all input structures.  Unused if not provided.", default="" ),
++			Option( 'correct_cutpoints', 'Boolean', desc="If true, the positions of cutpoint variants are corrected based on the foldtree.  Needed for some cyclic peptide datasets.  False by default.", default="false" ),
++			Option( 'ignore_virtual_atoms', 'Boolean', desc="If true, degrees of freedom for virtual atoms will be omitted.  If false (the default), we include them.  False by default.", default="false" ),
++		), # -conformational_autoencoder:poses_to_dofs
++		Option_Group( 'dofs_to_poses',
++			Option( 'dof_vector_input_filename', 'String', desc="The binary DoF file to read.  Required input.", default="" ),
++			Option( 'preserve_ideal_geometry', 'Boolean', desc="If true, all bond lengths and bond angles are set to ideal values.  False by default.", default="false" ),
++		),
++
++	), # -conformational_autoencoder
++
+ 	##############################################################################
+ 	Option_Group( 'constel',
+ 		Option( 'pair_all_res', 'Boolean', desc="extracts all constellations formed by all pairs of residues", default='false' ),
+diff --git a/source/src/core/import_pose/pose_stream/PDBPoseInputStream.cc b/source/src/core/import_pose/pose_stream/PDBPoseInputStream.cc
+index 4a5e858124e..95551597b3f 100644
+--- a/source/src/core/import_pose/pose_stream/PDBPoseInputStream.cc
++++ b/source/src/core/import_pose/pose_stream/PDBPoseInputStream.cc
+@@ -57,6 +57,22 @@ void PDBPoseInputStream::reset(){
+ 	current_position_ = filenames_.begin();
+ }
+ 
++
++/// @brief Go to the next pose in the stream without generating a pose.
++/// @details Base class implementation just calls fill_pose on a dummy Pose object.
++/// This class overrides this for greater efficiency.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org).
++void
++PDBPoseInputStream::next_pose() {
++	// check to make sure that we have more poses!
++	if ( !has_another_pose() ) {
++		utility_exit_with_message(
++			"PDBPoseInputStream: called next_pose(), but I have no more Poses!"
++		);
++	}
++	++current_position_;
++}
++
+ void PDBPoseInputStream::fill_pose(
+ 	core::pose::Pose & pose,
+ 	core::chemical::ResidueTypeSet const & residue_set,
+diff --git a/source/src/core/import_pose/pose_stream/PDBPoseInputStream.hh b/source/src/core/import_pose/pose_stream/PDBPoseInputStream.hh
+index ac713a9b4c7..b622c812782 100644
+--- a/source/src/core/import_pose/pose_stream/PDBPoseInputStream.hh
++++ b/source/src/core/import_pose/pose_stream/PDBPoseInputStream.hh
+@@ -18,6 +18,7 @@
+ 
+ #include <core/chemical/ResidueTypeSet.fwd.hh>
+ #include <core/pose/Pose.fwd.hh>
++#include <core/import_pose/pose_stream/PDBPoseInputStream.fwd.hh>
+ 
+ #include <core/import_pose/pose_stream/PoseInputStream.hh>
+ 
+@@ -63,6 +64,13 @@ public:
+ 
+ 	void reset() override;
+ 
++	/// @brief Go to the next pose in the stream without generating a pose.
++	/// @details Base class implementation just calls fill_pose on a dummy Pose object.
++	/// This class overrides this for greater efficiency.
++	/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org).
++	void
++	next_pose() override;
++
+ 	void fill_pose(
+ 		core::pose::Pose & pose,
+ 		core::chemical::ResidueTypeSet const & residue_set,
+diff --git a/source/src/core/import_pose/pose_stream/PoseInputStream.cc b/source/src/core/import_pose/pose_stream/PoseInputStream.cc
+index 6e2b4ebb9d1..bfc7c9cf20a 100644
+--- a/source/src/core/import_pose/pose_stream/PoseInputStream.cc
++++ b/source/src/core/import_pose/pose_stream/PoseInputStream.cc
+@@ -32,6 +32,16 @@ namespace core {
+ namespace import_pose {
+ namespace pose_stream {
+ 
++/// @brief Go to the next pose in the stream without generating a pose.
++/// @details Base class implementation just calls fill_pose on a dummy Pose object.
++/// Derived classes may override this for greater efficiency.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org).
++void
++PoseInputStream::next_pose() {
++	core::pose::Pose dummypose;
++	fill_pose( dummypose );
++}
++
+ void PoseInputStream::preprocess_pose( core::pose::Pose & pose ) {
+ 	using basic::options::option;
+ 	using namespace basic::options::OptionKeys;
+diff --git a/source/src/core/import_pose/pose_stream/PoseInputStream.hh b/source/src/core/import_pose/pose_stream/PoseInputStream.hh
+index 68c09c55792..154115aa624 100644
+--- a/source/src/core/import_pose/pose_stream/PoseInputStream.hh
++++ b/source/src/core/import_pose/pose_stream/PoseInputStream.hh
+@@ -38,6 +38,14 @@ public:
+ 
+ 	virtual void reset() = 0;
+ 
++	/// @brief Go to the next pose in the stream without generating a pose.
++	/// @details Base class implementation just calls fill_pose on a dummy Pose object.
++	/// Derived classes may override this for greater efficiency.
++	/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org).
++	virtual
++	void
++	next_pose();
++
+ 	virtual void fill_pose(
+ 		core::pose::Pose &,
+ 		core::chemical::ResidueTypeSet const &,
+diff --git a/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.cc b/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.cc
+index d3086dbe475..6ca781d01d6 100644
+--- a/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.cc
++++ b/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.cc
+@@ -187,6 +187,20 @@ bool SilentFilePoseInputStream::has_another_pose() {
+ 	}
+ }
+ 
++/// @brief Go to the next pose in the stream without generating a pose.
++/// @details Base class implementation just calls fill_pose on a dummy Pose object.
++/// This derived class overrides this for greater efficiency.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org).
++void
++SilentFilePoseInputStream::next_pose() {
++	if ( !has_another_pose() ) {
++		utility_exit_with_message(
++			"SilentFilePoseInputStream: called next_pose(), but I have no more Poses!"
++		);
++	}
++	++current_position_;
++}
++
+ void SilentFilePoseInputStream::fill_pose(
+ 	core::pose::Pose & pose,
+ 	core::chemical::ResidueTypeSet const & residue_set,
+@@ -195,7 +209,7 @@ void SilentFilePoseInputStream::fill_pose(
+ 	// check to make sure that we have more poses!
+ 	if ( !has_another_pose() ) {
+ 		utility_exit_with_message(
+-			"SilentFilePoseInputStream: called fill_pose, but I have no more Poses!"
++			"SilentFilePoseInputStream: called fill_pose(), but I have no more Poses!"
+ 		);
+ 	}
+ 
+diff --git a/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.hh b/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.hh
+index 02ff55c924e..60a684dac06 100644
+--- a/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.hh
++++ b/source/src/core/import_pose/pose_stream/SilentFilePoseInputStream.hh
+@@ -93,6 +93,12 @@ public: // class-wide methods
+ 
+ 	void reset() override;
+ 
++	/// @brief Go to the next pose in the stream without generating a pose.
++	/// @details Base class implementation just calls fill_pose on a dummy Pose object.
++	/// This derived class overrides this for greater efficiency.
++	/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org).
++	void next_pose() override;
++
+ 	void fill_pose(
+ 		core::pose::Pose & pose,
+ 		core::chemical::ResidueTypeSet const & residue_set,
+diff --git a/source/src/protocols/conformational_autoencoder/DoFSummary.cc b/source/src/protocols/conformational_autoencoder/DoFSummary.cc
+new file mode 100644
+index 00000000000..d6df7ec7ef7
+--- /dev/null
++++ b/source/src/protocols/conformational_autoencoder/DoFSummary.cc
+@@ -0,0 +1,1328 @@
++// -*- mode:c++;tab-width:2;indent-tabs-mode:t;show-trailing-whitespace:t;rm-trailing-spaces:t -*-
++// vi: set ts=2 noet:
++//
++// Copyright 2026 Vikram K. Mulligan
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions are met:
++//
++// 1. Redistributions of source code must retain the above copyright notice,
++// this list of conditions and the following disclaimer.
++//
++// 2. Redistributions in binary form must reproduce the above copyright notice,
++// this list of conditions and the following disclaimer in the documentation
++// and/or other materials provided with the distribution.
++//
++// 3. Neither the name of the copyright holder nor the names of its
++// contributors may be used to endorse or promote products derived from this
++// software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
++// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++// THE POSSIBILITY OF SUCH DAMAGE.
++
++/// @file protocols/conformational_autoencoder/DoFSummary.cc
++/// @brief Implementations for a class to store the types of entries in the DoF vector and to
++/// confirm that all poses have the same DoFs.  Used for the conformational autoencoder.
++/// @note Unlike the Rosetta software suite, this file is released under a BSD 3-clause open-source licence.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org)
++
++// Project headers:
++#include <protocols/conformational_autoencoder/DoFSummary.hh>
++
++// Basic headers:
++#include <basic/Tracer.hh>
++#include <basic/options/keys/conformational_autoencoder.OptionKeys.gen.hh>
++#include <basic/datacache/BasicDataCache.hh>
++#include <basic/datacache/CacheableData.hh>
++#include <basic/datacache/CacheableStringFloatMap.hh>
++
++// Core headers:
++#include <core/pose/Pose.hh>
++#include <core/id/DOF_ID.hh>
++#include <core/chemical/ResidueType.hh>
++#include <core/chemical/ChemicalManager.hh>
++#include <core/conformation/Conformation.hh>
++#include <core/conformation/util.hh>
++#include <core/kinematics/FoldTree.hh>
++#include <core/io/silent/SilentStruct.hh>
++#include <core/io/silent/SilentFileData.hh>
++#include <core/io/silent/BinarySilentStruct.hh>
++#include <core/kinematics/AtomTree.hh>
++#include <core/id/AtomID.hh>
++#include <core/scoring/Energies.hh>
++#include <core/simple_metrics/SimpleMetricData.hh>
++#include <core/pose/datacache/CacheableDataType.hh>
++#include <core/simple_metrics/metrics/CustomRealValueMetric.hh>
++
++// Numeric headers:
++#include <numeric/EulerAngles.hh>
++
++// Utility headers:
++#include <utility/pointer/memory.hh>
++#include <utility/io/ozstream.hh>
++#include <utility/file/file_sys_util.hh>
++
++// STL headers:
++#include <sstream>
++#include <iomanip>
++
++static basic::Tracer TR( "protocols.conformational_autoencoder.DoFSummary" );
++
++
++namespace protocols {
++namespace conformational_autoencoder {
++
++////////////////////////////////////////////////////////////////////////////////
++// CONSTRUCTION, DESTRUCTION, AND OPERATORS
++////////////////////////////////////////////////////////////////////////////////
++
++/// @brief Options constructor, to be used instead of default constructor.
++DoFSummary::DoFSummary(
++	basic::options::OptionCollection const & opts
++) :
++	utility::VirtualBase()
++{
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	include_mainchain_torsions_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_mainchain_torsions]();
++	include_mainchain_bondlengths_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_mainchain_bondlengths]();
++	include_mainchain_bondangles_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_mainchain_bondangles]();
++	include_jumps_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_jumps]();
++	include_sidechain_torsions_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_sidechain_torsions]();
++	include_sidechain_bondlengths_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_sidechain_bondlengths]();
++	include_sidechain_bondangles_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_sidechain_bondangles]();
++	include_scores_from_input_files_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_scores_from_input_files]();
++	ignore_virtual_atoms_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::ignore_virtual_atoms ]();
++	preserve_ideal_geometry_ = opts[basic::options::OptionKeys::conformational_autoencoder::dofs_to_poses::preserve_ideal_geometry ]();
++}
++
++/// @brief Options-and-pose constructor.
++DoFSummary::DoFSummary(
++	basic::options::OptionCollection const & opts,
++	core::pose::Pose const & pose
++) :
++	utility::VirtualBase()
++{
++	using namespace basic::options;
++	using namespace basic::options::OptionKeys;
++
++	include_mainchain_torsions_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_mainchain_torsions]();
++	include_mainchain_bondlengths_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_mainchain_bondlengths]();
++	include_mainchain_bondangles_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_mainchain_bondangles]();
++	include_jumps_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_jumps]();
++	include_sidechain_torsions_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_sidechain_torsions]();
++	include_sidechain_bondlengths_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_sidechain_bondlengths]();
++	include_sidechain_bondangles_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_sidechain_bondangles]();
++	include_scores_from_input_files_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::include_scores_from_input_files]();
++	ignore_virtual_atoms_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::ignore_virtual_atoms ]();
++	preserve_ideal_geometry_ = opts[basic::options::OptionKeys::conformational_autoencoder::dofs_to_poses::preserve_ideal_geometry ]();
++	initialize_from_pose( pose );
++}
++
++/// @brief File input constructor.
++/// @details Assumes that we need to read header from file.
++DoFSummary::DoFSummary(
++	std::ifstream & instream,
++	basic::options::OptionCollection const & opts
++) :
++	utility::VirtualBase()
++{
++	ignore_virtual_atoms_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::ignore_virtual_atoms ]();
++	preserve_ideal_geometry_ = opts[basic::options::OptionKeys::conformational_autoencoder::dofs_to_poses::preserve_ideal_geometry ]();
++	ignore_virtual_atoms_ = opts[basic::options::OptionKeys::conformational_autoencoder::poses_to_dofs::ignore_virtual_atoms]();
++	initialize_from_dof_file_header( instream );
++	read_dofs_from_dof_file( instream );
++}
++
++/// @brief Clone operation: make a copy of this object, and return an owning pointer to the copy.
++DoFSummaryOP
++DoFSummary::clone() const {
++	return utility::pointer::make_shared< DoFSummary >( *this );
++}
++
++/// @brief Comparison operator.
++/// @details Compares actual DoF values in version 1.3 and above.
++bool
++DoFSummary::operator==(
++	DoFSummary const & other
++) const {
++	bool dof_id_comparison(true);
++	if( DOFVECT_FILE_MAJOR_VERSION > 1 ||
++		( DOFVECT_FILE_MAJOR_VERSION == 1 && DOFVECT_FILE_MINOR_VERSION >=3 )
++	) {
++		dof_id_comparison = ( dof_ids_ == other.dof_ids_ );
++	}
++	return
++		initialized_ == other.initialized_ &&
++		( include_mainchain_torsions_ ? n_mainchain_torsions_ == other.n_mainchain_torsions_ : true ) &&
++		( include_mainchain_bondangles_ ? n_mainchain_bondangles_ == other.n_mainchain_bondangles_ : true ) &&
++		( include_mainchain_bondlengths_ ? n_mainchain_bondlengths_ == other.n_mainchain_bondlengths_ : true ) &&
++		( include_sidechain_torsions_ ? n_sidechain_torsions_ == other.n_sidechain_torsions_ : true ) &&
++		( include_sidechain_bondangles_ ? n_sidechain_bondangles_ == other.n_sidechain_bondangles_ : true ) &&
++		( include_sidechain_bondlengths_ ? n_sidechain_bondlengths_ == other.n_sidechain_bondlengths_ : true ) &&
++		( include_jumps_ ? n_jumps_ == other.n_jumps_ : true ) &&
++		( additional_scores_.size() == other.additional_scores_.size() ) &&
++		( include_scores_from_input_files_ ? n_scores_from_input_files_ == other.n_scores_from_input_files_ : true ) &&
++		dof_id_comparison
++		;
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// PUBLIC FUNCTIONS
++////////////////////////////////////////////////////////////////////////////////
++
++/// @brief Initialize from a pose.
++void
++DoFSummary::initialize_from_pose(
++	core::pose::Pose const & pose
++) {
++	runtime_assert( !initialized_ );
++
++	// Count DoFs:
++	for( core::Size ir(1), irmax(pose.total_residue()); ir<=irmax; ++ir ) {
++		core::chemical::ResidueType const & restype( pose.residue_type(ir) );
++		for( core::Size ia(1), iamax(restype.natoms()); ia<=iamax; ++ia ) {
++			if( ignore_virtual_atoms_ && restype.is_virtual(ia) ) {
++				continue;
++			}
++			if( restype.is_polymer() && (!restype.atom_is_sidechain(ia)) ) {
++				if( include_mainchain_torsions_ ) {
++					++n_mainchain_torsions_;
++				}
++				if( include_mainchain_bondangles_ ) {
++					++n_mainchain_bondangles_;
++				}
++				if( include_mainchain_bondlengths_ ) {
++					++n_mainchain_bondlengths_;
++				}
++			} else {
++				if( include_sidechain_torsions_ ) {
++					++n_sidechain_torsions_;
++				}
++				if( include_sidechain_bondangles_ ) {
++					++n_sidechain_bondangles_;
++				}
++				if( include_sidechain_bondlengths_ ) {
++					++n_sidechain_bondlengths_;
++				}
++			}
++		}
++	}
++
++	// Subtract off DoFs built by jumps to the first atom of a residue:
++	for( core::Size ij(1), ijmax(pose.num_jump()); ij<=ijmax; ++ij ) {
++		core::id::AtomID upstream_at, downstream_at;
++		pose.conformation().get_jump_atom_ids( ij, upstream_at, downstream_at );
++		core::conformation::Residue const & res( pose.residue( downstream_at.rsd() ) );
++		if( ( !res.is_polymer() ) || res.type().atom_is_sidechain( downstream_at.atomno() ) ) {
++			if( include_sidechain_torsions_ ) {
++				if( n_sidechain_torsions_ > 1 ) { n_sidechain_torsions_ -= 1; } else { n_sidechain_torsions_ = 0; }
++			}
++			if( include_sidechain_bondangles_ ) {
++				if( n_sidechain_bondangles_ > 1 ) { n_sidechain_bondangles_ -= 1; } else { n_sidechain_bondangles_ = 0; }
++			}
++			if( include_sidechain_bondlengths_ ) {
++				if( n_sidechain_bondlengths_ > 1 ) { n_sidechain_bondlengths_ -= 1; } else { n_sidechain_bondlengths_ = 0; }
++			}
++		} else { // Is polymer.
++			if( include_mainchain_torsions_ ) {
++				if( n_mainchain_torsions_ > 1 ) { n_mainchain_torsions_ -= 1; } else { n_mainchain_torsions_ = 0; }
++			}
++			if( include_mainchain_bondangles_ ) {
++				if( n_mainchain_bondangles_ > 1 ) { n_mainchain_bondangles_ -= 1; } else { n_mainchain_bondangles_ = 0; }
++			}
++			if( include_mainchain_bondlengths_ ) {
++				if( n_mainchain_bondlengths_ > 1 ) { n_mainchain_bondlengths_ -= 1; } else { n_mainchain_bondlengths_ = 0; }
++			}
++		}
++	}
++
++	// Subtract off DoFs for root:
++	{
++		core::conformation::Residue const & root_res( pose.residue( pose.conformation().fold_tree().root() ) );
++		if( root_res.is_polymer() ) {
++			if( include_mainchain_torsions_ ) {
++				if( n_mainchain_torsions_ > 1 ) { n_mainchain_torsions_ -= 1; } else { n_mainchain_torsions_ = 0; }
++			}
++			if( include_mainchain_bondangles_ ) {
++				if( n_mainchain_bondangles_ > 1 ) { n_mainchain_bondangles_ -= 1; } else { n_mainchain_bondangles_ = 0; }
++			}
++			if( include_mainchain_bondlengths_ ) {
++				if( n_mainchain_bondlengths_ > 1 ) { n_mainchain_bondlengths_ -= 1; } else { n_mainchain_bondlengths_ = 0; }
++			}
++		} else {
++			if( include_sidechain_torsions_ ) {
++				if( n_sidechain_torsions_ > 1 ) { n_sidechain_torsions_ -= 1; } else { n_sidechain_torsions_ = 0; }
++			}
++			if( include_sidechain_bondangles_ ) {
++				if( n_sidechain_bondangles_ > 1 ) { n_sidechain_bondangles_ -= 1; } else { n_sidechain_bondangles_ = 0; }
++			}
++			if( include_sidechain_bondlengths_ ) {
++				if( n_sidechain_bondlengths_ > 1 ) { n_sidechain_bondlengths_ -= 1; } else { n_sidechain_bondlengths_ = 0; }
++			}
++		}
++	}
++
++	// Jumps:
++	if( include_jumps_ ) n_jumps_ = pose.num_jump();
++
++	// Scores stored in file:
++	if( include_scores_from_input_files_ ) {
++		n_scores_from_input_files_ = count_scores_in_pose(pose);
++	}
++
++	// Debug output:
++	// if( TR.Debug.visible() ) {
++	// 	TR.Debug << "Counted the following DoFs:" << std::endl;
++	// 	TR.Debug << "Mainchain torsions: " << n_mainchain_torsions_ << std::endl;
++	// 	TR.Debug << "Sidechain torsions: " << n_sidechain_torsions_ << std::endl;
++	// 	TR.Debug << "Mainchain bond angles: " << n_mainchain_bondangles_ << std::endl;
++	// 	TR.Debug << "Sidechain bond angles: " << n_sidechain_bondangles_ << std::endl;
++	// 	TR.Debug << "Mainchain bond lengths: " << n_mainchain_bondlengths_ << std::endl;
++	// 	TR.Debug << "Sidechain bond lengths: " << n_sidechain_bondlengths_ << std::endl;
++	// 	TR.Debug << "Jump DoFs (6*number of jumps): " << 6*n_jumps_ << std::endl;
++	// }
++
++	// Actually collect DoFs from the pose:
++	bool const store_dof_ids(
++		DOFVECT_FILE_MAJOR_VERSION > 1 ||
++		( DOFVECT_FILE_MAJOR_VERSION == 1 && DOFVECT_FILE_MINOR_VERSION >=3 )
++	);
++	initialize_dof_value_vectors();
++	collect_pose_dof_values( pose, store_dof_ids );
++
++	initialized_ = true;
++}
++
++/// @brief Initialize from header lines of a DoF vector file.
++void
++DoFSummary::initialize_from_dof_file_header(
++	std::ifstream & instream
++) {
++	std::string const errmsg( "Error in DoFSummary::initialize_from_dof_file_header(): " );
++
++	// Read and check file version:
++	core::Size majversion, minversion;
++	instream.read( reinterpret_cast< char * >( &majversion ), sizeof(majversion) );
++	instream.read( reinterpret_cast< char * >( &minversion ), sizeof(minversion) );
++	runtime_assert_string_msg( majversion == 1 && minversion >= 2, errmsg + "Expected version 1.2 or better, "
++		"but got version " + std::to_string(majversion) + "." + std::to_string(minversion) + "!"
++	);
++	if( TR.Debug.visible() ) {
++		TR.Debug << majversion << " " << minversion;
++	}
++
++	// Read things to include:
++	instream.read( reinterpret_cast< char * >( &include_mainchain_torsions_ ), sizeof( include_mainchain_torsions_ ) );
++	instream.read( reinterpret_cast< char * >( &include_sidechain_torsions_ ), sizeof( include_sidechain_torsions_ ) );
++	instream.read( reinterpret_cast< char * >( &include_mainchain_bondangles_ ), sizeof( include_mainchain_bondangles_ ) );
++	instream.read( reinterpret_cast< char * >( &include_sidechain_bondangles_ ), sizeof( include_sidechain_bondangles_ ) );
++	instream.read( reinterpret_cast< char * >( &include_mainchain_bondlengths_ ), sizeof( include_mainchain_bondlengths_ ) );
++	instream.read( reinterpret_cast< char * >( &include_sidechain_bondlengths_ ), sizeof( include_sidechain_bondlengths_ ) );
++	instream.read( reinterpret_cast< char * >( &include_jumps_ ), sizeof( include_jumps_ ) );
++	bool include_scores;
++	instream.read( reinterpret_cast< char * >( &include_scores ), sizeof( include_scores ) );
++	if( TR.Debug.visible() ) {
++		TR.Debug << " " << (include_mainchain_torsions_ ? "TRUE" : "FALSE")
++			<< " " << (include_sidechain_torsions_ ? "TRUE" : "FALSE")
++			<< " " << (include_mainchain_bondangles_ ? "TRUE" : "FALSE")
++			<< " " << (include_sidechain_bondangles_ ? "TRUE" : "FALSE")
++			<< " " << (include_mainchain_bondlengths_ ? "TRUE" : "FALSE")
++			<< " " << (include_sidechain_bondlengths_ ? "TRUE" : "FALSE")
++			<< " " << (include_jumps_ ? "TRUE" : "FALSE")
++			<< " " << (include_scores ? "TRUE" : "FALSE");
++	}
++
++	// Number of entries in vectors:
++	instream.read( reinterpret_cast< char * >( &n_mainchain_torsions_ ), sizeof( n_mainchain_torsions_ ) );
++	instream.read( reinterpret_cast< char * >( &n_sidechain_torsions_ ), sizeof( n_sidechain_torsions_ ) );
++	instream.read( reinterpret_cast< char * >( &n_mainchain_bondangles_ ), sizeof( n_mainchain_bondangles_ ) );
++	instream.read( reinterpret_cast< char * >( &n_sidechain_bondangles_ ), sizeof( n_sidechain_bondangles_ ) );
++	instream.read( reinterpret_cast< char * >( &n_mainchain_bondlengths_ ), sizeof( n_mainchain_bondlengths_ ) );
++	instream.read( reinterpret_cast< char * >( &n_sidechain_bondlengths_ ), sizeof( n_sidechain_bondlengths_ ) );
++	core::Size n_jumps_times_six;
++	instream.read( reinterpret_cast< char * >( &n_jumps_times_six ), sizeof( n_jumps_times_six ) );
++	runtime_assert( n_jumps_times_six % 6 == 0 );
++	n_jumps_ = n_jumps_ / 6;
++	core::Size nscores;
++	instream.read( reinterpret_cast< char * >( &nscores ), sizeof( nscores ) );
++	if( TR.Debug.visible() ) {
++		TR.Debug << " " << n_mainchain_torsions_
++			<< " " << n_sidechain_torsions_
++			<< " " << n_mainchain_bondangles_
++			<< " " << n_sidechain_bondangles_
++			<< " " << n_mainchain_bondlengths_
++			<< " " << n_sidechain_bondlengths_
++			<< " " << n_jumps_
++			<< " " << nscores
++			<< std::endl;
++	}
++
++	// Resize storage space:
++	mainchain_torsion_values_.clear();
++	sidechain_torsion_values_.clear();
++	mainchain_bondangle_values_.clear();
++	sidechain_bondangle_values_.clear();
++	mainchain_bondlength_values_.clear();
++	sidechain_bondlength_values_.clear();
++	jump_values_.clear();
++	additional_scores_.clear();
++	mainchain_torsion_values_.resize( n_mainchain_torsions_ );
++	sidechain_torsion_values_.resize( n_sidechain_torsions_);
++	mainchain_bondangle_values_.resize( n_mainchain_bondangles_ );
++	sidechain_bondangle_values_.resize( n_sidechain_bondangles_ );
++	mainchain_bondlength_values_.resize( n_mainchain_bondlengths_ );
++	sidechain_bondlength_values_.resize( n_sidechain_bondlengths_ );
++	jump_values_.resize( n_jumps_ );
++	additional_scores_.resize( nscores );
++
++	// If we're version 1.3 or higher, read identities of all dofs.
++	if( majversion > 1 || (majversion == 1 && minversion >= 3 ) ) {
++		read_dof_identities( instream );
++	}
++
++	// Number of files in body:
++	core::Size n_total_poses;
++	instream.read( reinterpret_cast< char * >( &n_total_poses ), sizeof( n_total_poses ) );
++	if( TR.Debug.visible() ) { TR.Debug << n_total_poses << " (poses)" << std::endl; }
++	
++	// First pose binary silent string:
++	std::string silentstring;
++	core::Size stringlength;
++	instream.read( reinterpret_cast< char * >( &stringlength ), sizeof(stringlength) );
++	char * tempchar( new char[stringlength] );
++	instream.read( tempchar, stringlength );
++	silentstring = std::string( tempchar );
++	delete [] tempchar; tempchar = nullptr;
++
++	if( TR.Debug.visible() ) {
++		TR.Debug << stringlength << " (bytes in silent structure that follows)" << std::endl;
++		TR.Debug << silentstring << std::endl;
++	}
++	
++	// Build and store a pose:
++	std::istringstream in_ss( silentstring );
++	utility::vector1 < std::string > tagvector;
++	core::io::silent::SilentFileOptions opts;
++	opts.in_fullatom( true );
++	opts.set_binary_output( true );
++	core::io::silent::SilentFileData silentfiledata( opts );
++	silentfiledata.read_stream( in_ss, tagvector, true, "reference_pose" );
++	core::pose::PoseOP mypose( utility::pointer::make_shared< core::pose::Pose >());
++	core::chemical::ResidueTypeSet const & restypeset( *( core::chemical::ChemicalManager::get_instance()->residue_type_set( core::chemical::FULL_ATOM_t ) ) );
++	silentfiledata[silentfiledata.tags()[1]]->fill_pose(*mypose, restypeset);
++	pose_ = mypose;
++	TR.Debug << "Read " << mypose->total_residue() << "-residue pose from DoF file header." << std::endl;
++
++	if(
++		majversion > 1 ||
++		( majversion == 1 && minversion >= 3 )
++	) {
++		check_pose_against_dof_ids( *pose_ );
++	}
++}
++
++/// @brief Reset the initialization state, allowing reinitialization.
++void
++DoFSummary::reset_initialization_state() {
++	initialized_ = false;
++}
++
++/// @brief Read the DoFs from a DoF file.
++/// @details Assumes that the number of DoF entries has already been properly set.
++void
++DoFSummary::read_dofs_from_dof_file(
++	std::ifstream & instream
++) {
++	runtime_assert( !initialized_ );
++
++	// Torsions:
++	bool first(true);
++	if( include_mainchain_torsions_ ) {
++		for( auto & entry : mainchain_torsion_values_ ) {
++			instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++	if( include_sidechain_torsions_ ) {
++		for( auto & entry : sidechain_torsion_values_ ) {
++			instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	// Bond angles:
++	if( include_mainchain_bondangles_ ) {
++		for( auto & entry : mainchain_bondangle_values_ ) {
++			instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++	if( include_sidechain_bondangles_ ) {
++		for( auto & entry : sidechain_bondangle_values_ ) {
++			instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	// Bond lengths:
++	if( include_mainchain_bondlengths_ ) {
++		for( auto & entry : mainchain_bondlength_values_ ) {
++			instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++	if( include_sidechain_bondlengths_ ) {
++		for( auto & entry : sidechain_bondlength_values_ ) {
++			instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	// Jumps:
++	if( include_jumps_ ) {
++		for( auto & jump6vec : jump_values_ ) {
++			for( auto & entry : jump6vec ) {
++				instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++				if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++				first=false;
++			}
++		}
++	}
++
++	// Score terms:
++	if( !additional_scores_.empty() ) {
++		for( auto & entry : additional_scores_ ) {
++			instream.read( reinterpret_cast< char * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	if( TR.Debug.visible() ) { TR.Debug << std::endl; }
++
++	initialized_ = true;
++}
++
++
++/// @brief Append score values to the DoF vectors to write.
++void
++DoFSummary::append_scores(
++	utility::vector1< core::Real > const & scores
++) {
++	runtime_assert( initialized_ );
++	if( additional_scores_.empty() ) {
++		additional_scores_ = scores;
++	} else {
++		additional_scores_.append( scores );
++	}
++}
++
++/// @brief Write DoF headers to a binary file stream.
++/// @details If debug tracer is active, write to tracer, too.
++/// Headers consist of:
++/// - file major version (uint64) and minor version (uint64)
++/// - include mainchain torsions (bool)
++/// - include sidechain torsions (bool)
++/// - include mainchain bondangles (bool)
++/// - include sidechain bondangles (bool)
++/// - include mainchain bondlengths (bool)
++/// - include sidechain bondlengths (bool)
++/// - include jumps (bool)
++/// - include scores (bool)
++/// - N mainchain torsions. (0 if not included.)
++/// - N sidechain torsions. (0 if not included.)
++/// - N mainchain bondangles. (0 if not included.)
++/// - N sidechain bondangles. (0 if not included.)
++/// - N mainchain bondlengths. (0 if not included.)
++/// - N sidechain bondlengths. (0 if not included.)
++/// - N jumps.  (0 if not included.  Note that number of entries is 6*N jumps.)
++/// - N scores. (0 if not included.)
++/// - N entries in DoF ID vector (uint64).
++/// - Vector of DoF IDs (resnum, atnum, idtype as uint64, uint64, uint8).
++/// - Binary silent string length (bytes).
++/// - First pose (reference pose) binary silent string.
++void
++DoFSummary::write_headers(
++	std::ofstream & fhandle,
++	core::pose::Pose const & pose,
++	core::Size const n_total_poses,
++	basic::options::OptionCollection const & opts
++) const {
++	runtime_assert( initialized_ );
++
++	// File version:
++	core::Size const majversion( DOFVECT_FILE_MAJOR_VERSION );
++	core::Size const minversion( DOFVECT_FILE_MINOR_VERSION );
++	fhandle.write( reinterpret_cast< char const * >( &majversion ), sizeof(majversion) );
++	fhandle.write( reinterpret_cast< char const * >( &minversion ), sizeof(minversion) );
++	if( TR.Debug.visible() ) {
++		TR.Debug << majversion << " " << minversion;
++	}
++
++	// Things to include:
++	fhandle.write( reinterpret_cast< char const * >( &include_mainchain_torsions_ ), sizeof( include_mainchain_torsions_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &include_sidechain_torsions_ ), sizeof( include_sidechain_torsions_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &include_mainchain_bondangles_ ), sizeof( include_mainchain_bondangles_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &include_sidechain_bondangles_ ), sizeof( include_sidechain_bondangles_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &include_mainchain_bondlengths_ ), sizeof( include_mainchain_bondlengths_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &include_sidechain_bondlengths_ ), sizeof( include_sidechain_bondlengths_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &include_jumps_ ), sizeof( include_jumps_ ) );
++	bool const include_scores( !additional_scores_.empty() );
++	fhandle.write( reinterpret_cast< char const * >( &include_scores ), sizeof( include_scores ) );
++	if( TR.Debug.visible() ) {
++		TR.Debug << " " << (include_mainchain_torsions_ ? "TRUE" : "FALSE")
++			<< " " << (include_sidechain_torsions_ ? "TRUE" : "FALSE")
++			<< " " << (include_mainchain_bondangles_ ? "TRUE" : "FALSE")
++			<< " " << (include_sidechain_bondangles_ ? "TRUE" : "FALSE")
++			<< " " << (include_mainchain_bondlengths_ ? "TRUE" : "FALSE")
++			<< " " << (include_sidechain_bondlengths_ ? "TRUE" : "FALSE")
++			<< " " << (include_jumps_ ? "TRUE" : "FALSE")
++			<< " " << (include_scores ? "TRUE" : "FALSE");
++	}
++
++	// Number of entries in vectors:
++	fhandle.write( reinterpret_cast< char const * >( &n_mainchain_torsions_ ), sizeof( n_mainchain_torsions_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &n_sidechain_torsions_ ), sizeof( n_sidechain_torsions_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &n_mainchain_bondangles_ ), sizeof( n_mainchain_bondangles_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &n_sidechain_bondangles_ ), sizeof( n_sidechain_bondangles_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &n_mainchain_bondlengths_ ), sizeof( n_mainchain_bondlengths_ ) );
++	fhandle.write( reinterpret_cast< char const * >( &n_sidechain_bondlengths_ ), sizeof( n_sidechain_bondlengths_ ) );
++	core::Size const n_jumps_times_six( n_jumps_ * 6 );
++	fhandle.write( reinterpret_cast< char const * >( &n_jumps_times_six ), sizeof( n_jumps_ ) );
++	core::Size const nscores( additional_scores_.size() );
++	fhandle.write( reinterpret_cast< char const * >( &nscores ), sizeof( nscores ) );
++	if( TR.Debug.visible() ) {
++		TR.Debug << " " << n_mainchain_torsions_
++			<< " " << n_sidechain_torsions_
++			<< " " << n_mainchain_bondangles_
++			<< " " << n_sidechain_bondangles_
++			<< " " << n_mainchain_bondlengths_
++			<< " " << n_sidechain_bondlengths_
++			<< " " << n_jumps_
++			<< " " << nscores
++			<< std::endl;
++	}
++
++	// If we're version 1.3 or higher, write identities of all dofs.
++	if( DOFVECT_FILE_MAJOR_VERSION > 1 || (DOFVECT_FILE_MAJOR_VERSION == 1 && DOFVECT_FILE_MINOR_VERSION >= 3 ) ) {
++		write_dof_identities( fhandle );
++	}
++
++	// Number of files in body:
++	fhandle.write( reinterpret_cast< char const * >( &n_total_poses ), sizeof( n_total_poses ) );
++	if( TR.Debug.visible() ) { TR.Debug << n_total_poses << " (poses)" << std::endl; }
++	
++	// First pose binary silent string:
++	core::io::silent::BinarySilentStructOP silentstruct(
++		utility::pointer::make_shared< core::io::silent::BinarySilentStruct >(opts, pose, "reference_pose")
++	);
++	std::ostringstream ss;
++	silentstruct->print_header( ss );
++	silentstruct->print_conformation( ss );
++	std::string const silentstring( ss.str() );
++	core::Size const stringlength( silentstring.length() + 1 ); // Include null terminator.
++	fhandle.write( reinterpret_cast< char const * >( &stringlength ), sizeof(stringlength) );
++	fhandle.write( silentstring.c_str(), stringlength );
++	if( TR.Debug.visible() ) {
++		TR.Debug << stringlength << " (bytes in silent structure that follows)" << std::endl;
++		TR.Debug << silentstring << std::endl;
++	}
++}
++
++/// @brief Actually write the DoFs for this pose to a binary
++/// file stream.
++/// @details If debug tracer is active, write to tracer, too.
++void
++DoFSummary::write_pose_dofs(
++	std::ofstream & fhandle
++) const {
++	runtime_assert( initialized_ );
++
++	// Torsions:
++	bool first(true);
++	if( include_mainchain_torsions_ ) {
++		for( auto const & entry : mainchain_torsion_values_ ) {
++			fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++	if( include_sidechain_torsions_ ) {
++		for( auto const & entry : sidechain_torsion_values_ ) {
++			fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	// Bond angles:
++	if( include_mainchain_bondangles_ ) {
++		for( auto const & entry : mainchain_bondangle_values_ ) {
++			fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++	if( include_sidechain_bondangles_ ) {
++		for( auto const & entry : sidechain_bondangle_values_ ) {
++			fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	// Bond lengths:
++	if( include_mainchain_bondlengths_ ) {
++		for( auto const & entry : mainchain_bondlength_values_ ) {
++			fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++	if( include_sidechain_bondlengths_ ) {
++		for( auto const & entry : sidechain_bondlength_values_ ) {
++			fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	// Jumps:
++	if( include_jumps_ ) {
++		for( auto const & jump6vec : jump_values_ ) {
++			for( auto const & entry : jump6vec ) {
++				fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++				if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++				first=false;
++			}
++		}
++	}
++
++	// Score terms:
++	if( !additional_scores_.empty() ) {
++		for( auto const & entry : additional_scores_ ) {
++			fhandle.write( reinterpret_cast< char const * >( &entry ), sizeof(entry) );
++			if( TR.Debug.visible() ) { TR.Debug << (first ? "" : " " ) << entry; }
++			first=false;
++		}
++	}
++
++	if( TR.Debug.visible() ) { TR.Debug << std::endl; }
++}
++
++/// @brief Write a PDB file with the current DoFs.
++/// @details DoFs must be initialized.  Throws if no pose is stored.
++void
++DoFSummary::write_pdb_file(
++	std::string const & file_basename,
++	core::Size const file_index
++) const {
++	runtime_assert( initialized_ );
++	runtime_assert( pose_ != nullptr );
++
++	core::pose::PoseCOP pose( pose_from_dofs() );
++
++	std::ostringstream outname;
++	outname << utility::file::file_basename( file_basename );
++	outname << "_";
++	outname << std::setw(6) << std::setfill('0');
++	outname << file_index;
++	outname << ".pdb";
++
++	pose->dump_pdb( outname.str() );
++	TR.Debug << "Wrote " << outname.str() << "." << std::endl;
++}
++
++/// @brief Write a PDB file for a reference pose.
++/// @details DoFs must be initialized.  Throws if no pose is stored.
++void
++DoFSummary::write_pdb_file_reference_pose(
++	std::string const & file_basename
++) const {
++	runtime_assert( initialized_ );
++	runtime_assert( pose_ != nullptr );
++
++	std::string const fname( utility::file::file_basename( file_basename ) + "_reference_pose.pdb"  );
++	pose_->dump_pdb( fname );
++	TR.Debug << "Wrote " << fname << "." << std::endl;
++}
++
++/// @brief Write silent data to an output stream.
++/// @details DoFs must be initialized.  Throws if no pose is stored.
++void
++DoFSummary::write_silent_file(
++	utility::io::ozstream & outhandle,
++	basic::options::OptionCollection const & opts,
++	core::Size const pose_index,
++	bool const write_headers
++) const {
++	runtime_assert( initialized_ );
++	runtime_assert( pose_ != nullptr );
++
++	using core::io::silent::BinarySilentStruct;
++	using core::io::silent::SilentFileOptions;
++
++	core::pose::PoseCOP pose( pose_from_dofs() );
++
++	SilentFileOptions silent_opts( opts );
++	silent_opts.set_binary_output(true);
++	std::ostringstream modelname;
++	modelname << "model_" << std::setw(6) << std::setfill('0') << pose_index;
++	BinarySilentStruct ss( silent_opts, *pose, modelname.str() );
++	if(write_headers) {
++		ss.print_header( outhandle );
++	}
++	ss.print_conformation( outhandle );
++	TR.Debug << "Wrote " << modelname.str() << " to binary silent file." << std::endl;
++}
++
++/// @brief Write silent data for a reference pose to an output stream.
++/// @details DoFs must be initialized.  Throws if no pose is stored.
++void
++DoFSummary::write_silent_file_reference_pose(
++	utility::io::ozstream & outhandle,
++	basic::options::OptionCollection const & opts,
++	bool const write_headers
++) const {
++	runtime_assert( initialized_ );
++	runtime_assert( pose_ != nullptr );
++
++	using core::io::silent::BinarySilentStruct;
++	using core::io::silent::SilentFileOptions;
++
++	SilentFileOptions silent_opts( opts );
++	silent_opts.set_binary_output(true);
++	BinarySilentStruct ss( silent_opts, *pose_, "reference_pose" );
++	if(write_headers) {
++		ss.print_header( outhandle );
++	}
++	ss.print_conformation( outhandle );
++	TR.Debug << "Wrote reference pose to binary silent file." << std::endl;
++}
++
++////////////////////////////////////////////////////////////////////////////////
++// PRIVATE FUNCTIONS
++////////////////////////////////////////////////////////////////////////////////
++
++/// @brief Allocate storage for the DoF values from the pose.
++void
++DoFSummary::initialize_dof_value_vectors() {
++	runtime_assert( !initialized_ );
++	if( include_mainchain_torsions_ ) { mainchain_torsion_values_.resize( n_mainchain_torsions_ ); }
++	if( include_mainchain_bondangles_ ) { mainchain_bondangle_values_.resize( n_mainchain_bondangles_ ); }
++	if( include_mainchain_bondlengths_ ) { mainchain_bondlength_values_.resize( n_mainchain_bondlengths_ ); }
++	if( include_jumps_ ) { jump_values_.resize( n_jumps_ ); }
++	if( include_sidechain_torsions_ ) { sidechain_torsion_values_.resize( n_sidechain_torsions_ ); }
++	if( include_sidechain_bondangles_ ) { sidechain_bondangle_values_.resize( n_sidechain_bondangles_ ); }
++	if( include_sidechain_bondlengths_ ) { sidechain_bondlength_values_.resize( n_sidechain_bondlengths_ ); }
++}
++
++/// @brief Actually collect DoF values from the pose.
++void
++DoFSummary::collect_pose_dof_values(
++	core::pose::Pose const & pose,
++	bool const store_dof_ids
++) {
++	using core::id::DOF_ID;
++
++	runtime_assert( !initialized_ );
++
++	dof_ids_.clear();
++
++	if( store_dof_ids ) {
++		check_pose_against_dof_ids( pose );
++	}
++
++	// Temporary storage for DoF ids:
++	utility::vector1< DOF_ID > mainchain_tors_dofids, sidechain_tors_dofids,
++		 mainchain_ang_dofids, sidechain_ang_dofids,
++		 mainchain_len_dofids, sidechain_len_dofids,
++		 jump_dofids;
++
++	// Torsions, bond angles, and bond lengths:
++	core::Size counter_mainchain_tors(0), counter_sidechain_tors(0),
++		counter_mainchain_ang(0), counter_sidechain_ang(0),
++		counter_mainchain_len(0), counter_sidechain_len(0);
++	core::kinematics::AtomTree const & attree( pose.atom_tree() );
++	for( core::Size ir(1), irmax(pose.total_residue()); ir<=irmax; ++ir ) {
++		core::chemical::ResidueType const & restype( pose.residue_type(ir) );
++		bool const is_pol( restype.is_polymer() );
++		for( core::Size ia(1), iamax(restype.natoms()); ia<=iamax; ++ia ) {
++			if( ignore_virtual_atoms_ && restype.is_virtual(ia) ) {
++				continue;
++			}
++			core::kinematics::AtomTree::Atom const & kinatom( attree.atom( core::id::AtomID(ia,ir) ) );
++			// if( TR.Debug.visible() ) {
++			// 	TR.Debug << "res " << ir << " atom " << ia << " " << ( pose.atom_tree().atom(core::id::AtomID(ia,ir)).is_jump() ? "IS_JUMP" : "NOT_JUMP" ) << std::endl;
++			// }
++			if( restype.atom_is_sidechain(ia) ) {
++				if( include_sidechain_torsions_ && (!kinatom.is_jump()) ) { ++counter_sidechain_tors; sidechain_torsion_values_[counter_sidechain_tors] = numeric::conversions::degrees( pose.dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::PHI ) ) ); sidechain_tors_dofids.emplace_back( core::id::AtomID( ia, ir ), core::id::DOF_Type::PHI ); }
++				if( include_sidechain_bondangles_ && (!kinatom.is_jump()) ) { ++counter_sidechain_ang; sidechain_bondangle_values_[counter_sidechain_ang] = numeric::conversions::degrees( pose.dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::THETA ) ) ); sidechain_ang_dofids.emplace_back( core::id::AtomID( ia, ir ), core::id::DOF_Type::THETA ); }
++				if( include_sidechain_bondlengths_ && (!kinatom.is_jump()) ) { ++counter_sidechain_len; sidechain_bondlength_values_[counter_sidechain_len] = pose.dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::D ) ); sidechain_len_dofids.emplace_back( core::id::AtomID( ia, ir ), core::id::DOF_Type::D ); }
++			} else {
++				if( is_pol ) {
++					if( include_mainchain_torsions_ && (!kinatom.is_jump()) ) { ++counter_mainchain_tors; mainchain_torsion_values_[counter_mainchain_tors] = numeric::conversions::degrees( pose.dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::PHI ) ) ); mainchain_tors_dofids.emplace_back( core::id::AtomID( ia, ir ), core::id::DOF_Type::PHI ); }
++					if( include_mainchain_bondangles_ && (!kinatom.is_jump()) ) { ++counter_mainchain_ang; mainchain_bondangle_values_[counter_mainchain_ang] = numeric::conversions::degrees( pose.dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::THETA ) ) ); mainchain_ang_dofids.emplace_back( core::id::AtomID( ia, ir ), core::id::DOF_Type::THETA ); }
++					if( include_mainchain_bondlengths_ && (!kinatom.is_jump()) ) { ++counter_mainchain_len; mainchain_bondlength_values_[counter_mainchain_len] = pose.dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::D ) ); mainchain_len_dofids.emplace_back( core::id::AtomID( ia, ir ), core::id::DOF_Type::D ); }
++				}
++			}
++		}
++	}
++
++	// Jumps
++	if( include_jumps_ ) {
++		runtime_assert( pose.num_jump() == jump_values_.size() );
++		for( core::Size ijump(1), ijumpmax( pose.num_jump() ); ijump<=ijumpmax; ++ijump ) {
++			core::kinematics::Jump const & curjump( pose.jump( ijump ) );
++			jump_values_[ijump][1] = curjump.get_translation().x();
++			jump_values_[ijump][2] = curjump.get_translation().y();
++			jump_values_[ijump][3] = curjump.get_translation().z();
++			numeric::EulerAngles< core::Real > angles( curjump.get_rotation() );
++			jump_values_[ijump][4] = angles.phi_degrees();
++			jump_values_[ijump][5] = angles.psi_degrees();
++			jump_values_[ijump][6] = angles.theta_degrees();
++			core::id::AtomID atid( ijump, 0 );
++			jump_dofids.emplace_back( atid, core::id::DOF_Type::RB1 );
++			jump_dofids.emplace_back( atid, core::id::DOF_Type::RB2 );
++			jump_dofids.emplace_back( atid, core::id::DOF_Type::RB3 );
++			jump_dofids.emplace_back( atid, core::id::DOF_Type::RB4 );
++			jump_dofids.emplace_back( atid, core::id::DOF_Type::RB5 );
++			jump_dofids.emplace_back( atid, core::id::DOF_Type::RB6 );
++		}
++	}
++
++	if( store_dof_ids ) {
++		dof_ids_.append( mainchain_tors_dofids );
++		dof_ids_.append( sidechain_tors_dofids );
++		dof_ids_.append( mainchain_ang_dofids );
++		dof_ids_.append( sidechain_ang_dofids );
++		dof_ids_.append( mainchain_len_dofids );
++		dof_ids_.append( sidechain_len_dofids );
++		dof_ids_.append( jump_dofids );
++		dof_ids_.shrink_to_fit();
++	}
++
++	// Scores:
++	core::Size counter_scores_from_pose(0);
++	if( include_scores_from_input_files_ ) {
++		counter_scores_from_pose = collect_scores_from_pose( pose );
++	}
++
++	runtime_assert( counter_mainchain_tors == n_mainchain_torsions_ );
++	runtime_assert( counter_mainchain_ang == n_mainchain_bondangles_ );
++	runtime_assert( counter_mainchain_len == n_mainchain_bondlengths_ );
++	runtime_assert( counter_sidechain_tors == n_sidechain_torsions_ );
++	runtime_assert( counter_sidechain_ang == n_sidechain_bondangles_ );
++	runtime_assert( counter_sidechain_len == n_sidechain_bondlengths_ );
++	runtime_assert( counter_scores_from_pose == n_scores_from_input_files_ );
++	if( store_dof_ids ) {
++		runtime_assert(
++			n_mainchain_torsions_ + n_sidechain_torsions_ +
++			n_mainchain_bondangles_ + n_sidechain_bondangles_ +
++			n_mainchain_bondlengths_ + n_sidechain_bondlengths_ +
++			(n_jumps_ * 6) == dof_ids_.size()
++		);
++	}
++}
++
++/// @brief Given a pose, count the number of scores stored in it.
++/// @details Includes the total score, plus any TotalEnergyMetric or GAMESSQMEnergyMetric
++/// output stored as real-valued simple metric data.
++core::Size
++DoFSummary::count_scores_in_pose(
++	core::pose::Pose const & pose
++) const {
++	core::Size scorecount(0);
++	if( pose.energies().energies_updated() ) {
++		++scorecount;
++	}
++
++	if( pose.data().has( core::pose::datacache::CacheableDataType::SIMPLE_METRIC_DATA ) ) {
++		core::simple_metrics::SimpleMetricData const & smdata(
++			static_cast< core::simple_metrics::SimpleMetricData const & >( pose.data().get( core::pose::datacache::CacheableDataType::SIMPLE_METRIC_DATA ) )
++		);
++		std::map< std::string, core::Real > const & realdata( smdata.get_real_metric_data() );
++		for( std::map< std::string, core::Real >::const_iterator it( realdata.begin() ); it != realdata.end(); ++it ) {
++			if( utility::contains( it->first, "silent_score" ) || utility::contains( it->first, "total_energy" ) || utility::contains( it->first, "GAMESS_QM_energy_metric" ) ) {
++				++scorecount;
++			}
++		}
++	}
++
++	if( pose.data().has( core::pose::datacache::CacheableDataType::ARBITRARY_FLOAT_DATA ) ) {
++		basic::datacache::CacheableStringFloatMap const & sfdata(
++			static_cast< basic::datacache::CacheableStringFloatMap const & >( pose.data().get( core::pose::datacache::CacheableDataType::ARBITRARY_FLOAT_DATA ) )
++		);
++		std::map< std::string, float > const & floatdata( sfdata.map() );
++		for( std::map< std::string, float >::const_iterator it( floatdata.begin() ); it != floatdata.end(); ++it ) {
++			if( utility::contains( it->first, "silent_score" ) || utility::contains( it->first, "total_energy" ) || utility::contains( it->first, "GAMESS_QM_energy_metric" ) ) {
++				++scorecount;
++			}
++		}
++	}
++	
++	return scorecount;
++}
++
++/// @brief Given a pose, extract scores and append them to the score vector.  Return the number extracted.
++/// @details Includes the total score, plus any TotalEnergyMetric or GAMESSQMEnergyMetric
++/// output stored as real-valued simple metric data.
++core::Size
++DoFSummary::collect_scores_from_pose(
++	core::pose::Pose const & pose
++) {
++	runtime_assert( !initialized_ );
++	runtime_assert( additional_scores_.empty() );
++
++	// DELETE THE FOLLOWING: for debugging only.
++	// for( core::Size i(1); i<=static_cast<core::Size>(core::pose::datacache::CacheableDataType::num_cacheable_data_types); ++i ) {
++	// 	TR << i << "\t" << core::pose::datacache::CacheableDataType::get_name( static_cast< core::pose::datacache::CacheableDataType::Enum >(i) ) << "\t" << ( pose.data().has( static_cast< core::pose::datacache::CacheableDataType::Enum >(i) ) ? "TRUE" : "FALSE" ) << std::endl;
++	// }
++
++	core::Size scorecount(0);
++	if( pose.energies().energies_updated() ) {
++		++scorecount;
++		additional_scores_.push_back( pose.energies().total_energy() );
++	}
++
++	if( pose.data().has( core::pose::datacache::CacheableDataType::SIMPLE_METRIC_DATA ) ) {
++		core::simple_metrics::SimpleMetricData const & smdata(
++			static_cast< core::simple_metrics::SimpleMetricData const & >( pose.data().get( core::pose::datacache::CacheableDataType::SIMPLE_METRIC_DATA ) )
++		);
++		std::map< std::string, core::Real > const & realdata( smdata.get_real_metric_data() );
++		for( std::map< std::string, core::Real >::const_iterator it( realdata.begin() ); it != realdata.end(); ++it ) {
++			//TR << "\tConsidering Realdata \"" << it->first << "\": " << it->second << "..."; //DELETE ME
++			if( utility::contains( it->first, "silent_score" ) || utility::contains( it->first, "total_energy" ) || utility::contains( it->first, "GAMESS_QM_energy_metric" ) ) {
++				++scorecount;
++				additional_scores_.push_back( it->second );
++				//TR << " *"; //DELETE ME
++			}
++			//TR << std::endl; //DELETE ME
++		}
++	}
++
++	if( pose.data().has( core::pose::datacache::CacheableDataType::ARBITRARY_FLOAT_DATA ) ) {
++		basic::datacache::CacheableStringFloatMap const & sfdata(
++			static_cast< basic::datacache::CacheableStringFloatMap const & >( pose.data().get( core::pose::datacache::CacheableDataType::ARBITRARY_FLOAT_DATA ) )
++		);
++		std::map< std::string, float > const & floatdata( sfdata.map() );
++		for( std::map< std::string, float >::const_iterator it( floatdata.begin() ); it != floatdata.end(); ++it ) {
++			//TR << "\tConsidering floatdata \"" << it->first << "\": " << it->second << "..."; //DELETE ME
++			if( utility::contains( it->first, "silent_score" ) || utility::contains( it->first, "total_energy" ) || utility::contains( it->first, "GAMESS_QM_energy_metric" ) ) {
++				++scorecount;
++				additional_scores_.push_back( it->second );
++				//TR << " *"; //DELETE ME
++			}
++			//TR << std::endl; //DELETE ME
++		}
++	}
++	
++	return scorecount;
++}
++
++/// @brief Get a pose set to the current DoF values.
++/// @details DoF values must be initialized and pose_ must be non-null.  Throws otherwise.
++core::pose::PoseCOP
++DoFSummary::pose_from_dofs() const {
++	using core::simple_metrics::metrics::CustomRealValueMetricOP;
++	using core::simple_metrics::metrics::CustomRealValueMetric;
++
++	runtime_assert( initialized_ );
++	runtime_assert( pose_ != nullptr );
++	core::pose::PoseOP pose_ptr( pose_->clone() );
++	core::pose::Pose & pose( *pose_ptr );
++
++	// Jumps
++	if( include_jumps_ ) {
++		runtime_assert( pose.num_jump() == jump_values_.size() );
++		for( core::Size ijump(1), ijumpmax( pose.num_jump() ); ijump<=ijumpmax; ++ijump ) {
++			core::kinematics::Jump curjump( pose.jump( ijump ) );
++			curjump.set_translation( core::kinematics::Jump::Vector( jump_values_[ijump][1], jump_values_[ijump][2], jump_values_[ijump][3] ) );
++			numeric::EulerAngles< core::Real > angles;
++			angles.phi_degrees( jump_values_[ijump][4] );
++			angles.psi_degrees( jump_values_[ijump][5] );
++			angles.theta_degrees( jump_values_[ijump][6] );
++			curjump.set_rotation( angles.to_rotation_matrix() );
++			pose.set_jump( ijump, curjump );
++		}
++	}
++
++	// Torsions, bond angles, and bond lengths:
++	core::Size counter_mainchain_tors(0), counter_sidechain_tors(0),
++		counter_mainchain_ang(0), counter_sidechain_ang(0),
++		counter_mainchain_len(0), counter_sidechain_len(0);
++	core::kinematics::AtomTree const & attree( pose.atom_tree() );
++	for( core::Size ir(1), irmax(pose.total_residue()); ir<=irmax; ++ir ) {
++		bool const is_pol( pose.residue_type(ir).is_polymer() );
++		for( core::Size ia(1), iamax(pose.residue_type(ir).natoms()); ia<=iamax; ++ia ) {
++			core::kinematics::AtomTree::Atom const & kinatom( attree.atom( core::id::AtomID(ia,ir) ) );
++			if(
++				( !ignore_virtual_atoms_ ) ||
++				( (!pose.residue_type(ir).is_virtual_residue()) && (!pose.residue_type(ir).is_virtual(ia)) )
++			) {
++				if( pose.residue_type(ir).atom_is_sidechain(ia) ) {
++					if( include_sidechain_torsions_ && (!kinatom.is_jump()) ) { ++counter_sidechain_tors; pose.set_dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::PHI ), numeric::conversions::radians( sidechain_torsion_values_[counter_sidechain_tors] ) ); }
++					if( include_sidechain_bondangles_ && (!kinatom.is_jump()) ) { ++counter_sidechain_ang; pose.set_dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::THETA ), numeric::conversions::radians( sidechain_bondangle_values_[counter_sidechain_ang] ) ); }
++					if( include_sidechain_bondlengths_ && (!kinatom.is_jump()) ) { ++counter_sidechain_len; pose.set_dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::D ), sidechain_bondlength_values_[counter_sidechain_len] ); }
++				} else {
++					if( is_pol ) {
++						if( include_mainchain_torsions_ && (!kinatom.is_jump()) ) { ++counter_mainchain_tors; pose.set_dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::PHI ), numeric::conversions::radians( mainchain_torsion_values_[counter_mainchain_tors] ) ); }
++						if( include_mainchain_bondangles_ && (!kinatom.is_jump()) ) { ++counter_mainchain_ang; pose.set_dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::THETA ), numeric::conversions::radians( mainchain_bondangle_values_[counter_mainchain_ang] ) ); }
++						if( include_mainchain_bondlengths_ && (!kinatom.is_jump()) ) { ++counter_mainchain_len; pose.set_dof( core::id::DOF_ID( core::id::AtomID(ia, ir), core::id::DOF_Type::D ), mainchain_bondlength_values_[counter_mainchain_len] ); }
++					}
++				}
++			}
++		}
++	}
++
++	// Add the predicted energies:
++	if( !additional_scores_.empty() ) {
++		core::Size score_counter(0);
++		for( auto const & score : additional_scores_ ) {
++			std::ostringstream ss;
++			++score_counter;
++			ss << "predicted_scrore_" << std::setw(4) << std::setfill('0') << score_counter;
++			CustomRealValueMetricOP score_metric( utility::pointer::make_shared< CustomRealValueMetric >() );
++			score_metric->set_value( score );
++			score_metric->set_custom_type( ss.str() );
++			score_metric->apply( pose );
++		}
++	}
++
++	runtime_assert( counter_mainchain_tors == n_mainchain_torsions_ );
++	runtime_assert( counter_mainchain_ang == n_mainchain_bondangles_ );
++	runtime_assert( counter_mainchain_len == n_mainchain_bondlengths_ );
++	runtime_assert( counter_sidechain_tors == n_sidechain_torsions_ );
++	runtime_assert( counter_sidechain_ang == n_sidechain_bondangles_ );
++	runtime_assert( counter_sidechain_len == n_sidechain_bondlengths_ );
++
++	if( preserve_ideal_geometry_ ) {
++		for( core::Size ir(1); ir<=pose.total_residue(); ++ir ) {
++			core::conformation::idealize_position( ir, pose.conformation() );
++		}
++	}
++
++	pose.update_residue_neighbors();
++
++	return pose_ptr;
++}
++
++/// @brief Check that all the DoF IDs in the dof_id vector are
++/// present in a pose, and throw if they are not.
++void
++DoFSummary::check_pose_against_dof_ids(
++	core::pose::Pose const & pose
++) const {
++	using core::id::DOF_Type;
++	std::string const errmsg( "Error in DoFSummary::check_pose_against_dof_ids(): " );
++	if( dof_ids_.empty() ) { return; }
++	core::Size counter(0);
++	for( auto const & dofid : dof_ids_ ) {
++		++counter;
++		if( dofid.type() != DOF_Type::D && dofid.type() != DOF_Type::PHI && dofid.type() != DOF_Type::THETA ) {
++			runtime_assert_string_msg( dofid.rsd() > 0 && dofid.rsd() <= pose.num_jump(),
++				errmsg + "DoF ID " + std::to_string(counter) + " expects jump "
++				+ std::to_string(dofid.rsd()) + ", but this is out of range.  The "
++				"pose has " + std::to_string( pose.num_jump() ) + " jumps."
++			);
++		} else {
++			runtime_assert_string_msg( dofid.rsd() > 0 && dofid.rsd() <= pose.total_residue(),
++				errmsg + "DoF ID " + std::to_string(counter) + " expects residue "
++				+ std::to_string(dofid.rsd()) + ", but this is out of range.  The "
++				"pose has " + std::to_string( pose.total_residue() ) + " residues."
++			);
++			core::chemical::ResidueType const & rsd( pose.residue_type( dofid.rsd() ) );
++			runtime_assert_string_msg( dofid.atomno() > 0 && dofid.atomno() <= rsd.natoms(),
++				errmsg + "DoF ID " + std::to_string(counter) + " expects residue "
++				+ std::to_string( dofid.rsd() ) + ", atom " + std::to_string( dofid.atomno() )
++				+ ", but pose residue " + std::to_string( dofid.rsd() ) + " has "
++				+ std::to_string( rsd.natoms() ) + " atoms."
++			);
++		}
++	}
++}
++
++/// @brief Read the number of DoFs and the DoF identities from a binary input stream,
++/// and populate the dof_ids_ vector.
++void
++DoFSummary::read_dof_identities(
++	std::ifstream & instream
++) {
++	std::string const errmsg( "Error in DoFSummary::read_dof_identities(): " );
++
++	// Get the number of DoFs in the DoF vector.
++	uint64_t ndofs;
++	instream.read( reinterpret_cast<char*>(&ndofs), sizeof(ndofs) );
++
++	runtime_assert_string_msg(
++		n_mainchain_torsions_ + n_sidechain_torsions_
++		+ n_mainchain_bondangles_ + n_sidechain_bondangles_
++		+ n_mainchain_bondlengths_ + n_sidechain_bondlengths_
++		+ n_jumps_ * 6 == ndofs,
++		errmsg + "Read " + std::to_string(ndofs) + " degrees of freedom from DoF vector "
++		"file, but this did not equal the expected number of DoFs based on "
++		+ std::to_string( n_mainchain_torsions_ ) + " mainchain torsions, "
++		+ std::to_string( n_sidechain_torsions_ ) + " sidechain torsions, "
++		+ std::to_string( n_mainchain_bondangles_ ) + " mainchain bond angles, "
++		+ std::to_string( n_sidechain_bondangles_ ) + " sidechain bond angles, "
++		+ std::to_string( n_mainchain_bondlengths_ ) + " mainchain bond lengths, "
++		+ std::to_string( n_sidechain_bondlengths_ ) + " sidechain bond lengths, and "
++		+ std::to_string( n_jumps_ * 6 ) + " jump degrees of freedom."
++	);
++
++	dof_ids_.clear();
++	dof_ids_.reserve( ndofs );
++
++	if( TR.Debug.visible() ) {
++		TR.Debug << "Reading " << ndofs << " DoF IDs." << std::endl;
++		TR.Debug << "DOF IDs: ";
++	}
++
++	for( core::Size i(1); i<=static_cast<core::Size>(ndofs); ++i ) {
++		uint64_t resnum, atomnum;
++		uint8_t doftype;
++		instream.read( reinterpret_cast<char*>(&resnum), sizeof(resnum) );
++		instream.read( reinterpret_cast<char*>(&atomnum), sizeof(atomnum) );
++		instream.read( reinterpret_cast<char*>(&doftype), sizeof(doftype) );
++
++		dof_ids_.push_back( core::id::DOF_ID( core::id::AtomID( atomnum, resnum ), dof_type_from_int(doftype) ) );
++		if( TR.Debug.visible() ) {
++			if( i > 1 ) {
++				TR.Debug << "; ";
++			}
++			TR.Debug << "[" << dof_ids_[i].rsd() << "," << dof_ids_[i].atomno() << "," << std::to_string( int_from_dof_type( dof_ids_[i].type() ) ) << "]"; 
++		}
++	}
++
++	if( TR.Debug.visible() ) {
++		TR.Debug << std::endl;
++	}
++
++	dof_ids_.shrink_to_fit();
++}
++
++/// @brief Write the number of DoFs and the DoF identities to a binary output stream,
++/// and populate the dof_ids _ vector.
++/// @details If debug tracer is active, write to tracer, too.
++void
++DoFSummary::write_dof_identities(
++	std::ofstream & fhandle
++) const {
++	// Get the number of DoFs in the DoF vector.
++	uint64_t ndofs( dof_ids_.size() );
++	fhandle.write( reinterpret_cast< char const * >( &ndofs ), sizeof( ndofs ) );
++
++	if( TR.Debug.visible() ) {
++		TR.Debug << "Writing " << ndofs << " DoF IDs." << std::endl;
++		TR.Debug << "DOF IDs: ";
++	}
++
++	core::Size counter(0);
++
++	for( auto const & dofid : dof_ids_ ) {
++		++counter;
++		uint64_t const resnum( dofid.rsd() ), atnum( dofid.atomno() );
++		uint8_t const doftype( int_from_dof_type( dofid.type() ) );
++		fhandle.write( reinterpret_cast< char const * >( &resnum ), sizeof( resnum ) );
++		fhandle.write( reinterpret_cast< char const * >( &atnum ), sizeof( atnum ) );
++		fhandle.write( reinterpret_cast< char const * >( &doftype ), sizeof( doftype ) );
++		if( TR.Debug.visible() ) {
++			if( counter > 1 ) {
++				TR.Debug << "; ";
++			}
++			TR.Debug << "[" << dofid.rsd() << "," << dofid.atomno() << "," << std::to_string( int_from_dof_type( dofid.type() ) ) << "]"; 
++		}
++	}
++
++	if( TR.Debug.visible() ) {
++		TR.Debug << std::endl;
++	}
++}
++
++/// @brief Given an integer representing a DoF type, return an enum value for the type.
++/// @details Redundant, but part of this class to ensure that if the DOF_Type enum in
++/// core were ever to change, the values stored in DoF files would still be readable.
++/// Companion function to int_from_dof_type().
++core::id::DOF_Type
++DoFSummary::dof_type_from_int(
++	uint8_t const dofint
++) const {
++	using namespace core::id;
++	switch( dofint ) {
++		case 1 :
++			return DOF_Type::PHI;
++		case 2 :
++			return DOF_Type::THETA;
++		case 3 :
++			return DOF_Type::D;
++		case 4 :
++			return DOF_Type::RB1;
++		case 5 :
++			return DOF_Type::RB2;
++		case 6 :
++			return DOF_Type::RB3;
++		case 7 :
++			return DOF_Type::RB4;
++		case 8 :
++			return DOF_Type::RB5;
++		case 9 :
++			return DOF_Type::RB6;
++		default:
++			return DOF_Type::INVALID_DOF;
++	}
++	return DOF_Type::INVALID_DOF; // Keep oldest compilers happy.
++}
++
++/// @brief Given an enum representing a DoF type, return an integer value for the type.
++/// @details Redundant, but part of this class to ensure that if the DOF_Type enum in
++/// core were ever to change, the values stored in DoF files would still be readable.
++/// Companion function to dof_type_from_int().
++uint8_t
++DoFSummary::int_from_dof_type(
++	core::id::DOF_Type const doftype
++) const {
++	using namespace core::id;
++	switch( doftype ) {
++		case DOF_Type::PHI:
++			return 1;
++		case DOF_Type::THETA:
++			return 2;
++		case DOF_Type::D:
++			return 3;
++		case DOF_Type::RB1:
++			return 4;
++		case DOF_Type::RB2:
++			return 5;
++		case DOF_Type::RB3:
++			return 6;
++		case DOF_Type::RB4:
++			return 7;
++		case DOF_Type::RB5:
++			return 8;
++		case DOF_Type::RB6:
++			return 9;
++		default:
++			return 0;
++	}
++	return 0; // Keep oldest compilers happy.
++}
++
++} //conformational_autoencoder
++} //protocols
+diff --git a/source/src/protocols/conformational_autoencoder/DoFSummary.fwd.hh b/source/src/protocols/conformational_autoencoder/DoFSummary.fwd.hh
+new file mode 100644
+index 00000000000..39191533ab1
+--- /dev/null
++++ b/source/src/protocols/conformational_autoencoder/DoFSummary.fwd.hh
+@@ -0,0 +1,58 @@
++// -*- mode:c++;tab-width:2;indent-tabs-mode:t;show-trailing-whitespace:t;rm-trailing-spaces:t -*-
++// vi: set ts=2 noet:
++//
++// Copyright 2026 Vikram K. Mulligan
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions are met:
++//
++// 1. Redistributions of source code must retain the above copyright notice,
++// this list of conditions and the following disclaimer.
++//
++// 2. Redistributions in binary form must reproduce the above copyright notice,
++// this list of conditions and the following disclaimer in the documentation
++// and/or other materials provided with the distribution.
++//
++// 3. Neither the name of the copyright holder nor the names of its
++// contributors may be used to endorse or promote products derived from this
++// software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
++// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++// THE POSSIBILITY OF SUCH DAMAGE.
++
++/// @file protocols/conformational_autoencoder/DoFSummary.fwd.hh
++/// @brief Forward declarations for a class to store the types of entries in the DoF
++/// vector and to confirm that all poses have the same DoFs.  Used for the conformational
++/// autoencoder.
++/// @note Unlike the Rosetta software suite, this file is released under a BSD 3-clause open-source licence.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org)
++
++#ifndef INCLUDED_protocols_conformational_autoencoder_DoFSummary_fwd_hh
++#define INCLUDED_protocols_conformational_autoencoder_DoFSummary_fwd_hh
++
++// Utility headers
++#include <utility/pointer/owning_ptr.hh>
++
++
++// Forward
++namespace protocols {
++namespace conformational_autoencoder {
++
++class DoFSummary;
++
++using DoFSummaryOP = utility::pointer::shared_ptr< DoFSummary >;
++using DoFSummaryCOP = utility::pointer::shared_ptr< DoFSummary const >;
++
++} //conformational_autoencoder
++} //protocols
++
++#endif //INCLUDED_protocols_conformational_autoencoder_DoFSummary_fwd_hh
+diff --git a/source/src/protocols/conformational_autoencoder/DoFSummary.hh b/source/src/protocols/conformational_autoencoder/DoFSummary.hh
+new file mode 100644
+index 00000000000..bbaf946c090
+--- /dev/null
++++ b/source/src/protocols/conformational_autoencoder/DoFSummary.hh
+@@ -0,0 +1,359 @@
++// -*- mode:c++;tab-width:2;indent-tabs-mode:t;show-trailing-whitespace:t;rm-trailing-spaces:t -*-
++// vi: set ts=2 noet:
++//
++// Copyright 2026 Vikram K. Mulligan
++//
++// Redistribution and use in source and binary forms, with or without
++// modification, are permitted provided that the following conditions are met:
++//
++// 1. Redistributions of source code must retain the above copyright notice,
++// this list of conditions and the following disclaimer.
++//
++// 2. Redistributions in binary form must reproduce the above copyright notice,
++// this list of conditions and the following disclaimer in the documentation
++// and/or other materials provided with the distribution.
++//
++// 3. Neither the name of the copyright holder nor the names of its
++// contributors may be used to endorse or promote products derived from this
++// software without specific prior written permission.
++//
++// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS “AS IS”
++// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
++// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
++// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
++// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++// THE POSSIBILITY OF SUCH DAMAGE.
++
++/// @file protocols/conformational_autoencoder/DoFSummary.hh
++/// @brief Headers for a class to store the types of entries in the DoF vector and to
++/// confirm that all poses have the same DoFs.  Used for the conformational autoencoder.
++/// @details History of DoF vector file format:
++/// - Version 1.0: Initial DoF vector format.
++/// - Version 1.1: Add field for number of records.
++/// - Version 1.2: Correct writing of records to ensure that records after the first have energies.
++/// - Version 1.3: Write identities of all DoFs.
++/// @note Unlike the Rosetta software suite, this file is released under a BSD 3-clause open-source licence.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org)
++
++
++#ifndef INCLUDED_protocols_conformational_autoencoder_DoFSummary_hh
++#define INCLUDED_protocols_conformational_autoencoder_DoFSummary_hh
++
++#include <protocols/conformational_autoencoder/DoFSummary.fwd.hh>
++
++// Utility headers
++#include <utility/pointer/owning_ptr.hh>
++#include <utility/VirtualBase.hh>
++#include <utility/vector1.hh>
++#include <utility/fixedsizearray1.hh>
++#include <utility/io/ozstream.fwd.hh>
++
++// Core headers
++#include <core/pose/Pose.fwd.hh>
++#include <core/types.hh>
++#include <core/id/types.hh>
++#include <core/id/DOF_ID.hh>
++
++// Basic headers
++#include <basic/options/option.hh>
++
++// STL headers:
++#include <fstream> // Note: deliberately using fstream and not utility::io::ozstream since we're writing true binary files, not Rosetta's ASCII-as-binary.
++
++namespace protocols {
++namespace conformational_autoencoder {
++
++#define DOFVECT_FILE_MAJOR_VERSION 1
++#define DOFVECT_FILE_MINOR_VERSION 3
++
++/// @brief A class to store the types of entries in the DoF vector and to confirm
++/// that all poses have the same DoFs.  Used for the conformational autoencoder.
++/// @author Vikram K. Mulligan (vmulligan@flatironinstitute.org)
++class DoFSummary : public utility::VirtualBase {
++
++public:
++
++	////////////////////////////////////////////////////////////////////////////////
++	// CONSTRUCTION, DESTRUCTION, AND OPERATORS
++	////////////////////////////////////////////////////////////////////////////////
++
++	/// @brief Default constructor, explicitly deleted.
++	DoFSummary() = delete;
++
++	/// @brief Copy constructor, defaulted.
++	DoFSummary(DoFSummary const & ) = default;
++
++	/// @brief Options constructor, to be used instead of default constructor.
++	DoFSummary(
++		basic::options::OptionCollection const & opts
++	);
++
++	/// @brief Options-and-pose constructor.
++	DoFSummary(
++		basic::options::OptionCollection const & opts,
++		core::pose::Pose const & pose
++	);
++
++	/// @brief File input constructor.
++	/// @details Assumes that we need to read header from file.
++	DoFSummary(
++		std::ifstream & instream,
++		basic::options::OptionCollection const & opts
++	);
++
++	/// @brief Default destructor.
++	~DoFSummary() = default;
++
++	/// @brief Default assignment operator.
++	DoFSummary & operator=( DoFSummary const & ) = default;
++
++	/// @brief Clone operation: make a copy of this object, and return an owning pointer to the copy.
++	DoFSummaryOP clone() const;
++
++	/// @brief Comparison operator.
++	/// @details Compares actual DoF values in version 1.3 and above.
++	bool
++	operator==(
++		DoFSummary const & other
++	) const;
++
++public:
++
++////////////////////////////////////////////////////////////////////////////////
++// PUBLIC FUNCTIONS
++////////////////////////////////////////////////////////////////////////////////
++
++	/// @brief Initialize from a pose.
++	void
++	initialize_from_pose(
++		core::pose::Pose const & pose
++	);
++
++	/// @brief Initialize from header lines of a DoF vector file.
++	void
++	initialize_from_dof_file_header(
++		std::ifstream & instream
++	);
++
++	/// @brief Reset the initialization state, allowing reinitialization.
++	void
++	reset_initialization_state();
++
++	/// @brief Read the DoFs from a DoF file.
++	/// @details Assumes that the number of DoF entries has already been properly set.
++	void
++	read_dofs_from_dof_file(
++		std::ifstream & instream
++	);
++
++	/// @brief Append score values to the DoF vectors to write.
++	void
++	append_scores(
++		utility::vector1< core::Real > const & scores
++	);
++
++	/// @brief Write DoF headers to a binary file stream.
++	/// @details If debug tracer is active, write to tracer, too.
++	/// Headers consist of:
++	/// - file major version (uint64) and minor version (uint64)
++	/// - include mainchain torsions (bool)
++	/// - include sidechain torsions (bool)
++	/// - include mainchain bondangles (bool)
++	/// - include sidechain bondangles (bool)
++	/// - include mainchain bondlengths (bool)
++	/// - include sidechain bondlengths (bool)
++	/// - include jumps (bool)
++	/// - include scores (bool)
++	/// - N mainchain torsions. (0 if not included.)
++	/// - N sidechain torsions. (0 if not included.)
++	/// - N mainchain bondangles. (0 if not included.)
++	/// - N sidechain bondangles. (0 if not included.)
++	/// - N mainchain bondlengths. (0 if not included.)
++	/// - N sidechain bondlengths. (0 if not included.)
++	/// - N jumps.  (0 if not included.  Note that number of entries is 6*N jumps.)
++	/// - N scores. (0 if not included.)
++	/// - Binary silent string length (bytes).
++	/// - First pose (reference pose) binary silent string.
++	void
++	write_headers(
++		std::ofstream & fhandle,
++		core::pose::Pose const & pose,
++		core::Size const n_total_poses,
++		basic::options::OptionCollection const & opts
++	) const;
++
++	/// @brief Actually write the DoFs for this pose to a binary
++	/// file stream.
++	/// @details If debug tracer is active, write to tracer, too.
++	void
++	write_pose_dofs(
++		std::ofstream & fhandle
++	) const;
++
++	/// @brief Write a PDB file with the current DoFs.
++	/// @details DoFs must be initialized.  Throws if no pose is stored.
++	void
++	write_pdb_file(
++		std::string const & file_basename,
++		core::Size const file_index
++	) const;
++
++	/// @brief Write a PDB file for a reference pose.
++	/// @details DoFs must be initialized.  Throws if no pose is stored.
++	void
++	write_pdb_file_reference_pose(
++		std::string const & file_basename
++	) const;
++
++	/// @brief Write silent data to an output stream.
++	/// @details DoFs must be initialized.  Throws if no pose is stored.
++	void
++	write_silent_file(
++		utility::io::ozstream & outhandle,
++		basic::options::OptionCollection const & opts,
++		core::Size const pose_index,
++		bool const write_headers
++	) const;
++
++	/// @brief Write silent data for a reference pose to an output stream.
++	/// @details DoFs must be initialized.  Throws if no pose is stored.
++	void
++	write_silent_file_reference_pose(
++		utility::io::ozstream & outhandle,
++		basic::options::OptionCollection const & opts,
++		bool const write_headers
++	) const;
++
++private:
++
++////////////////////////////////////////////////////////////////////////////////
++// PRIVATE FUNCTIONS
++////////////////////////////////////////////////////////////////////////////////
++
++	/// @brief Allocate storage for the DoF values from the pose.
++	void
++	initialize_dof_value_vectors();
++
++	/// @brief Actually collect DoF values from the pose.
++	void
++	collect_pose_dof_values(
++		core::pose::Pose const & pose,
++		bool const store_dof_ids
++	);
++
++	/// @brief Given a pose, count the number of scores stored in it.
++	/// @details Includes the total score, plus any TotalEnergyMetric or GAMESSQMEnergyMetric
++	/// output stored as real-valued simple metric data.
++	core::Size
++	count_scores_in_pose(
++		core::pose::Pose const & pose
++	) const;
++
++	/// @brief Given a pose, extract scores and append them to the score vector.  Return the number extracted.
++	/// @details Includes the total score, plus any TotalEnergyMetric or GAMESSQMEnergyMetric
++	/// output stored as real-valued simple metric data.
++	core::Size
++	collect_scores_from_pose(
++		core::pose::Pose const & pose
++	);
++
++	/// @brief Get a pose set to the current DoF values.
++	/// @details DoF values must be initialized and pose_ must be non-null.  Throws otherwise.
++	core::pose::PoseCOP
++	pose_from_dofs() const;
++
++	/// @brief Check that all the DoF IDs in the dof_id vector are
++	/// present in a pose, and throw if they are not.
++	void
++	check_pose_against_dof_ids(
++		core::pose::Pose const & pose
++	) const;
++
++	/// @brief Read the number of DoFs and the DoF identities from a binary input stream,
++	/// and populate the dof_ids_ vector.
++	void
++	read_dof_identities(
++		std::ifstream & instream
++	);
++
++	/// @brief Write the number of DoFs and the DoF identities to a binary output stream,
++	/// and populate the dof_ids _ vector.
++	/// @details If debug tracer is active, write to tracer, too.
++	void
++	write_dof_identities(
++		std::ofstream & fhandle
++	) const;
++
++	/// @brief Given an integer representing a DoF type, return an enum value for the type.
++	/// @details Redundant, but part of this class to ensure that if the DOF_Type enum in
++	/// core were ever to change, the values stored in DoF files would still be readable.
++	/// Companion function to int_from_dof_type().
++	core::id::DOF_Type
++	dof_type_from_int(
++		uint8_t const dofint
++	) const;
++
++	/// @brief Given an enum representing a DoF type, return an integer value for the type.
++	/// @details Redundant, but part of this class to ensure that if the DOF_Type enum in
++	/// core were ever to change, the values stored in DoF files would still be readable.
++	/// Companion function to dof_type_from_int().
++	uint8_t
++	int_from_dof_type(
++		core::id::DOF_Type const doftype
++	) const;
++
++private:
++
++////////////////////////////////////////////////////////////////////////////////
++// PRIVATE MEMBER VARIABLES
++////////////////////////////////////////////////////////////////////////////////
++
++	bool initialized_ = false;
++
++	core::Size n_mainchain_torsions_ = 0;
++	core::Size n_mainchain_bondangles_ = 0;
++	core::Size n_mainchain_bondlengths_ = 0;
++	core::Size n_jumps_ = 0;
++	core::Size n_sidechain_torsions_ = 0;
++	core::Size n_sidechain_bondangles_ = 0;
++	core::Size n_sidechain_bondlengths_ = 0;
++	core::Size n_scores_from_input_files_ = 0;
++
++	bool include_mainchain_torsions_ = true;
++	bool include_mainchain_bondangles_ = true;
++	bool include_mainchain_bondlengths_ = true;
++	bool include_jumps_ = true;
++	bool include_sidechain_torsions_ = false;
++	bool include_sidechain_bondangles_ = false;
++	bool include_sidechain_bondlengths_ = false;
++	bool include_scores_from_input_files_ = false;
++
++	utility::vector1< core::Real > mainchain_torsion_values_;
++	utility::vector1< core::Real > mainchain_bondangle_values_;
++	utility::vector1< core::Real > mainchain_bondlength_values_;
++	utility::vector1< utility::fixedsizearray1< core::Real, 6 > > jump_values_;
++	utility::vector1< core::Real > sidechain_torsion_values_;
++	utility::vector1< core::Real > sidechain_bondangle_values_;
++	utility::vector1< core::Real > sidechain_bondlength_values_;
++
++	utility::vector1< core::Real > additional_scores_;
++
++	utility::vector1< core::id::DOF_ID > dof_ids_;
++
++	core::pose::PoseCOP pose_;
++
++	// Additional options:
++	bool ignore_virtual_atoms_ = false;
++	bool preserve_ideal_geometry_ = false;
++
++};
++
++} //conformational_autoencoder
++} //protocols
++
++#endif //INCLUDED_protocols_conformational_autoencoder_DoFSummary_hh
+diff --git a/source/src/protocols_c.6.src.settings b/source/src/protocols_c.6.src.settings
+index 41b396609ef..af51e168e6d 100644
+--- a/source/src/protocols_c.6.src.settings
++++ b/source/src/protocols_c.6.src.settings
+@@ -10,6 +10,9 @@
+ ########### KEEP DIRECTORIES AND FILES IN ALPHABETICAL ORDER ###########
+ 
+ sources = {
++	"protocols/conformational_autoencoder" : [
++		"DoFSummary",
++	],
+ 	"protocols/flexpep_docking": [
+ 		"FlexPepDockingAbInitio",
+ 		"FlexPepDockingFlags",
