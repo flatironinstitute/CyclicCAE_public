@@ -208,7 +208,7 @@ class EnergyPath:
             self.freeze_torsion = True
             self.freeze_bond_angle = True
             self.freeze_bond_length = True
-        self.contiguous = self.check_contiguous(self.freeze_residues)
+        self.contiguous = self.check_contiguous(self.freeze_residues, out_size)
         self.exclude_atom_positions = exclude_atom_positions
         if not self.contiguous:
             self.regions_atoms, self.regions = split_motif_atoms(self.freeze_residues)
@@ -236,7 +236,7 @@ class EnergyPath:
         self.interface_cutoff = interface_cutoff
         self.ramp_constraint = ramp_constraint
         self.fullpocket = full_pocket
-        self.match_res_mask = torch.empty((0, 2), dtype=torch.int)
+        self.match_res_mask = torch.empty((0, 2), dtype=torch.int, device=self.device)
         self.energy_weight = energy_weight
         self.extract_minimize_input = encode_decode
         self.ideal_term_length = 1.36 # 1.4
@@ -306,7 +306,7 @@ class EnergyPath:
             self.bond_length_dof = slice(None)
             self.residue_index = slice(None)
 
-    def check_contiguous(self, motif: list[int]):
+    def check_contiguous(self, motif: list[int], peptide_length: int | None = None):
         """Check to see if the motif passed is contiguous or not
 
         PARAMS
@@ -325,13 +325,14 @@ class EnergyPath:
             return True
         # If it is longer then check
         else:
-            j = 0
-            for i in range(1, len(motif)):
-                # If the previous + 1 does not equal the next one. Then we
-                # know that this is non-contiguous
-                if motif[j]+1 != motif[i]:
+            values = [int(value) for value in motif]
+            for previous, current in zip(values, values[1:]):
+                if peptide_length is None:
+                    adjacent = previous + 1 == current
+                else:
+                    adjacent = (current - previous) % peptide_length == 1
+                if not adjacent:
                     return False
-                j = i
         return True
 
     def extract_latent_information( self, dataset: torch.Tensor ) -> torch.Tensor:
@@ -552,6 +553,16 @@ class EnergyPath:
         points = 0
         if updated_freeze_residues is not None:
             self.freeze_residues = updated_freeze_residues
+            self.contiguous = self.check_contiguous(
+                self.freeze_residues,
+                self.PARAMS["protein_len"],
+            )
+            if self.contiguous:
+                self.regions = [self.freeze_residues]
+            else:
+                self.regions_atoms, self.regions = split_motif_atoms(
+                    self.freeze_residues - 1
+                )
 
         # Need the coordinates calculated here, for discontinuous motifs
         if not self.contiguous:
@@ -743,6 +754,11 @@ class EnergyPath:
                 self.exclude_atom_positions,
                 )
             if no_matches:
+                # Rejected batches must count toward termination.  Otherwise an
+                # unreachable motif threshold loops indefinitely.
+                run += 1
+                if run > 1000:
+                    no_scaffolds = False
                 continue
 
             #########
@@ -774,7 +790,12 @@ class EnergyPath:
                                                       epsilon_interface = interface_dict["epsilon_interface"][interface_nonhydrogen_mask])
                 interface_total_loss = interface_nonorm_loss # / aligned_coordinates.size(0)
             else:
-                interface_total_loss = torch.zeros(out.size(0), dtype=torch.bool, device=self.device)
+                # Every motif match is acceptable when the input has no target
+                # chain. Keep this vector aligned to the matched-candidate rows,
+                # not the full decoder batch.
+                interface_total_loss = torch.zeros(
+                    match_res_mask[:B].shape[0], dtype=torch.bool, device=self.device
+                )
 
             if l_homochiral:
                 # This is for homochiral
@@ -881,6 +902,9 @@ class EnergyPath:
             preds = torch.cat((torsion, bond_angle, scaffolds[:, self.PARAMS["torsion_main_n"]*2*2:]), dim=-1)
         else:
             print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
+            empty = torch.empty((0,), dtype=torch.float64, device=self.device)
+            self.match_res_mask = torch.empty((0,), dtype=torch.int, device=self.device)
+            return empty, empty, empty
         if scaffolds.size(0) > self.scaffold_number:
             self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1]
             return scaffolds[:self.scaffold_number], points[:self.scaffold_number], harm_values[:self.scaffold_number]
@@ -1652,16 +1676,22 @@ if __name__ == "__main__":
         #### information for inpainting and gradient-marching
         # All atoms are Extracted within cutoff distance
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=True, peptide_chain=args.peptide_chain)
-        interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
-        interface_full_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
-                          "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
-                          "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
+        if target.numel() == 0:
+            interface_full_dict = None
+        else:
+            interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
+            interface_full_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
+                              "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
+                              "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
         # Cb Pocket Context Extract
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain=args.peptide_chain)
-        interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
-        interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
-                          "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
-                          "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
+        if target.numel() == 0:
+            interface_cb_dict = None
+        else:
+            interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
+            interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
+                              "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
+                              "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
         
         #### Here we are extracting the DoFs needed for Harmonic DoF Inpainting Regression
         #### these are taken from our passed PDB
@@ -1683,6 +1713,10 @@ if __name__ == "__main__":
             scaffolds, latent_points, harm_values = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict,
                                                                motif_dofs = motif_dofs, l_homochiral = args.l_homochiral, 
                                                                updated_freeze_residues = updated_freeze_residues)
+
+        if latent_points.numel() == 0:
+            print("No valid starting points were found; stopping before energy minimization.")
+            raise SystemExit(3)
 
         #### Take either inpaint output and use for MCMC/Gradient-march or just graident-march
         if args.mcmc_steps >= 1:
