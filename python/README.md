@@ -50,6 +50,10 @@ A simple informative overlay of what each file is and what they do/house.
     - MCMC Metropolis-Hastings: From a given structure explore paths around that point, to generate
         multiple outputs per given input.
 
+- `insolution_genkic.py`
+    Sample macrocycle conformations in isolation using the Rosetta Generalized Kinematic Closure (GeneralizedKIC)
+    algorithm.  This is useful as a point of comparison for CyclicCAE.
+
 
 ## Folders
 
