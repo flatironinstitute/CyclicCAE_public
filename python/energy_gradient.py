@@ -208,7 +208,7 @@ class EnergyPath:
         self.interface_cutoff = interface_cutoff
         self.ramp_constraint = ramp_constraint
         self.fullpocket = full_pocket
-        self.match_res_mask = torch.empty((0, 2), dtype=torch.int)
+        self.match_res_mask = torch.empty((0, 2), dtype=torch.int, device=self.device)
         self.energy_weight = energy_weight
         self.extract_minimize_input = encode_decode
         self.ideal_term_length = 1.36 # 1.4
@@ -732,7 +732,8 @@ class EnergyPath:
                                                           )
                 else:
                     # Non contiguous indexing of our outputs
-                    coords = coords[match_res_mask[:B, 0]]
+                    matched_sample_idx = match_res_mask[:, 0].long()
+                    coords = coords[matched_sample_idx]
                     aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
                                                           motif_output = self.motif[:B],
                                                           motif_input = self.motif_input,
@@ -764,15 +765,15 @@ class EnergyPath:
 
             # Determine which points are within the latent space cutoff
             int_mask = interface_total_loss <= self.interface_cutoff
-            terminal_mask = term_bond_loss[match_res_mask[:B, 0]].view(-1) < 0.5 #2.0
-            ocnh_mask = ocnh_loss[match_res_mask[:B, 0]].view(-1) < 0.5
-            hnc_mask = hnc_loss[match_res_mask[:B, 0]].view(-1) < 0.5
-            nco_mask = nco_loss[match_res_mask[:B, 0]].view(-1) < 0.5
-#                 harm_mask = harmonic_loss <= self.inpaint_dist
-            l_homochiral_mask = homochiral_mask[match_res_mask[:B, 0]].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
+            matched_sample_idx = match_res_mask[:, 0].long()
+            terminal_mask = term_bond_loss[matched_sample_idx].view(-1) < 0.5 #2.0
+            ocnh_mask = ocnh_loss[matched_sample_idx].view(-1) < 0.5
+            hnc_mask = hnc_loss[matched_sample_idx].view(-1) < 0.5
+            nco_mask = nco_loss[matched_sample_idx].view(-1) < 0.5
+            l_homochiral_mask = homochiral_mask[matched_sample_idx].view(-1, 1) # <= 100#homochiral_mask[match_res_mask[:, 0]]
             # print("MASKS:", int_mask.sum(), terminal_mask.sum(), ocnh_mask.sum(), hnc_mask.sum(), nco_mask.sum(), harm_mask.sum())
             if self.contiguous:
-                harm_mask = loss[:B] <= self.inpaint_dist
+                harm_mask = loss <= self.inpaint_dist
                 mask = torch.logical_and(
                     ocnh_mask.view(-1, 1), torch.logical_and(
                         hnc_mask.view(-1, 1), torch.logical_and(
@@ -803,15 +804,17 @@ class EnergyPath:
 
             # Grab out specific points that only pass
             if self.freeze_residues != None:
-                preds = preds[match_res_mask[:B, 0]]
-                scatter_latent = scatter_latent[match_res_mask[:B, 0]]
+                matched_sample_idx = match_res_mask[:, 0].long()
+
+                preds = preds[matched_sample_idx]
+                scatter_latent = scatter_latent[matched_sample_idx]
                 # concat onto self.match_res
-                self.match_res_mask = torch.cat((self.match_res_mask, match_res_mask[:B][mask]), dim=0)
+                self.match_res_mask = torch.cat((self.match_res_mask, match_res_mask[mask]), dim=0)
             # add to set of scaffolds
             if not torch.is_tensor(scaffolds):
                 scaffolds = preds[mask, :-3].detach()
                 points = scatter_latent[mask].detach()
-                harm_values = loss[:B][mask].detach()
+                harm_values = loss[mask].detach()
             else:
                 scaffolds = torch.cat(
                     (
@@ -854,10 +857,18 @@ class EnergyPath:
         else:
             print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
         if scaffolds.size(0) > self.scaffold_number:
-            self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1]
-            return scaffolds[:self.scaffold_number], points[:self.scaffold_number], harm_values[:self.scaffold_number]
+            scaffolds = scaffolds[:self.scaffold_number]
+            points = points[:self.scaffold_number]
+            harm_values = harm_values[:self.scaffold_number]
+
+            self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1].long()
+            assert points.size(0) == self.match_res_mask.numel(), (
+                    f"Inpainting produced {points.size(0)} latent points "
+                    f"but {self.match_res_mask.numel()} motif starts"
+                    )
+            return scaffolds, points, harm_values
         else:
-            self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1]
+            self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1].long()
             return scaffolds, points, harm_values
 
     def metropolis_hastings(self, B: int, sigma: torch.float, 
@@ -1110,6 +1121,14 @@ class EnergyPath:
                      interface_full_dict = None, interface_cb_dict = None,
                      motif_dofs = None, l_homochiral: bool = False):
         """Model Eval Loop for GDS"""
+        if (self.freeze_residues is not None
+            and not self.extract_minimize_input
+            ):
+            assert start_points.size(0) == self.match_res_mask.numel(), (
+                    f"energy_steps received {start_points.size(0)} "
+                    "but latent points has"
+                    f"{self.match_res_mask.numel()} motif starts"
+                    )
         if start_points.size(0) == 1:
             self.start_latent_point = start_points.to(self.device) 
             start_range = 0
@@ -1145,6 +1164,10 @@ class EnergyPath:
                 self.freeze_residues,
                 True,
             )
+            assert self.motif.size(0) == start_points.size(0), (
+                    f"Built {self.motif.size(0)} motif index rows for "
+                    f"{start_points.size(0)} starting points."
+                    )
 #         if self.extract_minimize_input:
 #             self.motif, self.motif_input = calculate_motif_numbering_for_kabsch(
 #                 torch.zeros((1,1)),
@@ -1325,6 +1348,10 @@ class EnergyPath:
                                                                 motif_input = self.motif_input,
                                                                 )
 
+                        print(self.motif.shape)
+                        print(self.motif_input.shape)
+                        print("RMSD loss:", rmsd_loss)
+
 
                     interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
                     interface_nonorm_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
@@ -1363,6 +1390,7 @@ class EnergyPath:
 
 
                 combo_angles = ahd_loss_term + bah_loss_term + ncaco_loss_term + ocnh_loss_term
+#                 interface_total_loss = torch.zeros_like(interface_total_loss)
 
                 if redo == 0:
                     loss = (
@@ -1428,6 +1456,7 @@ class EnergyPath:
                     if (interface_total_loss.size(0) != 1) and (step == self.steps-1):
                         self.dof_traj[inverse_mask, step] = preds
                         self.dof_traj = self.dof_traj[inverse_mask]
+                        self.match_res_mask = self.match_res_mask[inverse_mask]
                     else:
                         self.dof_traj[:, step] = preds
 
