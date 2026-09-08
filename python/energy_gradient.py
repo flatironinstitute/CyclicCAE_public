@@ -523,7 +523,16 @@ class EnergyPath:
         scaffolds = 0
         points = 0
         if updated_freeze_residues is not None:
-            self.freeze_residues = updated_freeze_residues
+#             self.freeze_residues = torch.as_tensor(
+            pyrosetta_freeze_residues = torch.as_tensor(
+                    updated_freeze_residues,
+                    dtype=torch.long,
+                    )
+            self.freeze_residues = pyrosetta_freeze_residues - 1
+
+            assert torch.all(self.freeze_residues >= 0), (
+                    f"Converted motif indices {self.freeze_residues.tolist()} must be non-negative"
+                    )
 
         # Need the coordinates calculated here, for discontinuous motifs
         if not self.contiguous:
@@ -735,12 +744,13 @@ class EnergyPath:
                     matched_sample_idx = match_res_mask[:, 0].long()
                     coords = coords[matched_sample_idx]
                     aligned_coordinates, rmsd_loss = kabsch_rootatom(P = coords, Q = interface_dict["peptide"][peptide_nonhydrogen_mask].double(),
-                                                          motif_output = self.motif[:B],
+                                                          motif_output = self.motif,
                                                           motif_input = self.motif_input,
                                                           )
 
                 interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
-                interface_nonorm_loss= interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
+                interface_nonorm_loss= interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), 
+                                                      recomputed_xyz = aligned_coordinates,
                                                       sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
                                                       epsilon_peptide = interface_dict["epsilon_peptide"][peptide_nonhydrogen_mask],
                                                       sigma_interface = interface_dict["sigma_interface"][interface_nonhydrogen_mask],
@@ -764,7 +774,8 @@ class EnergyPath:
                 homochiral_mask = torch.ones(out.size(0),dtype=torch.bool, device=out.device)
 
             # Determine which points are within the latent space cutoff
-            int_mask = interface_total_loss <= self.interface_cutoff
+#             int_mask = interface_total_loss <= self.interface_cutoff
+            int_mask = torch.onee_like(interface_total_loss)
             matched_sample_idx = match_res_mask[:, 0].long()
             terminal_mask = term_bond_loss[matched_sample_idx].view(-1) < 0.5 #2.0
             ocnh_mask = ocnh_loss[matched_sample_idx].view(-1) < 0.5
@@ -1348,17 +1359,14 @@ class EnergyPath:
                                                                 motif_input = self.motif_input,
                                                                 )
 
-                        print(self.motif.shape)
-                        print(self.motif_input.shape)
-                        print("RMSD loss:", rmsd_loss)
-
 
                     interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
-                    interface_nonorm_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), recomputed_xyz = aligned_coordinates,
-                                                            sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
-                                                            epsilon_peptide = interface_dict["epsilon_peptide"][peptide_nonhydrogen_mask],
-                                                            sigma_interface = interface_dict["sigma_interface"][interface_nonhydrogen_mask],
-                                                            epsilon_interface = interface_dict["epsilon_interface"][interface_nonhydrogen_mask])
+                    interface_nonorm_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), 
+                                                           recomputed_xyz = aligned_coordinates,
+                                                           sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
+                                                           epsilon_peptide = interface_dict["epsilon_peptide"][peptide_nonhydrogen_mask],
+                                                           sigma_interface = interface_dict["sigma_interface"][interface_nonhydrogen_mask],
+                                                           epsilon_interface = interface_dict["epsilon_interface"][interface_nonhydrogen_mask])
 
                     interface_total_loss = interface_nonorm_loss #/ aligned_coordinates.size(0)
 
@@ -1424,24 +1432,34 @@ class EnergyPath:
                 loss.backward()
                 optimizer.step()
 
+                all_selected_target_atoms = interface_dict["target"].double()
+
+                pairwise_distances = torch.cdist(
+                        aligned_coordinates,
+                        all_selected_target_atoms.unsqueeze(0).expand(aligned_coordinates.size(0), -1, -1)
+                    )
+                min_target_distance = pairwise_distances.amin(dim=(1, 2))
+
                 if (step == self.steps-1):
                     minimize_still = False
-                    # clash_mask = interface_total_loss > 20
-                    if interface_total_loss.size(0) != 1:
-                        clash_mask = interface_total_loss > self.interface_cutoff
-                        if redo == 0:
-                            indices = torch.argwhere(clash_mask).flatten()
-                        inverse_mask = clash_mask == False
-                        print(f"Number of successful outputs (based on Interface non-clashing < {self.interface_cutoff}): {sum(inverse_mask)} proportion: {sum(inverse_mask) / inverse_mask.flatten().shape[0]}")
-                        out = out.detach().clone()
-                        torsion = self.calc_angles(out[inverse_mask, :self.PARAMS["torsion_main_n"]*2])
-                        bond_angle = self.calc_angles(out[inverse_mask, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
-                        preds = torch.cat((torsion, bond_angle, out[inverse_mask, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
-                    else:
-                        out = out.detach().clone()
-                        torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
-                        bond_angle = self.calc_angles(out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
-                        preds = torch.cat((torsion, bond_angle, out[:, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
+                    clash_mask = interface_total_loss > self.interface_cutoff
+                    distance_pass = min_target_distance >= 1.0
+                    inverse_mask = ~clash_mask
+
+                    print(
+                            "Minimum target-peptide distances:",
+                            min_target_distance.detach().cpu().tolist(),
+                            )
+                    print(
+                            f"Number of successful outputs: {inverse_mask.sum().item()} / "
+                            f"{inverse_mask.numel()}"
+                            )
+
+                    out = out.detach().clone()
+                    kept_out = out[inverse_mask]
+                    torsion = self.calc_angles(kept_out[:, :self.PARAMS["torsion_main_n"]*2])
+                    bond_angle = self.calc_angles(kept_out[:, self.PARAMS["torsion_main_n"]*2:self.PARAMS["bond_angle_main_n"]*2*2])
+                    preds = torch.cat((torsion, bond_angle, kept_out[:, self.PARAMS["torsion_main_n"]*2*2:-self.energy_n]), dim=-1)
                 else:
                     out = out.detach().clone()
                     torsion = self.calc_angles(out[:, :self.PARAMS["torsion_main_n"]*2])
@@ -1474,12 +1492,21 @@ class EnergyPath:
         complex_output: bool = False,
         ) -> int:
         """Output the GDS trajectory"""
-        if self.dof_traj.size(0) == 1:
-            thread_data = {'x': self.dof_traj[0, :, :],
-                           'params': self.PARAMS,}
+        if self.dof_traj.ndim == 3:
+            final_dofs = self.dof_traj[:, -1, :]
+        elif self.dof_traj.ndim == 2:
+            final_dofs = self.dof_traj
         else:
-            thread_data = {'x': self.dof_traj[:, -1, :],
-                           'params': self.PARAMS,}
+            raise ValueError(
+                    f"Unexpected dof_traj shape: {tuple(self.dof_traj.shape)}"
+                    )
+
+        if final_dofs.size(0) == 0:
+            print("No non-clashing structures survived; no structures will be written.")
+            return 0
+
+        thread_data = {'x': final_dofs,
+                        'params': self.PARAMS,}
         dofsummary.thread_dofs_to_poses(
             thread_data,
             silentfile = silentfile,
