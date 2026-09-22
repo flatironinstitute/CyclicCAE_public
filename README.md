@@ -41,7 +41,7 @@ You will need to fetch the 6XBF PDB and rename it to 6xbf_nochanges.pdb or renam
 
 All of the method specifc params are shown here:
 ```
-usage: energy_gradient.py [-h] [--steps STEPS] [--prefix-outfile PREFIX_OUTFILE] [--silentfile] [--score-outputs] [--apply-minmover-outputs]
+usage: python3 energy_gradient.py [-h] [--steps STEPS] [--prefix-outfile PREFIX_OUTFILE] [--silentfile] [--score-outputs] [--apply-minmover-outputs]
                           [--desired-motif-start-position DESIRED_MOTIF_START_POSITION] [--output-path OUTPUT_PATH] [--extract-minimize-input]
                           [--weights-load WEIGHTS_LOAD] [--out-size OUT_SIZE] [--lr LR] [--cutoff-true] [--cutoff CUTOFF] [--latent-dim LATENT_DIM]
                           [--partial-optimization] [--freeze-residues FREEZE_RESIDUES [FREEZE_RESIDUES ...]] [--l-homochiral] [--freeze-torsion]
@@ -166,7 +166,7 @@ then `./python/binary_import/dof_vectors2024-04-10torch_tensor.pt`
 You can change the model's default parameters with the flags below:
 
 ```
-usage: model.py [-h] [--dataset-tensor DATASET_TENSOR] [--epochs EPOCHS] [--num-encoder-layers NUM_ENCODER_LAYERS] [--num-decoder-layers NUM_DECODER_LAYERS] [--latent-space LATENT_SPACE]
+usage: python3 model.py [-h] [--dataset-tensor DATASET_TENSOR] [--epochs EPOCHS] [--num-encoder-layers NUM_ENCODER_LAYERS] [--num-decoder-layers NUM_DECODER_LAYERS] [--latent-space LATENT_SPACE]
                 [--batch-size BATCH_SIZE] [--learning-rate LEARNING_RATE] [--output_weights_every_n OUTPUT_WEIGHTS_EVERY_N] [--load-weights LOAD_WEIGHTS]
                 [--path-to-output-dir PATH_TO_OUTPUT_DIR] [--plotly-latent-animate PLOTLY_LATENT_ANIMATE] [--angle-decomposition ANGLE_DECOMPOSITION] [--override-lr] [--dropout DROPOUT]
                 [--noise-std NOISE_STD] [--cyclic] [--linear-pe] [--overfit] [--overfit-n OVERFIT_N] [--convolution] [--rotation-permutation] [--noise-iterations NOISE_ITERATIONS]
@@ -215,6 +215,31 @@ options:
   --subset-size SUBSET_SIZE
                         Works in conjunction with shuffle-samples
   --shards              If the dataset is large indicate this, and we will search for the 'shards' files in the same location.
+```
+
+## GeneralizedKIC Sampling (for comparison)
+
+The `python/insolution_genkic.py` script provides means of benchmarking macrocycle backbone generation using Rosetta's older GeneralizedKIC algorithm.  The commandline usage and options are:
+
+```
+usage: python3 insolution_genkic.py [-h] [--size PEPTIDE_SIZE] [--nstruct NSTRUCT] [--debug] [--nofilter] [--sample-root] [--time-test] [--empty-pose-test] [--thioether] [--homochiral] [--thioether-choloroacetyl-homochiral] [--lariat-sidechain-index LARIAT_INDEX]
+
+options:
+	-h, --help			Show this help message and exit.
+	-s, --size			Number of residues in the macrocycles that you'd like to generate.
+	-n, --nstruct		Number of structures to generate.
+	--debug				Dump PDBs for testing, unmute Rosetta, print helpful trace messages.
+	--nofilter			Dont apply strict filter on hbonds.
+	--sample-root		If generating samples in-solution then this should be set as your root residue is generally not an anchor.
+	--time-test			This is only for a time comparison between XML and PyRosetta, since XML writes to disk for every structure,
+						but here we do not. This will trigger these writes for time comparisons. Don't set it otherwise, as it will 
+						make the process slower.
+	--empty-pose-test	Run an empty pose test, since this is more representative of the XML script.
+	--thioether			Generate thioether-cyclized peptides.
+	--homochiral		This makes an all-alanine peptide instead of an all-glycine peptide.
+	--thioether-chloroacetyl-homochiral		This makes the choloracetyl (cyclization) residue into an alanine instead of a glycine.
+	--thioether-chloroacetyl-dchiral		This makes the choloracetyl residue into a D-alanine instead of a glycine.
+	--lariat-sidechain-index				Set up a special placement for the lariat n-c positions.
 ```
 
 ## Rosetta Patch
