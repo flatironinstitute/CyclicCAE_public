@@ -294,8 +294,6 @@ def extract_pdb_xyz(input_file: str,
     # Separate out the relevant information
     atom_array = strucio.load_structure(input_file)
     aa_values = atom_array[struc.filter_amino_acids(atom_array)]
-    peptide = aa_values[aa_values.chain_id == pep]
-    non_peptide = aa_values[aa_values.chain_id != pep]
 
     # extract atom number
     epsilon_key = {
@@ -307,56 +305,93 @@ def extract_pdb_xyz(input_file: str,
             "O": 1.540580, "H": 1.540580,
             }#0.005000}
 
-    # generate tensor 
+    peptide_chain_mask = aa_values.chain_id == pep
+    target_chain_mask = ~peptide_chain_mask
+
+    peptide_atom_names = ("N", "CA", "C", "O")
+    reduced_target_atom_names = ("N", "CA", "C", "O", "CB")
+
+    peptide_mask = (
+            peptide_chain_mask
+            & np.isin(aa_values.atom_name, peptide_atom_names)
+            )
+
     if full:
-        aa_values_filter = (aa_values.chain_id != pep) | ( (aa_values.chain_id == pep) & (np.isin(aa_values.atom_name,["N", "CA", "C", "O"])) )
-        peptide_non_full_mask = np.isin(peptide.atom_name,["N", "CA", "C", "O"])
-        peptide = peptide[peptide_non_full_mask]
-        full_xyz = torch.tensor(aa_values[aa_values_filter].coord, dtype=torch.float)
-        peptide_sigma = torch.zeros(len(peptide), dtype=torch.float)
-        peptide_epsilon = torch.zeros(len(peptide), dtype=torch.float)
-        target_sigma = torch.zeros(len(non_peptide), dtype=torch.float)
-        target_epsilon = torch.zeros(len(non_peptide), dtype=torch.float)
-        target_xyz = torch.tensor(non_peptide.coord, dtype=torch.float)
-        peptide_xyz = torch.tensor(peptide.coord, dtype=torch.float)
+        target_mask = (
+                target_chain_mask
+                & (np.char.upper(aa_values.element.astype(str)) != "H")
+                )
     else:
-        aa_values_filter = ( (aa_values.chain_id != pep) & (np.isin(aa_values.atom_name,["N", "CA", "C", "O", "CB"])) ) | ( (aa_values.chain_id == pep) & (np.isin(aa_values.atom_name,["N", "CA", "C", "O"])) )
-        target_non_full_mask = np.isin(non_peptide.atom_name,["N", "CA", "C", "O", "CB"])
-        peptide_non_full_mask = np.isin(peptide.atom_name,["N", "CA", "C", "O"])
-        peptide = peptide[peptide_non_full_mask]
-        non_peptide = non_peptide[target_non_full_mask]
-        full_xyz = torch.tensor(aa_values[aa_values_filter].coord, dtype=torch.float)
-        peptide_sigma = torch.zeros(len(peptide), dtype=torch.float)
-        peptide_epsilon = torch.zeros(len(peptide), dtype=torch.float)
-        target_sigma = torch.zeros(len(non_peptide), dtype=torch.float)
-        target_epsilon = torch.zeros(len(non_peptide), dtype=torch.float)
-        target_xyz = torch.tensor(non_peptide.coord, dtype=torch.float)
-        peptide_xyz = torch.tensor(peptide.coord, dtype=torch.float)
+        target_mask = (
+                target_chain_mask
+                & np.isin(aa_values.atom_name, reduced_target_atom_names)
+                )
+
+    peptide = aa_values[peptide_mask]
+    non_peptide = aa_values[target_mask]
+
+    if len(peptide) == 0:
+        raise ValueError(f"No peptide N/CA/C/O atoms found for chain {pep}"
+                )
+#     if len(non_peptide) == 0:
+#         target_mode = (
+#                 "all target heavy atoms"
+#                 if full
+#                 else "target N/CA/C/O/CB atoms"
+#                 )
+#         raise ValueError(f"No {target_mode} found outside peptide chain {pep}")
+
+    selected_mask = peptide_mask | target_mask
+
+    full_xyz = torch.tensor(
+            aa_values[selected_mask].coord,
+            dtype=torch.float,
+            )
+    target_xyz = torch.tensor(
+            non_peptide.coord,
+            dtype=torch.float,
+            )
+    peptide_xyz = torch.tensor(
+            peptide.coord,
+            dtype=torch.float,
+            )
+
+    peptide_sigma = torch.zeros(len(peptide), dtype=torch.float)
+    peptide_epsilon = torch.zeros(len(peptide), dtype=torch.float)
+    target_sigma = torch.zeros(len(non_peptide), dtype=torch.float)
+    target_epsilon = torch.zeros(len(non_peptide), dtype=torch.float)
+
+    def lj_atom_type(atom):
+        """
+        Map an atom to the existing reduced LJ parameter classes.
+        """
+        atom_name = str(atom.atom_name).strip().upper()
+        element = str(atom.element).strip().upper()
+
+        if atom_name == "CA":
+            return "CA"
+
+        if element in ("N", "C", "O", "H"):
+            return element
+
+        # fallback output
+        return "C"
 
     # Fill sigma / epsilon mats
     for k, a in enumerate(peptide):
-        if a.atom_name == "CA":
-            atom_name = "CA"
-        elif a.atom_name not in ["N", "CA", "C", "O"]:
-            continue
-        elif a.element not in ["N", "C", "O", "H"]:
-            atom_name = "C"
-        else:
-            atom_name = a.element
-        peptide_epsilon[k] = epsilon_key[atom_name]
-        peptide_sigma[k] = sigma_key[atom_name]
+        atom_type = lj_atom_type(a)
+        peptide_epsilon[k] = epsilon_key[atom_type]
+        peptide_sigma[k] = sigma_key[atom_type]
 
     for k, a in enumerate(non_peptide):
-        if a.atom_name == "CA":
-            atom_name = "CA"
-        elif (not full) and (a.atom_name not in ["N", "CA", "C", "O", "CB"]):
-            continue
-        elif a.element not in ["N", "C", "O", "H"]:
-            atom_name = "C"
-        else:
-            atom_name = a.element
-        target_epsilon[k] = epsilon_key[atom_name]
-        target_sigma[k] = sigma_key[atom_name]
+        atom_type = lj_atom_type(a)
+        target_epsilon[k] = epsilon_key[atom_type]
+        target_sigma[k] = sigma_key[atom_type]
+
+    assert target_xyz.size(0) == target_sigma.numel()
+    assert target_xyz.size(0) == target_epsilon.numel()
+    assert peptide_xyz.size(0) == peptide_sigma.numel()
+    assert peptide_xyz.size(0) == peptide_epsilon.numel()
 
     return full_xyz, target_xyz, peptide_xyz, target_sigma, target_epsilon, peptide_sigma, peptide_epsilon
 

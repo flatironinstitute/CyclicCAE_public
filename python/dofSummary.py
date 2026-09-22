@@ -1288,7 +1288,8 @@ class DoFSummary:
             updated_residues.append( ir )
 
         # generate an atom map 
-        atom_map = self.grab_atomid_map(
+#         atom_map = self.grab_atomid_map(
+        atom_map = self.grab_heavybb_atomid_map(
                 pose_reference,
                 pose_target,
                 updated_residues,
