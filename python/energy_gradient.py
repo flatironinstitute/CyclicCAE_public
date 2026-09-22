@@ -774,8 +774,7 @@ class EnergyPath:
                 homochiral_mask = torch.ones(out.size(0),dtype=torch.bool, device=out.device)
 
             # Determine which points are within the latent space cutoff
-#             int_mask = interface_total_loss <= self.interface_cutoff
-            int_mask = torch.onee_like(interface_total_loss)
+            int_mask = interface_total_loss <= self.interface_cutoff
             matched_sample_idx = match_res_mask[:, 0].long()
             terminal_mask = term_bond_loss[matched_sample_idx].view(-1) < 0.5 #2.0
             ocnh_mask = ocnh_loss[matched_sample_idx].view(-1) < 0.5
