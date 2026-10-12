@@ -150,6 +150,15 @@ options:
                         None)
 ```
 
+### Obtaing the weights
+Model wieghts are stored in Git Large File Storage (LFS). To obtain the weights you need to first ensure that you have git LFS installed on your system.
+```bash
+git lfs install
+```
+Then you need to fetch the LFS objects from the remote server and replace the local LFS pointer files with the actual heavy assets by pulling them from the server.
+```bash
+git lfs pull
+```
 
 ## Training Model
 
