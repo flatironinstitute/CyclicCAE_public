@@ -7,7 +7,7 @@ import argparse
 import csv
 from pathlib import Path
 
-from utilities import (
+from benchmarks.utilities.pdb_utils import (
     create_pdb_with_selected_residues,
     create_single_model_pdb,
     get_model_count_and_residues,

@@ -8,7 +8,7 @@ import csv
 import statistics
 from pathlib import Path
 
-from utilities import (
+from benchmarks.utilities.score_utils import (
     ROSETTA_SCORE_FIELDS,
     calculate_percentile,
     get_file_modified_time_utc,
