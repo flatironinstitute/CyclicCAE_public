@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+repo_dir="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$repo_dir"
 
 mode="${1:-pilot}"

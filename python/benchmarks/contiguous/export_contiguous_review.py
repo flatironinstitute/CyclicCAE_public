@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pyrosetta
 
-from export_scored_silent import parse_score_table
+from benchmarks.utilities.export_scored_silent import parse_score_table
 
 
 def main() -> None:

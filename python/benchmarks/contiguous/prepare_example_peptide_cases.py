@@ -151,6 +151,11 @@ def write_outputs(repo: Path, output_dir: Path) -> None:
     case_rows = []
     for pdb_id, sheet_sequence, expected_length, peptide_name in EXAMPLES:
         pdb_path = pdb_dir / PDB_FILENAMES[pdb_id]
+        if not pdb_path.exists():
+            raise FileNotFoundError(
+                f"Missing benchmark input {pdb_path}. "
+                "See python/benchmarks/README.md for download instructions."
+            )
         models, chains = first_model_residues(pdb_path)
         chain, residues, selection_note = choose_candidate(
             chains, expected_length, PREFERRED_CHAINS.get(pdb_id)
