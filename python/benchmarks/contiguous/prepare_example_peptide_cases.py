@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import OrderedDict
 from pathlib import Path
+
+from utilities import (
+    create_pdb_with_selected_residues,
+    create_single_model_pdb,
+    get_model_count_and_residues,
+)
 
 
 EXAMPLES = (
@@ -33,96 +38,6 @@ WEIGHTS = {
 }
 
 PREFERRED_CHAINS = {"7BTI": "X", "6WI3": "F", "6XBF": "I"}
-
-
-def first_model_residues(path: Path) -> tuple[int, dict[str, list[tuple[str, str]]]]:
-    """Return model count and ordered polymer-like residues in the first model."""
-    chains: dict[str, OrderedDict[tuple[str, str], tuple[str, set[str]]]] = {}
-    model_count = 0
-    in_first_model = True
-    saw_model = False
-    with path.open(errors="replace") as handle:
-        for line in handle:
-            record = line[:6].strip()
-            if record == "MODEL":
-                model_count += 1
-                saw_model = True
-                in_first_model = model_count == 1
-                continue
-            if record == "ENDMDL" and in_first_model:
-                in_first_model = False
-                continue
-            if record not in {"ATOM", "HETATM"} or not in_first_model:
-                continue
-            atom_name = line[12:16].strip()
-            if atom_name not in {"N", "CA", "C", "O"}:
-                continue
-            altloc = line[16].strip()
-            if altloc not in {"", "A"}:
-                continue
-            chain = line[21].strip() or "_"
-            key = (line[22:26].strip(), line[26].strip())
-            residue_name = line[17:20].strip()
-            residues = chains.setdefault(chain, OrderedDict())
-            if key not in residues:
-                residues[key] = (residue_name, set())
-            residues[key][1].add(atom_name)
-    if not saw_model:
-        model_count = 1
-    return model_count, {
-        chain: [
-            (f"{n}{i}", residue_name)
-            for (n, i), (residue_name, atoms) in residues.items()
-            if {"N", "CA", "C"}.issubset(atoms)
-        ]
-        for chain, residues in chains.items()
-    }
-
-
-def write_first_model(source: Path, destination: Path) -> None:
-    """Write PDB headers and coordinates for model 1 without MODEL records."""
-    output = []
-    saw_model = False
-    in_first_model = False
-    with source.open(errors="replace") as handle:
-        for line in handle:
-            record = line[:6].strip()
-            if record == "MODEL":
-                if saw_model:
-                    break
-                saw_model = True
-                in_first_model = True
-                continue
-            if record == "ENDMDL" and in_first_model:
-                break
-            if not saw_model or in_first_model:
-                output.append(line)
-    if not output or not saw_model:
-        raise ValueError(f"{source} does not contain a MODEL record")
-    output.append("END\n")
-    destination.write_text("".join(output))
-
-
-def write_selected_residues(
-    source: Path,
-    destination: Path,
-    chain: str,
-    residue_ids: set[str],
-) -> None:
-    """Write a PDB with only selected coordinate records and safe headers."""
-    output = []
-    with source.open(errors="replace") as handle:
-        for line in handle:
-            record = line[:6].strip()
-            if record in {"ATOM", "HETATM", "TER"}:
-                line_chain = line[21].strip() or "_"
-                residue_id = f"{line[22:26].strip()}{line[26].strip()}"
-                if line_chain == chain and residue_id in residue_ids:
-                    output.append(line)
-            elif record not in {"CONECT", "MASTER", "END"}:
-                output.append(line)
-    output.append("END\n")
-    destination.write_text("".join(output))
 
 
 def choose_candidate(
@@ -156,17 +71,17 @@ def write_outputs(repo: Path, output_dir: Path) -> None:
                 f"Missing benchmark input {pdb_path}. "
                 "See python/benchmarks/README.md for download instructions."
             )
-        models, chains = first_model_residues(pdb_path)
+        models, chains = get_model_count_and_residues(pdb_path)
         chain, residues, selection_note = choose_candidate(
             chains, expected_length, PREFERRED_CHAINS.get(pdb_id)
         )
         run_pdb_path = pdb_path
         if models > 1:
             run_pdb_path = pdb_path.with_name(f"{pdb_path.stem}_model1.pdb")
-            write_first_model(pdb_path, run_pdb_path)
+            create_single_model_pdb(pdb_path, run_pdb_path)
         if pdb_id == "6UCX":
             run_pdb_path = pdb_path.with_name("6ucx_peptide.pdb")
-            write_selected_residues(
+            create_pdb_with_selected_residues(
                 pdb_path,
                 run_pdb_path,
                 chain,
