@@ -9,6 +9,9 @@ import os
 import subprocess
 from pathlib import Path
 
+from benchmarks.contiguous.summarize_example_contiguous import process_benchmark_case
+from benchmarks.utilities.summary_utils import upsert_benchmark_summaries
+
 
 def run_energy_gradient(
     case: dict[str, str],
@@ -76,6 +79,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=10000)
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--output-root", type=Path, default=Path("outputs/example_contiguous"))
+    parser.add_argument("--summary-file", type=Path, default=Path("outputs/summary.csv"))
     args = parser.parse_args()
 
     with args.manifest.open(newline="") as handle:
@@ -83,13 +87,17 @@ def main() -> None:
     if not 0 <= args.case_index < len(rows):
         raise SystemExit(f"case index {args.case_index} outside 0..{len(rows)-1}")
 
+    case = rows[args.case_index]
     return_code = run_energy_gradient(
-        rows[args.case_index],
+        case,
         args.output_root,
         scaffold_num=args.scaffold_num,
         batch_size=args.batch_size,
         steps=args.steps,
     )
+    summary, _ = process_benchmark_case(case, args.output_root)
+    upsert_benchmark_summaries(args.summary_file, [summary])
+    print(f"[{case['run_id']}] Updated summary: {args.summary_file}", flush=True)
     raise SystemExit(return_code)
 
 

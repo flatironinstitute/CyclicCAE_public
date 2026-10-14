@@ -57,4 +57,4 @@ def get_file_modified_time_utc(path: Path) -> str:
     return datetime.fromtimestamp(
         path.stat().st_mtime,
         timezone.utc,
-    ).isoformat(timespec="seconds")
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")

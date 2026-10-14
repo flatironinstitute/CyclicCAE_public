@@ -14,6 +14,10 @@ from benchmarks.utilities.score_utils import (
     get_file_modified_time_utc,
     parse_rosetta_scores,
 )
+from benchmarks.utilities.summary_utils import (
+    BENCHMARK_SUMMARY_FIELDS,
+    upsert_benchmark_summaries,
+)
 
 
 def process_benchmark_case(
@@ -118,6 +122,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--summary-file", type=Path, default=Path("outputs/summary.csv"))
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -131,16 +136,6 @@ def main() -> None:
         summaries.append(summary)
         per_output.extend(case_outputs)
 
-    summary_fields = [
-        "peptide_name", "motif_length", "motif_start", "freeze_residues", "motif_type",
-        "status", "exit_code", "started_utc", "finished_utc", "output_count",
-        "bb_rmsd_min", "bb_rmsd_median", "bb_rmsd_p90", "bb_rmsd_mean",
-        "bb_rmsd_fraction_le_0.10", "bb_rmsd_fraction_le_0.25",
-        "bb_rmsd_fraction_le_0.50", "heavy_rmsd_min", "heavy_rmsd_median",
-        "heavy_rmsd_p90", "score_min", "score_median", "score_mean",
-        "pdb_id", "example_peptide_name", "peptide_chain", "peptide_length",
-        "permutation_name", "failure_reason",
-    ]
     output_fields = [
         "peptide_name", "motif_length", "motif_start", "freeze_residues", "motif_type",
         "status", "rank_within_motif_bb_rmsd", "rank_within_motif_score",
@@ -149,7 +144,7 @@ def main() -> None:
         "permutation_name", "failure_reason",
     ]
     for filename, fields, rows in (
-        ("example_contiguous_summary.csv", summary_fields, summaries),
+        ("example_contiguous_summary.csv", BENCHMARK_SUMMARY_FIELDS, summaries),
         ("example_contiguous_per_output.csv", output_fields, per_output),
     ):
         path = args.output_dir / filename
@@ -158,6 +153,9 @@ def main() -> None:
             writer.writeheader()
             writer.writerows(rows)
         print(f"Wrote {len(rows)} rows to {path}")
+
+    upsert_benchmark_summaries(args.summary_file, summaries)
+    print(f"Updated {len(summaries)} rows in {args.summary_file}")
 
 
 if __name__ == "__main__":

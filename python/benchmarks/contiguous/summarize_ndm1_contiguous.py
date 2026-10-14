@@ -9,6 +9,8 @@ import math
 import statistics
 from pathlib import Path
 
+from benchmarks.utilities.summary_utils import upsert_benchmark_summaries
+
 
 def planned_nonwrap_cases() -> list[dict[str, object]]:
     cases = []
@@ -64,21 +66,76 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
+def normalize_ndm1_summary(summary: dict[str, object]) -> dict[str, object]:
+    """Add shared identity fields and use the manifest-style 6XBF case name."""
+    motif_length = int(summary["motif_length"])
+    start_index = int(summary["motif_start"]) - 1000
+    run_id = f"6XBF_L{motif_length}_S{start_index:02d}"
+    exit_code = str(summary["exit_code"])
+    status = str(summary["status"])
+    if status == "PASS":
+        failure_reason = ""
+    elif exit_code == "3":
+        failure_reason = "NO_MATCH"
+    elif not exit_code:
+        failure_reason = "NOT_RUN"
+    else:
+        failure_reason = "ERROR"
+    return {
+        **summary,
+        "peptide_name": run_id,
+        "pdb_id": "6XBF",
+        "example_peptide_name": "NDM1i-1g",
+        "peptide_chain": "I",
+        "peptide_length": 8,
+        "permutation_name": run_id,
+        "failure_reason": failure_reason,
+    }
+
+
+def read_existing_summaries(path: Path) -> list[dict[str, object]]:
+    """Read a previously generated NDM1 summary when raw runs are unavailable."""
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "benchmark_root", type=Path, nargs="?", default=Path("outputs/contiguous_benchmark")
     )
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--summary-file", type=Path, default=Path("outputs/summary.csv"))
     args = parser.parse_args()
     output_dir = args.output_dir or args.benchmark_root
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    planned_cases = planned_nonwrap_cases()
+    existing_summary_path = args.benchmark_root / "contiguous_per_motif_summary.csv"
+    raw_runs_available = any(
+        (args.benchmark_root / str(case["peptide_name"])).is_dir()
+        for case in planned_cases
+    )
+    if not raw_runs_available:
+        existing_summaries = read_existing_summaries(existing_summary_path)
+        if existing_summaries:
+            unified_summaries = [
+                normalize_ndm1_summary(summary) for summary in existing_summaries
+            ]
+            upsert_benchmark_summaries(args.summary_file, unified_summaries)
+            print(
+                f"Imported {len(unified_summaries)} existing NDM1 rows "
+                f"into {args.summary_file}"
+            )
+            return
 
     all_rows: list[dict[str, str]] = []
     summaries: list[dict[str, object]] = []
     score_fields: list[str] = []
 
-    for case in planned_nonwrap_cases():
+    for case in planned_cases:
         name = str(case["peptide_name"])
         case_dir = args.benchmark_root / name
         config = read_config(case_dir / "run_config.txt")
@@ -152,8 +209,12 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(summaries)
 
+    unified_summaries = [normalize_ndm1_summary(summary) for summary in summaries]
+    upsert_benchmark_summaries(args.summary_file, unified_summaries)
+
     print(f"Wrote {len(all_rows)} output rows to {per_output_path}")
     print(f"Wrote {len(summaries)} motif rows to {summary_path}")
+    print(f"Updated {len(unified_summaries)} rows in {args.summary_file}")
 
 
 if __name__ == "__main__":

@@ -65,11 +65,13 @@ The original NDM1 contiguous benchmark can be run separately:
 
 ```bash
 bash python/benchmarks/launchers/run_ndm1_contiguous.sh pilot
+python -m benchmarks.contiguous.summarize_ndm1_contiguous
 ```
 
 ## Description of output
 
 Case manifests and input checks are written to `outputs/example_peptides/`.
 Each run writes its command, log, exit code, and scored silent file beneath
-`outputs/example_contiguous/<run_id>/`. The summarizer produces one CSV of
+`outputs/example_contiguous/<run_id>/`. Each completed case is inserted or
+updated in `outputs/summary.csv`. The summarizer also produces one CSV of
 case-level statistics and one CSV containing every scored output.
