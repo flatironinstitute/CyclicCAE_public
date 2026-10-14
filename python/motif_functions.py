@@ -199,21 +199,32 @@ def calculate_motif_numbering_for_kabsch(
         our input
     """
     # index generate
-    positions = torch.arange(pep_len*4).view(pep_len, 4)
-    input_positions = torch.arange((motif_positions.max()+1)*4).view(motif_positions.max()+1, 4)
+    match_device = motif_match.device
+    motif_device = motif_positions.device
+    # DoFSummary returns peptide-relative residue numbers in Rosetta's 1-based
+    # convention. Coordinate tensors below are 0-based.
+    motif_positions_zero = motif_positions.to(dtype=torch.long) - 1
+    if motif_positions_zero.min().item() < 0 or motif_positions_zero.max().item() >= pep_len:
+        raise IndexError(
+            f"motif positions {motif_positions.tolist()} fall outside a {pep_len}-residue peptide"
+        )
+    positions = torch.arange(pep_len * 4, device=match_device).view(pep_len, 4)
+    input_positions = torch.arange(
+        pep_len * 4, device=motif_device
+    ).view(pep_len, 4)
     
     # motifs
     if dof_minimize:
-        motif_residues = (motif_match.view(-1, 1) + torch.arange(motif_length, dtype=torch.long).unsqueeze(0)).view(-1, 1)
+        motif_residues = (motif_match.view(-1, 1) + torch.arange(motif_length, dtype=torch.long, device=match_device).unsqueeze(0)).view(-1, 1)
     else:
-        motif_residues = (motif_match[:, -1].view(-1, 1) + torch.arange(motif_length, dtype=torch.long).unsqueeze(0)).view(-1, 1)
+        motif_residues = (motif_match[:, -1].view(-1, 1) + torch.arange(motif_length, dtype=torch.long, device=match_device).unsqueeze(0)).view(-1, 1)
     motif_residues_cyclic = cyclize_tensor(motif_residues, pep_len, False)
 
     # Index our tensor correctly
-    motif_kabsch = positions[motif_residues]
+    motif_kabsch = positions[motif_residues_cyclic]
 
     # Motif residues of passed PDB
-    motif_input = input_positions[motif_positions.view(-1, 1)]
+    motif_input = input_positions[motif_positions_zero.view(-1, 1)]
 
     return motif_kabsch.view(motif_match.shape[0], 4*motif_length), motif_input.view(-1)
 
