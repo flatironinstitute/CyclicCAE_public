@@ -4,14 +4,18 @@ Exercises CyclicCAE using known structures to generate peptides from known
 starting structures.
 
 Run all commands from the repository root. The examples below assume the
-project environment is available at `.env/`.
+project environment is available at `.env/` and has been activated:
+
+```bash
+source .env/bin/activate
+```
 
 ## How to run
 
 Download the deposited structures required by the benchmark:
 
 ```bash
-PYTHONPATH=python .env/bin/python -m benchmarks pull-structures
+python -m benchmarks pull-structures
 ```
 
 Existing valid files are left unchanged. Pass `--force` to download them
@@ -21,18 +25,16 @@ again. The command saves the structures under `pdbs/`, including 6XBF as
 Prepare the structure inventory and contiguous-motif case manifests:
 
 ```bash
-PYTHONPATH=python .env/bin/python \
-  -m benchmarks.contiguous.prepare_example_peptide_cases
+python -m benchmarks.contiguous.prepare_example_peptide_cases
 ```
 
 Run one case by its zero-based row number. Use the six-row pilot manifest
 first; the production manifest contains 90 cases.
 
 ```bash
-PYTHONPATH=python \
 CYCLICCAE_PYTHON="$PWD/.env/bin/python" \
 CUDA_VISIBLE_DEVICES=0 \
-.env/bin/python -m benchmarks.contiguous.run_example_contiguous_case \
+python -m benchmarks.contiguous.run_example_contiguous_case \
   --manifest outputs/example_peptides/example_peptide_contiguous_pilot_cases.csv \
   --case-index 0 \
   --output-root outputs/example_contiguous_pilot
@@ -54,8 +56,7 @@ sbatch --array=0-89 \
 Summarize completed production runs:
 
 ```bash
-PYTHONPATH=python .env/bin/python \
-  -m benchmarks.contiguous.summarize_example_contiguous \
+python -m benchmarks.contiguous.summarize_example_contiguous \
   --manifest outputs/example_peptides/example_peptide_contiguous_run_cases.csv \
   --run-root outputs/example_contiguous \
   --output-dir outputs/example_contiguous/reports

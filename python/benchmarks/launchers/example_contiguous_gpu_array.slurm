@@ -17,7 +17,6 @@ mkdir -p outputs/example_contiguous/slurm
 
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
-export PYTHONPATH="python${PYTHONPATH:+:$PYTHONPATH}"
 export CYCLICCAE_PYTHON="$env_dir/bin/python"
 
 "$env_dir/bin/python" -m benchmarks.contiguous.run_example_contiguous_case \
