@@ -17,11 +17,13 @@ mkdir -p outputs/example_contiguous/slurm
 
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="python${PYTHONPATH:+:$PYTHONPATH}"
 export CYCLICCAE_PYTHON="$env_dir/bin/python"
 
-"$env_dir/bin/python" python/benchmarks/contiguous/run_example_contiguous_case.py \
+"$env_dir/bin/python" -m benchmarks.contiguous.run_example_contiguous_case \
   --manifest "${CYCLICCAE_MANIFEST:-outputs/example_peptides/example_peptide_contiguous_run_cases.csv}" \
   --case-index "$SLURM_ARRAY_TASK_ID" \
+  --output-root "${CYCLICCAE_OUTPUT_ROOT:-outputs/example_contiguous}" \
   --scaffold-num "${CYCLICCAE_SCAFFOLD_NUM:-100}" \
   --batch-size "${CYCLICCAE_BATCH_SIZE:-10000}" \
   --steps "${CYCLICCAE_STEPS:-10}"

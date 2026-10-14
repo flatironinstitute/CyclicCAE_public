@@ -1,59 +1,75 @@
-# CyclicCAE benchmarks
+# CyclicCAE Benchmark
 
-This package contains experiment orchestration and result-export code. It is
-kept separate from the model and inpainting implementation under `python/` so
-benchmark-specific assumptions do not become part of the core runtime.
+Exercises CyclicCAE using known structures to generate peptides from known
+starting structures.
 
-Run commands from the repository root.
+Run all commands from the repository root. The examples below assume the
+project environment is available at `.env/`.
 
-## Input structures
+## How to run
 
-The example benchmark expects deposited structures under `pdbs/`. PDB files
-are generated inputs and are intentionally not committed. Download the seven
-standard filenames from RCSB and save the 6XBF structure under the historical
-name expected by the inference example:
+Download the deposited structures required by the benchmark:
 
 ```bash
-mkdir -p pdbs
-for id in 1skl 6axi 6azg 6be9 6ucx 6wi3 7bti; do
-  curl -L "https://files.rcsb.org/download/${id}.pdb" -o "pdbs/${id}.pdb"
-done
-curl -L https://files.rcsb.org/download/6xbf.pdb -o pdbs/6xbf_nochanges.pdb
+PYTHONPATH=python .env/bin/python -m benchmarks pull-structures
 ```
 
-The preparation command below validates these inputs and creates any
-first-model or peptide-only derivatives needed by the manifests.
+Existing valid files are left unchanged. Pass `--force` to download them
+again. The command saves the structures under `pdbs/`, including 6XBF as
+`pdbs/6xbf_nochanges.pdb` for compatibility with the original example.
 
-## NDM1 contiguous benchmark
+Prepare the structure inventory and contiguous-motif case manifests:
 
 ```bash
-bash python/benchmarks/launchers/run_ndm1_contiguous.sh
-python python/benchmarks/contiguous/summarize_ndm1_contiguous.py
+PYTHONPATH=python .env/bin/python \
+  -m benchmarks.contiguous.prepare_example_peptide_cases
 ```
 
-## Repository example-peptide benchmark
+Run one case by its zero-based row number. Use the six-row pilot manifest
+first; the production manifest contains 90 cases.
 
 ```bash
-python python/benchmarks/contiguous/prepare_example_peptide_cases.py
-python python/benchmarks/contiguous/run_example_contiguous_case.py --help
-python python/benchmarks/contiguous/summarize_example_contiguous.py --help
+PYTHONPATH=python \
+CYCLICCAE_PYTHON="$PWD/.env/bin/python" \
+CUDA_VISIBLE_DEVICES=0 \
+.env/bin/python -m benchmarks.contiguous.run_example_contiguous_case \
+  --manifest outputs/example_peptides/example_peptide_contiguous_pilot_cases.csv \
+  --case-index 0 \
+  --output-root outputs/example_contiguous_pilot
 ```
 
-Cluster launchers are in `launchers/`. Their site-specific environment and
-filesystem paths should be reviewed before submission.
-
-## Utilities
-
-`utilities/export_scored_silent.py` extracts peptide PDB files, scores, and
-review selections from a scored Rosetta silent file.
-
-Run the cross-package review exporter as a module so its shared utility import
-is resolvable:
+On a Slurm cluster, review the repository and environment paths in
+`python/benchmarks/launchers/example_contiguous_gpu_array.slurm`, then launch
+the pilot or production array:
 
 ```bash
-PYTHONPATH=python python -m benchmarks.contiguous.export_contiguous_review \
-  outputs/contiguous_benchmark outputs/contiguous_benchmark/review20
+sbatch --array=0-5 \
+  --export=ALL,CYCLICCAE_MANIFEST=outputs/example_peptides/example_peptide_contiguous_pilot_cases.csv,CYCLICCAE_OUTPUT_ROOT=outputs/example_contiguous_pilot \
+  python/benchmarks/launchers/example_contiguous_gpu_array.slurm
+
+sbatch --array=0-89 \
+  python/benchmarks/launchers/example_contiguous_gpu_array.slurm
 ```
 
-Generated structures and reports belong under `outputs/`; they are not Python
-package source.
+Summarize completed production runs:
+
+```bash
+PYTHONPATH=python .env/bin/python \
+  -m benchmarks.contiguous.summarize_example_contiguous \
+  --manifest outputs/example_peptides/example_peptide_contiguous_run_cases.csv \
+  --run-root outputs/example_contiguous \
+  --output-dir outputs/example_contiguous/reports
+```
+
+The original NDM1 contiguous benchmark can be run separately:
+
+```bash
+bash python/benchmarks/launchers/run_ndm1_contiguous.sh pilot
+```
+
+## Description of output
+
+Case manifests and input checks are written to `outputs/example_peptides/`.
+Each run writes its command, log, exit code, and scored silent file beneath
+`outputs/example_contiguous/<run_id>/`. The summarizer produces one CSV of
+case-level statistics and one CSV containing every scored output.
