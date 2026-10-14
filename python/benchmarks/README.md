@@ -61,6 +61,37 @@ python -m benchmarks.contiguous.summarize_example_contiguous \
   --output-dir outputs/example_contiguous/reports
 ```
 
+Export the generated peptide with the lowest motif backbone RMSD from one
+case's scored silent file:
+
+```bash
+python -m benchmarks export-structure \
+  outputs/example_contiguous_pilot/6AZG_L2_S01/6AZG_L2_S01.silent
+```
+
+By default, this selects the output with the lowest motif backbone RMSD,
+extracts peptide chain 1, and writes `<structure_tag>.pdb` beside the silent
+file. The command prints the selected tag, motif RMSD, score, and output path.
+
+Other selection and export options are:
+
+```bash
+# Export the lowest-energy output instead.
+python -m benchmarks export-structure CASE.silent --rank-by score
+
+# Export an exact Rosetta silent-file tag.
+python -m benchmarks export-structure CASE.silent --tag TAG
+
+# Retain the complete pose, including every chain in a complex.
+python -m benchmarks export-structure CASE.silent --full-pose
+
+# Choose the output PDB path.
+python -m benchmarks export-structure CASE.silent --output best.pdb
+```
+
+The selection rules belong to the benchmark CLI, while the reusable
+silent-file extraction code lives in `benchmarks.utilities.export_scored_silent`.
+
 The original NDM1 contiguous benchmark can be run separately:
 
 ```bash

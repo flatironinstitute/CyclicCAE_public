@@ -7,8 +7,6 @@ import argparse
 import csv
 from pathlib import Path
 
-import pyrosetta
-
 
 def parse_score_table(silent_path: Path) -> tuple[list[str], list[dict[str, str]]]:
     header: list[str] | None = None
@@ -27,7 +25,64 @@ def parse_score_table(silent_path: Path) -> tuple[list[str], list[dict[str, str]
     return header, rows
 
 
+def select_structure_score(
+    rows: list[dict[str, str]],
+    *,
+    tag: str | None = None,
+    rank_by: str = "motif-rmsd",
+) -> dict[str, str]:
+    """Select a silent-file score row by tag or benchmark ranking criterion."""
+    if tag is not None:
+        try:
+            return next(row for row in rows if row["description"] == tag)
+        except StopIteration as error:
+            raise ValueError(f"silent-file tag not found: {tag}") from error
+    if rank_by == "motif-rmsd":
+        return min(
+            rows,
+            key=lambda row: (
+                float(row["motif_bbHeavy_RMSD"]),
+                float(row["score"]),
+            ),
+        )
+    if rank_by == "score":
+        return min(rows, key=lambda row: float(row["score"]))
+    raise ValueError(f"unknown structure ranking: {rank_by}")
+
+
+def export_structure_from_silent(
+    silent_path: Path,
+    *,
+    output_path: Path | None = None,
+    tag: str | None = None,
+    rank_by: str = "motif-rmsd",
+    full_pose: bool = False,
+) -> tuple[Path, dict[str, str]]:
+    """Export one selected structure from a scored Rosetta silent file."""
+    import pyrosetta
+
+    silent_path = Path(silent_path)
+    _, rows = parse_score_table(silent_path)
+    selected = select_structure_score(rows, tag=tag, rank_by=rank_by)
+    selected_tag = selected["description"]
+    output_path = Path(output_path) if output_path else silent_path.with_name(
+        f"{selected_tag}.pdb"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pyrosetta.init("-mute all")
+    for pose in pyrosetta.io.poses_from_silent(str(silent_path)):
+        if pose.pdb_info().name() != selected_tag:
+            continue
+        output_pose = pose if full_pose else pose.split_by_chain(1)
+        output_pose.dump_pdb(str(output_path))
+        return output_path, selected
+    raise RuntimeError(f"Could not find {selected_tag!r} in {silent_path}")
+
+
 def main() -> None:
+    import pyrosetta
+
     parser = argparse.ArgumentParser()
     parser.add_argument("silent_file", type=Path)
     parser.add_argument("output_dir", type=Path)
@@ -48,8 +103,6 @@ def main() -> None:
         if tag not in by_tag:
             raise RuntimeError(f"Silent tag {tag!r} is missing from score table")
         peptide = pose.split_by_chain(1)
-        if peptide.total_residue() != 8:
-            raise RuntimeError(f"Expected an 8-mer for {tag}, found {peptide.total_residue()} residues")
         pdb_name = f"{tag}.pdb"
         peptide.dump_pdb(str(pdb_dir / pdb_name))
         row = by_tag[tag]
