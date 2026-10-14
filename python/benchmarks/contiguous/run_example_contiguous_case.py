@@ -45,10 +45,26 @@ def run_energy_gradient(
     ]
     if case["pdb_id"] == "7BTI":
         command.append("--complex-output")
-    (output_dir / "command.txt").write_text(" ".join(command) + "\n")
-    with (output_dir / "run.log").open("w") as log:
+    command_path = output_dir / "command.txt"
+    log_path = output_dir / "run.log"
+    exit_code_path = output_dir / "exit_code.txt"
+    command_path.write_text(" ".join(command) + "\n")
+
+    print(f"[{run_id}] Starting benchmark case", flush=True)
+    print(f"[{run_id}] Output directory: {output_dir}", flush=True)
+    print(f"[{run_id}] Detailed log: {log_path}", flush=True)
+    with log_path.open("w") as log:
         completed = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
-    (output_dir / "exit_code.txt").write_text(f"{completed.returncode}\n")
+    exit_code_path.write_text(f"{completed.returncode}\n")
+
+    if completed.returncode == 0:
+        result = "Completed successfully"
+    elif completed.returncode == 3:
+        result = "Completed without finding a valid starting point"
+    else:
+        result = "Failed"
+    print(f"[{run_id}] {result} (exit code {completed.returncode})", flush=True)
+    print(f"[{run_id}] Results: {output_dir}", flush=True)
     return completed.returncode
 
 

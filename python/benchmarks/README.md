@@ -32,7 +32,6 @@ Run one case by its zero-based row number. Use the six-row pilot manifest
 first; the production manifest contains 90 cases.
 
 ```bash
-CYCLICCAE_PYTHON="$PWD/.env/bin/python" \
 CUDA_VISIBLE_DEVICES=0 \
 python -m benchmarks.contiguous.run_example_contiguous_case \
   --manifest outputs/example_peptides/example_peptide_contiguous_pilot_cases.csv \
