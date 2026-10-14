@@ -323,16 +323,15 @@ class EnergyPath:
             return True
         elif len(motif) == 1:
             return True
-        # If it is longer then check
-        else:
-            values = [int(value) for value in motif]
-            for previous, current in zip(values, values[1:]):
-                if peptide_length is None:
-                    adjacent = previous + 1 == current
-                else:
-                    adjacent = (current - previous) % peptide_length == 1
-                if not adjacent:
-                    return False
+
+        values = [int(value) for value in motif]
+        for previous, current in zip(values, values[1:]):
+            if peptide_length is None:
+                adjacent = previous + 1 == current
+            else:
+                adjacent = (current - previous) % peptide_length == 1
+            if not adjacent:
+                return False
         return True
 
     def extract_latent_information( self, dataset: torch.Tensor ) -> torch.Tensor:
