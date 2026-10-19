@@ -149,13 +149,19 @@ options:
                         If using --latent-space-exploration, then pass this as well. This should be an already extracted .pt dataset used in training (default:
                         None)
 ```
-
 ### Obtaining the weights
-Model weights are stored in Git Large File Storage (LFS). To obtain the weights you need to first ensure that you have git LFS installed on your system.
+
+Model weights are stored in Git Large File Storage (LFS). To obtain the weights you need to first ensure that you have git LFS installed on your system.  Please refer to <a href="https://git-lfs.com/">https://git-lfs.com/</a> for information about installing git LFS.
+
+Once git LFS is installed, it must be activated using:
+
 ```bash
 git lfs install
 ```
-Then you need to fetch the LFS objects from the remote server and replace the local LFS pointer files with the actual heavy assets by pulling them from the server.
+One can append `--system` to the command above to ensure that git LFS is activated globally for all git users on your system.
+
+Then you need to fetch the LFS objects for the CyclicCAE project from the remote server and replace the local LFS pointer files with the actual heavy assets by pulling them from the server:
+
 ```bash
 git lfs pull
 ```
