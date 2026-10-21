@@ -56,8 +56,8 @@ from model_house import CyclicCAE
 from model_functions import scale, ScaleOutputs
 from terminal_error import TerminalPeptide
 from inference_utils import (
-    extract_pdb_xyz, geometric_center, grab_interface, 
-    interface_loss, kabsch_algorithm, kabsch_rootatom, size_help, 
+    extract_pdb_xyz, geometric_center, grab_interface,
+    interface_loss, kabsch_algorithm, kabsch_rootatom, size_help,
     split_motif_atoms, discontig_motif_loss, kabsch_rigid_transform,
     homochiral_loss, load_weights,
 )
@@ -208,7 +208,7 @@ class EnergyPath:
             self.freeze_torsion = True
             self.freeze_bond_angle = True
             self.freeze_bond_length = True
-        self.contiguous = self.check_contiguous(self.freeze_residues)
+        self.contiguous = self.check_contiguous(self.freeze_residues, out_size)
         self.exclude_atom_positions = exclude_atom_positions
         if not self.contiguous:
             self.regions_atoms, self.regions = split_motif_atoms(self.freeze_residues)
@@ -263,7 +263,7 @@ class EnergyPath:
             device            = self.device, #"cpu",
             **self.PARAMS,
         ).to(device).double()
-        weights = load_weights(self.PARAMS["protein_len"], 
+        weights = load_weights(self.PARAMS["protein_len"],
                                self.device,
                                self.weight_passed)
         self.model.load_state_dict(weights["model_state_dict"])
@@ -271,11 +271,11 @@ class EnergyPath:
 
         # scale start point data
         # X_start_point = torch.cat((X, self.start_point_dof.unsqueeze(0)), dim=0)
-        # scaled_X_start_point = scale(X_start_point, self.ORIG_PARAMS) 
+        # scaled_X_start_point = scale(X_start_point, self.ORIG_PARAMS)
         # traj_scale_dof = scale(X_start_point[:, :self.dof_size], self.PARAMS)
         # print(scaled_X_start_point.shape, traj_scale_dof.shape)
 
-        #### Since right now we are not inputting a pdb to search we will select a 
+        #### Since right now we are not inputting a pdb to search we will select a
         #### start point for the beginning of the search
         self.path = torch.zeros(self.steps)
         self.energy_path = torch.zeros(self.steps)
@@ -306,7 +306,7 @@ class EnergyPath:
             self.bond_length_dof = slice(None)
             self.residue_index = slice(None)
 
-    def check_contiguous(self, motif: list[int]):
+    def check_contiguous(self, motif: list[int], peptide_length: int | None = None):
         """Check to see if the motif passed is contiguous or not
 
         PARAMS
@@ -323,15 +323,15 @@ class EnergyPath:
             return True
         elif len(motif) == 1:
             return True
-        # If it is longer then check
-        else:
-            j = 0
-            for i in range(1, len(motif)):
-                # If the previous + 1 does not equal the next one. Then we
-                # know that this is non-contiguous
-                if motif[j]+1 != motif[i]:
-                    return False
-                j = i
+
+        values = [int(value) for value in motif]
+        for previous, current in zip(values, values[1:]):
+            if peptide_length is None:
+                adjacent = previous + 1 == current
+            else:
+                adjacent = (current - previous) % peptide_length == 1
+            if not adjacent:
+                return False
         return True
 
     def extract_latent_information( self, dataset: torch.Tensor ) -> torch.Tensor:
@@ -391,7 +391,7 @@ class EnergyPath:
 
     def linear_loss(self, real:torch.Tensor, pred: torch.Tensor):
         return torch.sum( torch.pow( real - pred, 2) )
-    
+
     def dist_energy_plot(self):
         """Plot Distance and Energy Path through SGD"""
         # set up plot
@@ -432,8 +432,8 @@ class EnergyPath:
         return a[mask.unsqueeze(0)]
 
     def harmonic_diff_inpaint(
-        self, 
-        real_t_sin: torch.Tensor, 
+        self,
+        real_t_sin: torch.Tensor,
         real_t_cos: torch.Tensor,
         real_ba_sin: torch.Tensor,
         real_ba_cos: torch.Tensor,
@@ -513,7 +513,7 @@ class EnergyPath:
             return harmonic_out, match_res
         else:
             return harmonic_loss, None
-    
+
 
 
     # @timeit
@@ -551,7 +551,6 @@ class EnergyPath:
         scaffolds = 0
         points = 0
         if updated_freeze_residues is not None:
-#             self.freeze_residues = torch.as_tensor(
             pyrosetta_freeze_residues = torch.as_tensor(
                     updated_freeze_residues,
                     dtype=torch.long,
@@ -561,6 +560,16 @@ class EnergyPath:
             assert torch.all(self.freeze_residues >= 0), (
                     f"Converted motif indices {self.freeze_residues.tolist()} must be non-negative"
                     )
+            self.contiguous = self.check_contiguous(
+                self.freeze_residues,
+                self.PARAMS["protein_len"],
+            )
+            if self.contiguous:
+                self.regions = [self.freeze_residues]
+            else:
+                self.regions_atoms, self.regions = split_motif_atoms(
+                    self.freeze_residues
+                )
 
         # Need the coordinates calculated here, for discontinuous motifs
         if not self.contiguous:
@@ -579,7 +588,7 @@ class EnergyPath:
             real_t_cos = torch.cos(motif_dofs[0])
             real_ba_sin = torch.sin(motif_dofs[1])
             real_ba_cos = torch.cos(motif_dofs[1])
-            real_bond_length = motif_dofs[2] 
+            real_bond_length = motif_dofs[2]
 
         while no_scaffolds:
 #             scatter_latent = torch.zeros((B, self.latent_dim), dtype=torch.float64, device=self.device)
@@ -622,12 +631,12 @@ class EnergyPath:
                 latent_dim6.uniform_(-0.2539, 0.2441)
 
             scatter_latent = torch.cat(
-                    ( 
+                    (
                      latent_dim1, latent_dim2, latent_dim3,
                      latent_dim4, latent_dim5, latent_dim6,
                      ), dim=-1
                     )
-            
+
             # run the points through the decoder
             out = self.model.decoder(scatter_latent)
 
@@ -647,13 +656,13 @@ class EnergyPath:
             # term_bond_loss, bah_loss, ahd_loss, ocnh_loss, ncaco_loss, clash_penalty, coordinates = self.term_bond.terminal_peptide_loss(
             term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                 dof_inputs = out,
-                real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length, 
+                real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length,
                 params = self.PARAMS,
                 foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                 device = out.device,
             )
 
-            # We trigger this early to remove structures 
+            # We trigger this early to remove structures
             if random_no_reference:
                 if terminal:
                     # Determine which points are within the latent space cutoff
@@ -691,7 +700,7 @@ class EnergyPath:
 
                 # If scaffolds found Stop While Loop
                 run+=1
-                if run > 1000 or scaffolds.size(0) >= self.scaffold_number: 
+                if run > 1000 or scaffolds.size(0) >= self.scaffold_number:
                     no_scaffolds = False
 
                 # Save outputs
@@ -752,6 +761,11 @@ class EnergyPath:
                 self.exclude_atom_positions,
                 )
             if no_matches:
+                # Rejected batches must count toward termination.  Otherwise an
+                # unreachable motif threshold loops indefinitely.
+                run += 1
+                if run > 1000:
+                    no_scaffolds = False
                 continue
 
             #########
@@ -777,7 +791,7 @@ class EnergyPath:
                                                           )
 
                 interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
-                interface_nonorm_loss= interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), 
+                interface_nonorm_loss= interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(),
                                                       recomputed_xyz = aligned_coordinates,
                                                       sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
                                                       epsilon_peptide = interface_dict["epsilon_peptide"][peptide_nonhydrogen_mask],
@@ -785,7 +799,12 @@ class EnergyPath:
                                                       epsilon_interface = interface_dict["epsilon_interface"][interface_nonhydrogen_mask])
                 interface_total_loss = interface_nonorm_loss # / aligned_coordinates.size(0)
             else:
-                interface_total_loss = torch.zeros(out.size(0), dtype=torch.bool, device=self.device)
+                # Every motif match is acceptable when the input has no target
+                # chain. Keep this vector aligned to the matched-candidate rows,
+                # not the full decoder batch.
+                interface_total_loss = torch.zeros(
+                    match_res_mask[:B].shape[0], dtype=torch.bool, device=self.device
+                )
 
             if l_homochiral:
                 # This is for homochiral
@@ -894,6 +913,9 @@ class EnergyPath:
             preds = torch.cat((torsion, bond_angle, scaffolds[:, self.PARAMS["torsion_main_n"]*2*2:]), dim=-1)
         else:
             print(f"No Scaffolds Found with residue similarity as {self.inpaint_dist} in {run-1} iterations")
+            empty = torch.empty((0,), dtype=torch.float64, device=self.device)
+            self.match_res_mask = torch.empty((0,), dtype=torch.int, device=self.device)
+            return empty, empty, empty
         if scaffolds.size(0) > self.scaffold_number:
             scaffolds = scaffolds[:self.scaffold_number]
             points = points[:self.scaffold_number]
@@ -909,8 +931,8 @@ class EnergyPath:
             self.match_res_mask = self.match_res_mask[:self.scaffold_number, 1].long()
             return scaffolds, points, harm_values
 
-    def metropolis_hastings(self, B: int, sigma: torch.float, 
-                            start_points: torch.Tensor|None = None, 
+    def metropolis_hastings(self, B: int, sigma: torch.float,
+                            start_points: torch.Tensor|None = None,
                             mcmc_steps: int = 0,
                             motif_dofs: torch.Tensor|None = None,
                             harmonic_start: torch.Tensor|None = None,
@@ -980,7 +1002,7 @@ class EnergyPath:
         real_t_cos = torch.cos(motif_dofs[0])
         real_ba_sin = torch.sin(motif_dofs[1])
         real_ba_cos = torch.cos(motif_dofs[1])
-        real_bond_length = motif_dofs[2] 
+        real_bond_length = motif_dofs[2]
 
         # Setup our steps to be the same as gradient steps or custom
         steps = self.steps if mcmc_steps == 0 else mcmc_steps
@@ -1020,7 +1042,7 @@ class EnergyPath:
             # Determine our terminal bond loss
             term_bond_loss, nco_loss, hnc_loss, ocnh_loss, _, HNCO, coordinates = self.term_bond.terminal_peptide_loss(
                 dof_inputs = out,
-                real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length, 
+                real_term = torch.ones(out.size(0), device=out.device, dtype=out.dtype) * self.ideal_term_length,
                 params = self.PARAMS,
                 foldtree_root = self.term_bond.calculate_root(self.PARAMS["protein_len"]),
                 device = out.device,
@@ -1084,8 +1106,8 @@ class EnergyPath:
                 else:
                     temp_coeff = 1
 
-                out_num = ( 
-                    (energies_trajectories[:, 0, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) + term_bond_loss.squeeze(-1).detach().cpu() 
+                out_num = (
+                    (energies_trajectories[:, 0, :].squeeze(-1) - energy_t ) + self.lambda_2*harmonic_change.squeeze(-1) + term_bond_loss.squeeze(-1).detach().cpu()
                     + nco_loss.squeeze(-1).detach().cpu() + hnc_loss.squeeze(-1).detach().cpu() + ocnh_loss.squeeze(-1).detach().cpu() #+ ncaco_loss.squeeze(-1).detach().cpu()
                 )
                 temp_coeff = temp_coeff if out_num.mean() > 1 else 1/temp_coeff
@@ -1094,7 +1116,7 @@ class EnergyPath:
                 # generate bool of T/F
                 u = torch.ones((B*F))
                 u.uniform_(0, 1)
-                condition_u = u <= alpha 
+                condition_u = u <= alpha
 
                 # Place energies or reject
                 energies_trajectories[condition_u, -1, :] = energy_t[condition_u].view(-1, 1)
@@ -1121,7 +1143,7 @@ class EnergyPath:
         # grab minimum of each B_i from F
         latent_trajectories = latent_trajectories.reshape(B, F, 2, self.latent_dim)
         energies_trajectories = energies_trajectories.reshape(B, F, 2, 1)
-        
+
         if self.freeze_residues != None or self.retain_structure:
             # Reshape our H, so we can start grabbing best runs
             H = H.reshape(B, F, 2, 1)
@@ -1168,7 +1190,7 @@ class EnergyPath:
                     f"{self.match_res_mask.numel()} motif starts"
                     )
         if start_points.size(0) == 1:
-            self.start_latent_point = start_points.to(self.device) 
+            self.start_latent_point = start_points.to(self.device)
             start_range = 0
             self.path = torch.zeros((start_points.size(0),self.steps), dtype=torch.float32, device=self.device)
             self.energy_path = torch.zeros(start_points.size(0), self.steps,  device=self.device)
@@ -1215,9 +1237,9 @@ class EnergyPath:
 #                 True,
 #             )
 
-        while minimize_still: 
+        while minimize_still:
             original_point = self.start_latent_point.clone()
-            # Define optimizer 
+            # Define optimizer
             if self.adam_optim:
                 optimizer = torch.optim.AdamW([self.start_latent_point], lr=self.lr)
             elif self.sgd_optim:
@@ -1246,9 +1268,9 @@ class EnergyPath:
                     real_t_cos = torch.cos(motif_dofs[0])
                     real_ba_sin = torch.sin(motif_dofs[1])
                     real_ba_cos = torch.cos(motif_dofs[1])
-                    real_bond_length = motif_dofs[2] 
+                    real_bond_length = motif_dofs[2]
 
-                # grab the energies 
+                # grab the energies
                 energies = out[:, -self.energy_n:]
                 # energies = self.energy_scale.inverse_scale(out[:, -self.energy_n:]).to(self.device)
                 # Get rid of the last fa_sol (this is because of the way I am printing each step down below)
@@ -1348,7 +1370,7 @@ class EnergyPath:
                                                             motif_input = self.motif_input,
                                                             )
 #                     aligned_coordinates, rmsd_loss = kabsch_rootatom(
-#                             P = coords, 
+#                             P = coords,
 #                             Q = interface_cb_dict["peptide"][peptide_nonhydrogen_mask].double(),
 #                             motif_input = torch.arange( interface_cb_dict["peptide"][peptide_nonhydrogen_mask].size(0) ),
 #                             motif_output = torch.arange( coords.size(1) ),
@@ -1359,13 +1381,13 @@ class EnergyPath:
                 if interface_full_dict != None:
                     # We must specify which interface context we are using whether it be ramp or one consistent view
                     if (step < self.steps//4) and (self.ramp_constraint):
-                        interface_dict = interface_cb_dict 
+                        interface_dict = interface_cb_dict
                     elif (step > self.steps//4) and (self.ramp_constraint):
                         interface_dict = interface_full_dict
                     elif self.fullpocket:
                         interface_dict = interface_full_dict
                     else:
-                        interface_dict = interface_cb_dict 
+                        interface_dict = interface_cb_dict
 
                     peptide_nonhydrogen_mask = interface_dict["epsilon_peptide"] != 0.901681
                     if not self.contiguous:
@@ -1388,7 +1410,7 @@ class EnergyPath:
 
 
                     interface_nonhydrogen_mask = interface_dict["epsilon_interface"] != 0.901681
-                    interface_nonorm_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(), 
+                    interface_nonorm_loss = interface_loss(interface_atoms = interface_dict["interface_atoms"][interface_nonhydrogen_mask].double(),
                                                            recomputed_xyz = aligned_coordinates,
                                                            sigma_peptide = interface_dict["sigma_peptide"][peptide_nonhydrogen_mask],
                                                            epsilon_peptide = interface_dict["epsilon_peptide"][peptide_nonhydrogen_mask],
@@ -1508,12 +1530,12 @@ class EnergyPath:
 
     # @timeit
     def output_GDS(
-        self, 
+        self,
         dofsummary: DoFSummary,
         skip_individual = False,
         silentfile: bool = False,
         score: bool = False,
-        output_path: str = "./", 
+        output_path: str = "./",
         random_outputs: bool = False,
         minimize_pose: bool = False,
         complex_output: bool = False,
@@ -1547,7 +1569,7 @@ class EnergyPath:
 
         return 0
 
-        
+
 if __name__ == "__main__":
     start_time = time.perf_counter()
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -1618,12 +1640,12 @@ if __name__ == "__main__":
 
     use_device = "cuda:0" if args.gpu else "cpu"
 
-    # init the start path with X tensor 14 
+    # init the start path with X tensor 14
     energySearch = EnergyPath(
-        steps = args.steps, 
-        weight_passed = args.weights_load, 
+        steps = args.steps,
+        weight_passed = args.weights_load,
         lr=args.lr,
-        cutoff = args.cutoff, 
+        cutoff = args.cutoff,
         cutoff_true = args.cutoff_true,
         partial_optimization = args.partial_optimization,
         freeze_residues = torch.tensor(args.freeze_residues) - 1 if args.freeze_residues else None,
@@ -1663,8 +1685,8 @@ if __name__ == "__main__":
             print("Current dof_size:", data_dof.size(0))
             section = data_dof[:10000] if data_dof.size(0) > 10000 else data_dof
             out_dof, latent_points = energySearch.extract_latent_information( section )
-            if loop == 0: 
-                storage = latent_points 
+            if loop == 0:
+                storage = latent_points
                 loop+=1
             else:
                 # Should be in shape (B, 6)
@@ -1697,7 +1719,7 @@ if __name__ == "__main__":
         os.makedirs(args.output_path)
 
 
-    ## Inpainting Task 
+    ## Inpainting Task
     if args.inpaint:
         # Checks before proceeding
         assert args.pdb_input != None, "You did not pass a PDB File for inpainting. \
@@ -1707,17 +1729,35 @@ if __name__ == "__main__":
         #### information for inpainting and gradient-marching
         # All atoms are Extracted within cutoff distance
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=True, peptide_chain=args.peptide_chain)
-        interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
-        interface_full_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
-                          "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
-                          "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
+        if target.numel() == 0:
+            interface_full_dict = None
+        else:
+            interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
+            interface_full_dict = {
+                "target": target.to(use_device),
+                "peptide": peptide.to(use_device),
+                "interface_atoms": interface.to(use_device),
+                "sigma_peptide": sigma_peptide.to(use_device),
+                "epsilon_peptide": epsilon_peptide.to(use_device),
+                "sigma_interface": sigma_target[mask].to(use_device),
+                "epsilon_interface": epsilon_target[mask].to(use_device)
+            }
         # Cb Pocket Context Extract
         full, target, peptide, sigma_target, epsilon_target, sigma_peptide, epsilon_peptide = extract_pdb_xyz(args.pdb_input, full=False, peptide_chain=args.peptide_chain)
-        interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
-        interface_cb_dict = {"target": target.to(use_device), "peptide": peptide.to(use_device), "interface_atoms": interface.to(use_device),
-                          "sigma_peptide": sigma_peptide.to(use_device), "epsilon_peptide": epsilon_peptide.to(use_device),
-                          "sigma_interface": sigma_target[mask].to(use_device), "epsilon_interface": epsilon_target[mask].to(use_device)}
-        
+        if target.numel() == 0:
+            interface_cb_dict = None
+        else:
+            interface, mask = grab_interface(target, peptide, dist_cutoff = args.interface_distance_cutoff)
+            interface_cb_dict = {
+                "target": target.to(use_device),
+                "peptide": peptide.to(use_device),
+                "interface_atoms": interface.to(use_device),
+                "sigma_peptide": sigma_peptide.to(use_device),
+                "epsilon_peptide": epsilon_peptide.to(use_device),
+                "sigma_interface": sigma_target[mask].to(use_device),
+                "epsilon_interface": epsilon_target[mask].to(use_device)
+            }
+
         #### Here we are extracting the DoFs needed for Harmonic DoF Inpainting Regression
         #### these are taken from our passed PDB
         motif_dofs, updated_freeze_residues = dofsummary.extract_pdb_pose_and_dof(
@@ -1736,8 +1776,12 @@ if __name__ == "__main__":
                                                                updated_freeze_residues = updated_freeze_residues)
         else:
             scaffolds, latent_points, harm_values = energySearch.inpainting(args.batch_size, args.random_sample, interface_dict = interface_cb_dict,
-                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral, 
+                                                               motif_dofs = motif_dofs, l_homochiral = args.l_homochiral,
                                                                updated_freeze_residues = updated_freeze_residues)
+
+        if latent_points.numel() == 0:
+            print("No valid starting points were found; stopping before energy minimization.")
+            raise SystemExit(3)
 
         #### Take either inpaint output and use for MCMC/Gradient-march or just graident-march
         if args.mcmc_steps >= 1:
@@ -1755,7 +1799,7 @@ if __name__ == "__main__":
         if args.mcmc_steps < 1:
             scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, l_homochiral = args.l_homochiral)
             energySearch.energy_steps(latent_points, l_homochiral = args.l_homochiral)
-        else: 
+        else:
             scaffolds, latent_points = energySearch.inpainting(args.batch_size, args.random_sample, l_homochiral = args.l_homochiral)
             latent_traj, _ = energySearch.metropolis_hastings(scaffolds.size(0), args.sigma, latent_points, mcmc_steps=args.mcmc_steps)
             energySearch.energy_steps(latent_points, l_homochiral = args.l_homochiral)
