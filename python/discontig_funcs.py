@@ -153,6 +153,19 @@ def harmonic_diff_inpaint(
     minimze_whole_peptide: bool = False,
     ):
     """Harmonic Difference"""
+    # Index and reference tensors originate from CPU-side motif extraction.
+    # Move them alongside model outputs so GPU inference can gather and compare
+    # without mixed-device errors.
+    target_device = torsion_sin.device
+    real_t_sin = real_t_sin.to(target_device)
+    real_t_cos = real_t_cos.to(target_device)
+    real_ba_sin = real_ba_sin.to(target_device)
+    real_ba_cos = real_ba_cos.to(target_device)
+    real_bond_length = real_bond_length.to(target_device)
+    torsion_index = torsion_index.to(target_device)
+    bond_angle_dofs = bond_angle_dofs.to(target_device)
+    bond_length_dofs = bond_length_dofs.to(target_device)
+
     # Grab DoF values of interest using our values
     if not dof_minimize:
         # Grab our residue's of interest DoFs
