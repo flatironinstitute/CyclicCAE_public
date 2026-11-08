@@ -5,7 +5,6 @@ __pycache__*
 # datatype files
 *.csv
 *.tsv
-*.pt
 *.dat
 *.png
 *.html

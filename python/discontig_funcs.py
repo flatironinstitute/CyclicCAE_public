@@ -243,13 +243,25 @@ def harmonic_diff_inpaint(
 
     if not dof_minimize:
         # Compare and pick residues based on output
-        mask = harmonic_loss <= inpaint_dist
-        match_res = torch.nonzero(mask).to(torch.int)
+        valid = harmonic_loss <= inpaint_dist
+        eligible_loss = harmonic_loss.masked_fill(
+                ~valid,
+                float("inf"),
+                )
 
-        # Keep every matched residue pair. The previous np.unique call only
-        # computed unused indices and attempted to convert CUDA tensors to
-        # NumPy during GPU inpainting.
-        harmonic_out = harmonic_loss[match_res[:, 0], match_res[:, 1]]
+        best_loss, best_start = eligible_loss.min(dim=1)
+
+        # Samples with no passing motif position have best_loss == inf
+        sample_idx = torch.isfinite(best_loss).nonzero(as_tuple=True)[0]
+
+        # Column 0: original sampled-latent row
+        # Column 1: best motif starting position
+        match_res = torch.stack(
+                (sample_idx, best_start[sample_idx]),
+                dim=1,
+                ).long()
+
+        harmonic_out = best_loss[sample_idx]
         return harmonic_out, match_res
     else:
         return harmonic_loss, None
