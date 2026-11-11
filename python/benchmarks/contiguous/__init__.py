@@ -1,0 +1,1 @@
+"""Contiguous motif-inpainting benchmarks."""

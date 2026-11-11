@@ -14,11 +14,12 @@ dependencies:
   - requests
   - python-dateutil
   - tqdm
+  - biotite
   - pip:
   # leave uncommented for CUDA, comment out for 
       - --find-links https://download.pytorch.org/whl/cu121
       - --find-links https://west.rosettacommons.org/pyrosetta/quarterly/release
       - torch==2.2.0
-      - torchvision
-      - torchaudio
+      - torchvision==0.17.0
+      - torchaudio==2.2.0
       - pyrosetta==2026.3

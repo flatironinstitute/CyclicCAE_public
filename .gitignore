@@ -1,5 +1,6 @@
 # extra information
 __pycache__*
+.DS_Store
 
 # datatype files
 *.csv
@@ -18,3 +19,6 @@ __pycache__*
 # pymol outputs
 *.pse
 
+# benchmark related
+outputs/
+pdbs
