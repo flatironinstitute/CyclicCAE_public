@@ -12,12 +12,12 @@ from motif_functions import calculate_motif_numbering_for_kabsch
 
 
 class CalculateMotifNumberingTests(unittest.TestCase):
-    def test_converts_one_based_input_positions(self):
+    def test_accepts_zero_based_input_positions(self):
         motif, motif_input = calculate_motif_numbering_for_kabsch(
             torch.tensor([[0, 2]]),
             pep_len=8,
             motif_length=2,
-            motif_positions=torch.tensor([3, 4]),
+            motif_positions=torch.tensor([2, 3]),
         )
 
         self.assertEqual(motif.tolist(), [list(range(8, 16))])
@@ -28,7 +28,7 @@ class CalculateMotifNumberingTests(unittest.TestCase):
             torch.tensor([[0, 7]]),
             pep_len=8,
             motif_length=2,
-            motif_positions=torch.tensor([8, 1]),
+            motif_positions=torch.tensor([7, 0]),
         )
 
         expected = [28, 29, 30, 31, 0, 1, 2, 3]
@@ -36,7 +36,7 @@ class CalculateMotifNumberingTests(unittest.TestCase):
         self.assertEqual(motif_input.tolist(), expected)
 
     def test_rejects_positions_outside_peptide(self):
-        for positions in (torch.tensor([0, 1]), torch.tensor([8, 9])):
+        for positions in (torch.tensor([-1, 0]), torch.tensor([7, 8])):
             with self.subTest(positions=positions.tolist()):
                 with self.assertRaises(IndexError):
                     calculate_motif_numbering_for_kabsch(
@@ -53,7 +53,7 @@ class CalculateMotifNumberingTests(unittest.TestCase):
             torch.tensor([[0, 7]], device=device),
             pep_len=8,
             motif_length=2,
-            motif_positions=torch.tensor([8, 1], device=device),
+            motif_positions=torch.tensor([7, 0], device=device),
         )
 
         self.assertEqual(motif.device.type, "cuda")

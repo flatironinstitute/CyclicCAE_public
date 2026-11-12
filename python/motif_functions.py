@@ -187,7 +187,7 @@ def calculate_motif_numbering_for_kabsch(
             - last number is the residue number that matches (0-index).
     :pep_len: The length of our output peptide
     :motif_length: The length of our continuous motif (number of residues)
-    :motif_positions: The tensor of residue indexes from our pass PDB
+    :motif_positions: The tensor of residue indexes from our pass PDB (zero-relative)
     :dof_minimize: True we are performing regression and motif_match only has 1
         column and not 2.
 
@@ -201,9 +201,8 @@ def calculate_motif_numbering_for_kabsch(
     # index generate
     match_device = motif_match.device
     motif_device = motif_positions.device
-    # DoFSummary returns peptide-relative residue numbers in Rosetta's 1-based
-    # convention. Coordinate tensors below are 0-based.
-    motif_positions_zero = motif_positions.to(dtype=torch.long) - 1
+    # Callers convert Rosetta residue numbers to 0-based tensor indices.
+    motif_positions_zero = motif_positions.to(dtype=torch.long)
     if motif_positions_zero.min().item() < 0 or motif_positions_zero.max().item() >= pep_len:
         raise IndexError(
             f"motif positions {motif_positions.tolist()} fall outside a {pep_len}-residue peptide"
