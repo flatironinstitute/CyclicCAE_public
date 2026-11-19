@@ -178,6 +178,8 @@ One the degree-of-freedom vectors and RMSD matrices have been computed, it is ne
 
 A Torch `.pt` file will be written containing Torch tensors with the DoF and RMSD information.  Note that the `--rmsd` flag is needed to write the RMSD data to the output tensor (highly recommended).
 
+Training data used for the weights in the `weights/` sub-directory are available from <a href="https://users.flatironinstitute.org/~vmulligan/">https://users.flatironinstitute.org/~vmulligan/</a>.  These are provided both as the raw conformational samples and as the Torch tensors.
+
 ## Training Model
 
 Once the Torch tensors for training have been generated as described above, you can run the script `model.py` to train the model:
