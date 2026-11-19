@@ -166,13 +166,25 @@ Then you need to fetch the LFS objects for the CyclicCAE project from the remote
 git lfs pull
 ```
 
+## Preparing training data
+
+Please refer to the Supplementary Information in our <a href="https://www.biorxiv.org/content/10.1101/2025.02.21.639569">CyclicCAE preprint</a> for information about generating training data using Rosetta.  Section 1.3 describes the use of the Rosetta `simple_cycpep_predict` application to sample macrocycle conformations to produce training datasets, section 1.4 describes the use of `energy_based_clustering` for data reduction to create pre-training datasets, and section 2.2 describes the use of the `extract_dof_vectors` application to produce formatted data for training.
+
+One the degree-of-freedom vectors and RMSD matrices have been computed, it is necessary to convert these to Torch tensors.  The `python/binary_import/BinaryDoFReader.py` application does this.  If the degree-of-freedom vectors are in `dofvectors.dat`, and the RMSD matrix is `rmsd_matrix.dat`, the script may be run as follows:
+
+```sh
+./python/binary_import/BinaryDoFReader.py --binary-dof dofvectors.dat --binary-rmsd rmsd_matrix.dat --rmsd
+```
+
+A Torch `.pt` file will be written containing Torch tensors with the DoF and RMSD information.  Note that the `--rmsd` flag is needed to write the RMSD data to the output tensor (highly recommended).
+
 ## Training Model
 
-If you would like to retrain the model currently you can run the script `model.py`:
+Once the Torch tensors for training have been generated as described above, you can run the script `model.py` to train the model:
 
-```
+```sh
 # Train model with default parameters
-python ./python/model.py --dataset-tensor <path/to/dataset>
+python ./python/model.py --dataset-tensor <path_to_torch_training_tensor>
 ```
 
 The curent model was trained with first training on `./python/binary_import/dof_vectors_clusters_firstten2024-04-11torch_tensor.pt`
