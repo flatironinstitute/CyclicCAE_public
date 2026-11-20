@@ -415,15 +415,11 @@ class DoFBinaryReader:
 ##################################################################################################################
 if __name__ == "__main__":
     # If main then test out class
-    p = argparse.ArgumentParser(description="Binary to Pyotrch")
-    p.add_argument("--binary-dof", type=str, help="Define DoF .dat file to convert", required=True)
-    p.add_argument("--binary-rmsd", type=str, help="Define RMSD .dat file to convert", required=False)
-    p.add_argument("--rmsd", action="store_true", help="Compute RMSD")
+    p = argparse.ArgumentParser(description="Convert binary degree-of-freedom vectors and RMSD matrices to Torch tensors.")
+    p.add_argument("--binary-dof", type=str, help="Specify the DoF .dat file to convert", required=True)
+    p.add_argument("--binary-rmsd", type=str, help="Specify the RMSD .dat file to convert", required=False)
+    p.add_argument("--rmsd", action="store_true", help="Include this flag to write the RMSD information to the Torch tensor (recommended).")
     args = p.parse_args()
-
-    # explicit file
-    # file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/dof_vectors.dat"
-    # rmsd_file = "/mnt/home/vmulligan/ceph/2024_02_02_polygly_macrocycle_conf_embedding/8mer/organic/8mer_organic_dftb_smd_cartmin_geoopt/training_data/rmsd_matrix.dat"
 
     # init class
     dofclass = DoFBinaryReader(args.binary_dof, args.binary_rmsd, True, args.rmsd)
