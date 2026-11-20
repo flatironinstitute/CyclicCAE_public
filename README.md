@@ -11,7 +11,7 @@ Vikram K. Mulligan (vmulligan@flatironinstitute.org)
 
 ## Description
 
-CyclicCAE is a conformational autoencoder that represents the full set of conformations accessible to a peptide macrocycle backbone of a given size as an N-dimensional latent space, and which permits rapid sampling from these conformations, denoising to these conformations, or Monte Carlo searches or energy minimization in the latent space.
+CyclicCAE v. 1.4 is a conformational autoencoder that represents the full set of conformations accessible to a peptide macrocycle backbone of a given size as an N-dimensional latent space, and which permits rapid sampling from these conformations, denoising to these conformations, or Monte Carlo searches or energy minimization in the latent space.
 
 ## Licence
 
@@ -291,8 +291,9 @@ This patch is released under a free and open-source BSD 3-clause licence.
 
 | Version | Description |
 | ------- | ----------- |
-| 1.3     | Updated repository with instructions for obtaining weights through git LFS. |
-| 1.2     | Additional cleanup and removal of unused files prior to publication.        |
-| 1.1     | Small tweaks from Andrew prior to public release.                           |
-| 1.0     | The initial release of the CyclicCAE conformational autoencoder.            |
+| 1.4     | Add details about preparing training data, and download link for training data. |
+| 1.3     | Updated repository with instructions for obtaining weights through git LFS.     |
+| 1.2     | Additional cleanup and removal of unused files prior to publication.            |
+| 1.1     | Small tweaks from Andrew prior to public release.                               |
+| 1.0     | The initial release of the CyclicCAE conformational autoencoder.                |
 
