@@ -287,3 +287,12 @@ The patch also makes modifications to `Rosetta/main/source/src/basic/options/opt
 
 This patch is released under a free and open-source BSD 3-clause licence.
 
+## Version History
+
+| Version | Description |
+| ------- | ----------- |
+| 1.3     | Updated repository with instructions for obtaining weights through git LFS. |
+| 1.2     | Additional cleanup and removal of unused files prior to publication.        |
+| 1.1     | Small tweaks from Andrew prior to public release.                           |
+| 1.0     | The initial release of the CyclicCAE conformational autoencoder.            |
+
